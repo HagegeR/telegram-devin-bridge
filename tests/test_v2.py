@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -9,7 +10,7 @@ import httpx
 import pytest
 
 from app.access import is_allowed, should_respond_in_group
-from app.clients import DevinClient, TelegramClient
+from app.clients import DevinClient, DevinMessage, SessionState, TelegramClient
 from app.config import Settings
 from app.formatting import (
     chunk,
@@ -18,6 +19,7 @@ from app.formatting import (
 )
 from app.main import create_app
 from app.store import Store
+from app.watcher import SessionWatcher
 
 
 def settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -32,6 +34,7 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
         "notify_secret": "notify-placeholder",
         "devin_poll_seconds": 0,
         "devin_watch_timeout_seconds": 1,
+        "devin_settle_seconds": 30,
     }
     values.update(overrides)
     return Settings(**values)
@@ -121,6 +124,65 @@ def test_store_topics_dedupe_and_history(tmp_path: Path) -> None:
     store.close()
 
 
+def test_store_migrates_legacy_sessions(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        """
+        CREATE TABLE chat_sessions (
+            chat_id INTEGER PRIMARY KEY,
+            devin_session_id TEXT NOT NULL,
+            last_message_id TEXT
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO chat_sessions VALUES (?, ?, ?)",
+        (222, "devin-s-old", "event-old"),
+    )
+    connection.commit()
+    connection.close()
+
+    store = Store(str(database_path))
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    assert conversation.session_id == "devin-s-old"
+    assert conversation.session_url.endswith("/sessions/s-old")
+    assert conversation.last_event_id == "event-old"
+    assert store.list_history("222")[0].session_id == "devin-s-old"
+    assert store.connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'chat_sessions'"
+    ).fetchone() is None
+    store.close()
+
+
+def test_text_link_expansion_handles_emoji_offsets() -> None:
+    from app.main import _expand_text_links
+
+    value = {
+        "text": "😀See link",
+        "entities": [
+            {
+                "type": "text_link",
+                "offset": 6,
+                "length": 4,
+                "url": "https://example.test",
+            }
+        ],
+    }
+    assert _expand_text_links(value, "text") == (
+        "😀See link (https://example.test)"
+    )
+
+
+def test_group_bot_mention_is_removed_from_turn_text() -> None:
+    from app.access import strip_bot_mention
+
+    assert strip_bot_mention("please ask @TestBot to inspect this", "testbot") == (
+        "please ask  to inspect this"
+    )
+
+
 @pytest.mark.asyncio
 async def test_clients_use_injected_mock_transports() -> None:
     devin_paths: list[str] = []
@@ -170,6 +232,126 @@ async def test_clients_use_injected_mock_transports() -> None:
     assert any(path.endswith("/sendMessage") for path in telegram_paths)
     await devin.close()
     await telegram.close()
+
+
+@pytest.mark.asyncio
+async def test_telegram_parse_fallback_preserves_then_drops_markup() -> None:
+    bodies: list[dict[str, object]] = []
+    attempts = 0
+
+    async def telegram_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        bodies.append(json.loads(request.content))
+        if attempts < 3:
+            return httpx.Response(400, json={"ok": False})
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    telegram = TelegramClient(
+        "fake-token",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(telegram_handler),
+    )
+    await telegram.send_message(
+        222,
+        "*hello*",
+        parse_mode="MarkdownV2",
+        reply_markup={"inline_keyboard": []},
+    )
+    assert "parse_mode" not in bodies[1]
+    assert "reply_markup" in bodies[1]
+    assert "reply_markup" not in bodies[2]
+    await telegram.close()
+
+
+@pytest.mark.asyncio
+async def test_watcher_settles_stale_status_and_renders_options() -> None:
+    class FakeDevin:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_session(self, _: str) -> SessionState:
+            self.calls += 1
+            messages = (
+                [
+                    DevinMessage(
+                        "devin_message",
+                        "event-1",
+                        "**Done**\nOPTIONS: Yes | No.",
+                        None,
+                    )
+                ]
+                if self.calls == 4
+                else []
+            )
+            status = (
+                "working"
+                if self.calls == 3
+                else "blocked"
+            )
+            return SessionState(status, "title", None, messages)
+
+    class FakeTelegram:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+            self.reactions: list[str] = []
+
+        async def send_message(self, chat_id: int, text: str, **kwargs: object) -> None:
+            self.sent.append({"chat_id": chat_id, "text": text, **kwargs})
+
+        async def send_chat_action(self, *_: object, **__: object) -> None:
+            return None
+
+        async def set_message_reaction(
+            self, _chat_id: int, _message_id: int, emoji: str
+        ) -> None:
+            self.reactions.append(emoji)
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    config = settings(
+        Path("/tmp"),
+        devin_poll_seconds=1,
+        devin_watch_timeout_seconds=20,
+        devin_settle_seconds=30,
+    )
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = FakeTelegram()
+    devin = FakeDevin()
+    await SessionWatcher(
+        conversation,
+        store,
+        devin,
+        telegram,  # type: ignore[arg-type]
+        config,
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=7,
+    ).run()
+    assert [item["text"] for item in telegram.sent] == ["*Done*"]
+    assert telegram.sent[0]["parse_mode"] == "MarkdownV2"
+    markup = cast(dict[str, object], telegram.sent[0]["reply_markup"])
+    keyboard = cast(list[list[dict[str, str]]], markup["inline_keyboard"])
+    assert [row[0]["text"] for row in keyboard] == ["Yes", "No."]
+    assert devin.calls == 4
+    assert telegram.reactions == ["👍"]
 
 
 @pytest.mark.asyncio
@@ -275,6 +457,7 @@ async def test_notify_auth_and_photo_upload(tmp_path: Path) -> None:
                 json={"session_id": "s1", "url": "https://devin.test/s1"},
             )
         if request.url.path == "/v1/attachments":
+            attachment_bodies.append(request.content)
             return httpx.Response(200, json="https://files.test/a")
         if request.url.path == "/v1/sessions/s1":
             return httpx.Response(
@@ -298,6 +481,7 @@ async def test_notify_auth_and_photo_upload(tmp_path: Path) -> None:
         return httpx.Response(200, json={"ok": True, "result": {}})
 
     config = settings(tmp_path)
+    attachment_bodies: list[bytes] = []
     app = create_app(
         config,
         store=Store(config.database_path),
@@ -338,7 +522,18 @@ async def test_notify_auth_and_photo_upload(tmp_path: Path) -> None:
         )
         assert response.status_code == 200
         await asyncio.sleep(0.03)
+        voice = message("listen", message_id=9)
+        voice["voice"] = {"file_id": "voice-1", "file_size": 10}
+        voice.pop("text")
+        response = await client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "secret-placeholder"},
+            json={"update_id": 3, "message": voice},
+        )
+        assert response.status_code == 200
+        await asyncio.sleep(0.03)
     assert "/v1/attachments" in devin_paths
+    assert any(b"voice.ogg" in body for body in attachment_bodies)
     assert any(
         value.get("chat_id") == 222
         for path, value in telegram_calls

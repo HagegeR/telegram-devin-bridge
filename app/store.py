@@ -99,6 +99,68 @@ class Store:
                 self.connection.execute(
                     "ALTER TABLE conversations ADD COLUMN last_user_text TEXT"
                 )
+            legacy_table = self.connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'chat_sessions'
+                """
+            ).fetchone()
+            if legacy_table is not None:
+                self._migrate_legacy_sessions()
+
+    def _migrate_legacy_sessions(self) -> None:
+        rows = self.connection.execute(
+            """
+            SELECT chat_id, devin_session_id, last_message_id
+            FROM chat_sessions
+            """
+        ).fetchall()
+        for row in rows:
+            chat_id = int(row["chat_id"])
+            session_id = str(row["devin_session_id"])
+            conv_key = str(chat_id)
+            session_url = (
+                "https://app.devin.ai/sessions/"
+                f"{session_id.removeprefix('devin-')}"
+            )
+            timestamp = time.time()
+            exists = self.connection.execute(
+                "SELECT 1 FROM conversations WHERE conv_key = ?",
+                (conv_key,),
+            ).fetchone()
+            if exists is None:
+                self.connection.execute(
+                    """
+                    INSERT INTO conversations(
+                        conv_key, chat_id, thread_id, session_id, session_url,
+                        title, last_event_id, created_at, last_user_text
+                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (
+                        conv_key,
+                        chat_id,
+                        session_id,
+                        session_url,
+                        "Telegram conversation",
+                        row["last_message_id"],
+                        timestamp,
+                    ),
+                )
+            self.connection.execute(
+                """
+                INSERT INTO session_history(
+                    conv_key, session_id, session_url, title, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    conv_key,
+                    session_id,
+                    session_url,
+                    "Telegram conversation",
+                    timestamp,
+                ),
+            )
+        self.connection.execute("DROP TABLE chat_sessions")
 
     def close(self) -> None:
         with self.lock:

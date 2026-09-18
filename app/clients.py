@@ -344,8 +344,10 @@ class TelegramClient:
         if response.status_code == 400 and parse_mode is not None and body is not None:
             plain_body = dict(body)
             plain_body.pop("parse_mode", None)
-            plain_body.pop("reply_markup", None)
             response = await self.client.request(method, path, json=plain_body)
+            if response.status_code == 400 and "reply_markup" in plain_body:
+                plain_body.pop("reply_markup", None)
+                response = await self.client.request(method, path, json=plain_body)
         response.raise_for_status()
         payload = self._json_object(response)
         if payload.get("ok") is False:

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     devin_max_acu_limit: int = 3
     devin_poll_seconds: float = 3
     devin_watch_timeout_seconds: float = 1800
+    devin_settle_seconds: float = 30
     telegram_allowed_chat_ids: str = ""
     telegram_allowed_users: str = ""
     telegram_allow_all_users: bool = False

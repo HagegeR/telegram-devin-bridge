@@ -31,6 +31,7 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `DEVIN_MAX_ACU_LIMIT` | no | `3` |
 | `DEVIN_POLL_SECONDS` | no | `3` |
 | `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` |
+| `DEVIN_SETTLE_SECONDS` | no | `30` |
 | `TELEGRAM_ALLOWED_USERS` | no | empty |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | no | empty |
 | `TELEGRAM_ALLOW_ALL_USERS` | no | `false` |
@@ -69,11 +70,17 @@ The target is `chat_id`/`thread_id` in the request, the `/sethome` target, or
 
 ## Media, topics, and formatting
 
-Photos and documents up to Telegram's 20 MB download limit are uploaded to
-Devin and referenced in the user prompt. Devin replies are formatted as
+Photos, documents, voice messages, audio, video, and video notes up to
+Telegram's 20 MB download limit are uploaded to Devin and referenced in the
+user prompt. Telegram hidden `text_link` entities are expanded to
+`visible text (URL)` before the prompt is sent, including links following
+emoji. Devin replies are formatted as
 Telegram MarkdownV2, split at 4096 characters, and preserve fenced code
 blocks. A final `OPTIONS: one | two` line becomes inline buttons (up to eight
 options, each at most 60 characters).
+
+`DEVIN_SETTLE_SECONDS` keeps a newly started watcher alive while Devin's API
+still reports a stale non-active status after the message is submitted.
 
 Forum topics use independent sessions only when Telegram marks the chat as a
 forum and supplies `message_thread_id`; ordinary DMs and groups use the chat

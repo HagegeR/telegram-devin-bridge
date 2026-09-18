@@ -197,12 +197,18 @@ async def _stop(
         conversation.session_id,
         f"__cmd:terminate:{conversation.session_id}",
     )
+    runtime.store.add_choice(
+        f"{choice_id}:cancel",
+        conversation.conv_key,
+        conversation.session_id,
+        "__cmd:cancel",
+    )
     await runtime.send_markup(
         message,
         "Terminate the active Devin session?",
         {"inline_keyboard": [[
             {"text": "Terminate", "callback_data": choice_id},
-            {"text": "Cancel", "callback_data": f"{choice_id}c"},
+            {"text": "Cancel", "callback_data": f"{choice_id}:cancel"},
         ]]},
     )
 

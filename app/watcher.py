@@ -80,6 +80,9 @@ class SessionWatcher:
                         disable_notification=True,
                     )
                     last_pr_url = state.pr_url
+                if state.status_enum in {"expired", "finished"}:
+                    await self._finish_reaction(expired=state.status_enum == "expired")
+                    return
                 active_statuses = {
                     "working",
                     "resumed",
@@ -87,12 +90,15 @@ class SessionWatcher:
                     "resume_requested_frontend",
                 }
                 if state.status_enum not in active_statuses:
-                    await self._finish_reaction(expired=state.status_enum == "expired")
-                    return
-                await self.telegram.send_chat_action(
-                    self.conversation.chat_id,
-                    thread_id=self.conversation.thread_id,
-                )
+                    settled = self.clock() - started_at >= self.settings.devin_settle_seconds
+                    if delivered or settled:
+                        await self._finish_reaction(expired=False)
+                        return
+                else:
+                    await self.telegram.send_chat_action(
+                        self.conversation.chat_id,
+                        thread_id=self.conversation.thread_id,
+                    )
                 await self.sleep(self.poll_seconds)
             if not delivered:
                 await self.telegram.send_message(
@@ -114,9 +120,8 @@ class SessionWatcher:
                 logger.exception("Failed to report watcher error")
 
     async def _deliver(self, message: DevinMessage, state: SessionState) -> None:
-        rendered, options = extract_options(
-            markdown_to_telegram_markdown_v2(message.message)
-        )
+        body, options = extract_options(message.message)
+        rendered = markdown_to_telegram_markdown_v2(body)
         parts = chunk(rendered)
         markup: dict[str, object] | None = None
         if options:
@@ -136,6 +141,7 @@ class SessionWatcher:
                 self.conversation.chat_id,
                 part,
                 thread_id=self.conversation.thread_id,
+                parse_mode="MarkdownV2",
                 reply_markup=markup if index == len(parts) - 1 else None,
                 disable_notification=(
                     self.settings.telegram_notification_mode == "important"

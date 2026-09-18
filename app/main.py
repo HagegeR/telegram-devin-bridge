@@ -102,9 +102,12 @@ class Bridge:
             self.settings.free_response_chats,
         ):
             return
-        text = _text(message.get("text")) or _text(message.get("caption")) or ""
-        if text.startswith("/"):
+        text = _expand_text_links(message, "text")
+        if not text:
+            text = _expand_text_links(message, "caption") or ""
+        if chat.get("type") in {"group", "supergroup"}:
             text = strip_bot_mention(text, self.bot_username)
+        if text.startswith("/"):
             await handle_command(self, message, text)
             return
         await self.handle_user_turn(message, text)
@@ -234,12 +237,6 @@ class Bridge:
             return
         data = _text(callback.get("data")) or ""
         choice = self.store.get_choice(data)
-        if choice is None and data.endswith("c"):
-            choice = self.store.get_choice(data[:-1])
-            if choice is not None:
-                self.store.delete_choices(choice[0])
-                await self.telegram.answer_callback_query(callback_id, "Cancelled")
-                return
         if choice is None:
             await self.telegram.answer_callback_query(callback_id, "This choice expired")
             return
@@ -252,6 +249,8 @@ class Bridge:
             await self.devin.terminate(option.removeprefix("__cmd:terminate:"))
             self.store.clear_conversation(conv_key)
             updated = "Session terminated."
+        elif option == "__cmd:cancel":
+            updated = "Cancelled."
         else:
             await self.devin.send_message(session_id, option)
             updated = f"✅ {option}"
@@ -366,14 +365,24 @@ class Bridge:
         if isinstance(photos, list) and photos:
             largest = _mapping(photos[-1])
             file_id = _text(largest.get("file_id"))
-        document = _mapping(message.get("document"))
-        if document:
-            size = document.get("file_size")
+        attachment_fields = (
+            ("document", "document", "application/octet-stream"),
+            ("voice", "voice.ogg", "audio/ogg"),
+            ("audio", "audio.mp3", "audio/mpeg"),
+            ("video", "video.mp4", "video/mp4"),
+            ("video_note", "video_note.mp4", "video/mp4"),
+        )
+        for field, default_name, default_type in attachment_fields:
+            candidate = _mapping(message.get(field))
+            if not candidate:
+                continue
+            size = candidate.get("file_size")
             if isinstance(size, int) and size > 20 * 1024 * 1024:
-                raise ValueError("Telegram documents are limited to 20 MB")
-            file_id = _text(document.get("file_id"))
-            filename = _text(document.get("file_name")) or "document"
-            content_type = _text(document.get("mime_type")) or "application/octet-stream"
+                raise ValueError("Telegram attachments are limited to 20 MB")
+            file_id = _text(candidate.get("file_id"))
+            filename = _text(candidate.get("file_name")) or default_name
+            content_type = _text(candidate.get("mime_type")) or default_type
+            break
         if file_id is None:
             return None
         file_path = await self.telegram.get_file(file_id)
@@ -442,6 +451,49 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 def _text(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _expand_text_links(
+    message: Mapping[str, object],
+    field: str,
+) -> str | None:
+    text = _text(message.get(field))
+    if text is None:
+        return None
+    entities = message.get("entities" if field == "text" else "caption_entities")
+    if not isinstance(entities, list):
+        return text
+    raw_text = text.encode("utf-16-le")
+    links: list[tuple[int, int, str]] = []
+    for entity_value in entities:
+        entity = _mapping(entity_value)
+        if entity.get("type") != "text_link":
+            continue
+        url = _text(entity.get("url"))
+        offset = entity.get("offset")
+        length = entity.get("length")
+        if (
+            url is None
+            or not isinstance(offset, int)
+            or not isinstance(length, int)
+            or offset < 0
+            or length <= 0
+        ):
+            continue
+        start = offset * 2
+        end = (offset + length) * 2
+        if end > len(raw_text):
+            continue
+        try:
+            start_index = len(raw_text[:start].decode("utf-16-le"))
+            end_index = len(raw_text[:end].decode("utf-16-le"))
+        except UnicodeDecodeError:
+            continue
+        links.append((start_index, end_index, url))
+    expanded = text
+    for start, end, url in sorted(links, reverse=True):
+        expanded = f"{expanded[:end]} ({url}){expanded[end:]}"
+    return expanded
 
 
 def _int(value: object) -> int:
