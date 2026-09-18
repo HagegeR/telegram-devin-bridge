@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.store import Store
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 settings = get_settings()
 store = Store(settings.database_path)
@@ -61,6 +62,7 @@ async def telegram_webhook(
     if settings.allowed_chat_ids and chat_id not in settings.allowed_chat_ids:
         logger.warning("Rejected Telegram message from unauthorized chat %s", chat_id)
         return {"accepted": True}
+    logger.info("Accepted Telegram message from chat %s", chat_id)
 
     background_tasks.add_task(process_message, chat_id, text)
 

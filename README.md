@@ -52,7 +52,7 @@ The deployment must expose HTTPS and route the configured public URL to port 800
 | `DEVIN_API_BASE_URL` | no | `https://api.devin.ai` |
 | `DEVIN_MAX_ACU_LIMIT` | no | `3` |
 | `DEVIN_POLL_SECONDS` | no | `2` |
-| `DEVIN_REPLY_TIMEOUT_SECONDS` | no | `90` |
+| `DEVIN_REPLY_TIMEOUT_SECONDS` | no | `180` |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | no | empty (allow all chats) |
 
 For production, set `TELEGRAM_ALLOWED_CHAT_IDS` to a comma-separated list of Telegram chat IDs so the bot cannot be used by unintended users.

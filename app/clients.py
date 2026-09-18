@@ -4,6 +4,8 @@ from collections.abc import Iterable
 
 import httpx
 
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+
 
 class DevinClient:
     def __init__(
@@ -68,7 +70,7 @@ class DevinClient:
         candidates = [
             message
             for message in messages
-            if message.get("type") in {"assistant", "devin"}
+            if message.get("type") == "devin_message"
             and isinstance(message.get("event_id"), str)
             and isinstance(message.get("message"), str)
             and message["event_id"] != previous_message_id
@@ -100,11 +102,12 @@ class TelegramClient:
             raise RuntimeError(response.text)
 
     async def send_message(self, chat_id: int, text: str) -> None:
-        response = await self.client.post(
-            "/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-        )
-        response.raise_for_status()
+        for start in range(0, max(len(text), 1), TELEGRAM_MAX_MESSAGE_LENGTH):
+            response = await self.client.post(
+                "/sendMessage",
+                json={"chat_id": chat_id, "text": text[start : start + TELEGRAM_MAX_MESSAGE_LENGTH]},
+            )
+            response.raise_for_status()
 
     async def close(self) -> None:
         await self.client.aclose()

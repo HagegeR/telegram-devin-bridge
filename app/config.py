@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     devin_api_base_url: str = "https://api.devin.ai"
     devin_max_acu_limit: int = 3
     devin_poll_seconds: float = 2
-    devin_reply_timeout_seconds: float = 90
+    devin_reply_timeout_seconds: float = 180
     telegram_allowed_chat_ids: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
