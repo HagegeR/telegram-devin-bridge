@@ -295,11 +295,26 @@ class TelegramClient:
         return file_path
 
     async def download_file(self, file_path: str) -> bytes:
-        response = await self.client.get(
-            f"{self._file_base_url}/{file_path.lstrip('/')}"
-        )
-        response.raise_for_status()
-        return response.content
+        limit = 20 * 1024 * 1024
+        async with self.client.stream(
+            "GET",
+            f"{self._file_base_url}/{file_path.lstrip('/')}",
+        ) as response:
+            response.raise_for_status()
+            content_length = response.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    length = int(content_length)
+                except ValueError:
+                    length = 0
+                if length > limit:
+                    raise ValueError("Telegram attachments are limited to 20 MB")
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                content.extend(chunk)
+                if len(content) > limit:
+                    raise ValueError("Telegram attachments are limited to 20 MB")
+            return bytes(content)
 
     async def get_me(self) -> str:
         payload = await self._request("GET", "/getMe", None, None)

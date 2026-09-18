@@ -37,7 +37,8 @@ def should_respond_in_group(
         return True
     reply = _mapping(message.get("reply_to_message"))
     reply_sender = _mapping(reply.get("from"))
-    if bool(reply_sender.get("is_bot")):
+    reply_username = _text(reply_sender.get("username"))
+    if reply_username is not None and reply_username.casefold() == bot_username.casefold():
         return True
     text = _text(message.get("text")) or _text(message.get("caption")) or ""
     return f"@{bot_username.lower()}" in text.lower()

@@ -42,6 +42,19 @@ class CommandRuntime(Protocol):
 
     async def start_watcher(self, conversation: Conversation) -> None: ...
 
+    async def replace_conversation(
+        self,
+        *,
+        conv_key: str,
+        chat_id: int,
+        thread_id: int | None,
+        session_id: str,
+        session_url: str,
+        title: str,
+        last_event_id: str | None = None,
+        last_user_text: str | None = None,
+    ) -> Conversation: ...
+
     async def get_session_status(self, session_id: str) -> str: ...
 
     async def get_state(self, session_id: str) -> SessionState: ...
@@ -95,13 +108,16 @@ async def handle_command(
         if conversation is None:
             await runtime.send_text(message, "No active session.")
         else:
-            status = await runtime.get_session_status(conversation.session_id)
+            state = await runtime.get_state(conversation.session_id)
+            status = state.status_enum
+            pr_line = f"\nPR: {state.pr_url}" if state.pr_url else ""
             await runtime.send_text(
                 message,
                 (
                     f"{conversation.title}\n"
                     f"Status: {status}\n"
                     f"Session: {conversation.session_url}"
+                    f"{pr_line}"
                 ),
             )
     elif command == "stop":
@@ -112,6 +128,11 @@ async def handle_command(
         if conversation is None or not conversation.last_user_text:
             await runtime.send_text(message, "Nothing to retry.")
         else:
+            runtime.store.update_conversation(
+                conversation.conv_key,
+                conversation.session_id,
+                last_user_text=conversation.last_user_text,
+            )
             await runtime.send_session_message(
                 conversation.session_id,
                 conversation.last_user_text,
@@ -139,7 +160,10 @@ async def _sessions(
         return
     rows: list[str] = []
     for index, entry in enumerate(history, start=1):
-        status = await runtime.get_session_status(entry.session_id)
+        try:
+            status = await runtime.get_session_status(entry.session_id)
+        except Exception:  # noqa: BLE001
+            status = "unknown"
         marker = "*" if conversation is not None and entry.session_id == conversation.session_id else " "
         rows.append(f"{marker}{index}. {entry.title} — {status}")
     await runtime.send_text(message, "\n".join(rows))
@@ -170,7 +194,7 @@ async def _resume(
         ),
         None,
     )
-    runtime.store.save_conversation(
+    await runtime.replace_conversation(
         conv_key=entry.conv_key,
         chat_id=_int(_mapping(message.get("chat")).get("id")),
         thread_id=_thread_id(message),
@@ -195,12 +219,14 @@ async def _stop(
         choice_id,
         conversation.conv_key,
         conversation.session_id,
+        conversation.chat_id,
         f"__cmd:terminate:{conversation.session_id}",
     )
     runtime.store.add_choice(
         f"{choice_id}:cancel",
         conversation.conv_key,
         conversation.session_id,
+        conversation.chat_id,
         "__cmd:cancel",
     )
     await runtime.send_markup(

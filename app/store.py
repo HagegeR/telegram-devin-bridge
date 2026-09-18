@@ -18,6 +18,7 @@ class Conversation:
     last_event_id: str | None
     created_at: float
     last_user_text: str | None
+    last_pr_url: str | None
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,8 @@ class Store:
                     title TEXT NOT NULL,
                     last_event_id TEXT,
                     created_at REAL NOT NULL,
-                    last_user_text TEXT
+                    last_user_text TEXT,
+                    last_pr_url TEXT
                 );
                 CREATE TABLE IF NOT EXISTS session_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +82,7 @@ class Store:
                     choice_id TEXT PRIMARY KEY,
                     conv_key TEXT NOT NULL,
                     session_id TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
                     option_text TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
@@ -98,6 +101,20 @@ class Store:
             if "last_user_text" not in columns:
                 self.connection.execute(
                     "ALTER TABLE conversations ADD COLUMN last_user_text TEXT"
+                )
+            if "last_pr_url" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN last_pr_url TEXT"
+                )
+            choice_columns = {
+                str(row["name"])
+                for row in self.connection.execute(
+                    "PRAGMA table_info(pending_choices)"
+                )
+            }
+            if "chat_id" not in choice_columns:
+                self.connection.execute(
+                    "ALTER TABLE pending_choices ADD COLUMN chat_id INTEGER"
                 )
             legacy_table = self.connection.execute(
                 """
@@ -185,16 +202,21 @@ class Store:
         title: str,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_pr_url: str | None = None,
         created_at: float | None = None,
     ) -> None:
         timestamp = time.time() if created_at is None else created_at
         with self.lock, self.connection:
             self.connection.execute(
+                "DELETE FROM pending_choices WHERE conv_key = ?",
+                (conv_key,),
+            )
+            self.connection.execute(
                 """
                 INSERT INTO conversations(
                     conv_key, chat_id, thread_id, session_id, session_url,
-                    title, last_event_id, created_at, last_user_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    title, last_event_id, created_at, last_user_text, last_pr_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(conv_key) DO UPDATE SET
                     chat_id = excluded.chat_id,
                     thread_id = excluded.thread_id,
@@ -202,7 +224,8 @@ class Store:
                     session_url = excluded.session_url,
                     title = excluded.title,
                     last_event_id = excluded.last_event_id,
-                    last_user_text = excluded.last_user_text
+                    last_user_text = excluded.last_user_text,
+                    last_pr_url = excluded.last_pr_url
                 """,
                 (
                     conv_key,
@@ -214,15 +237,18 @@ class Store:
                     last_event_id,
                     timestamp,
                     last_user_text,
+                    last_pr_url,
                 ),
             )
 
     def update_conversation(
         self,
         conv_key: str,
+        session_id: str,
         *,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_pr_url: str | None = None,
     ) -> None:
         assignments: list[str] = []
         values: list[str | None] = []
@@ -232,20 +258,24 @@ class Store:
         if last_user_text is not None:
             assignments.append("last_user_text = ?")
             values.append(last_user_text)
+        if last_pr_url is not None:
+            assignments.append("last_pr_url = ?")
+            values.append(last_pr_url)
         if not assignments:
             return
-        values.append(conv_key)
+        values.extend((conv_key, session_id))
         with self.lock, self.connection:
             self.connection.execute(
-                f"UPDATE conversations SET {', '.join(assignments)} WHERE conv_key = ?",
+                f"UPDATE conversations SET {', '.join(assignments)} "
+                "WHERE conv_key = ? AND session_id = ?",
                 values,
             )
 
-    def clear_conversation(self, conv_key: str) -> None:
+    def clear_conversation(self, conv_key: str, session_id: str) -> None:
         with self.lock, self.connection:
             self.connection.execute(
-                "DELETE FROM conversations WHERE conv_key = ?",
-                (conv_key,),
+                "DELETE FROM conversations WHERE conv_key = ? AND session_id = ?",
+                (conv_key, session_id),
             )
 
     def add_history(
@@ -314,30 +344,39 @@ class Store:
         choice_id: str,
         conv_key: str,
         session_id: str,
+        chat_id: int,
         option_text: str,
     ) -> None:
         with self.lock, self.connection:
             self.connection.execute(
                 """
                 INSERT OR REPLACE INTO pending_choices(
-                    choice_id, conv_key, session_id, option_text, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    choice_id, conv_key, session_id, chat_id, option_text, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (choice_id, conv_key, session_id, option_text, time.time()),
+                (choice_id, conv_key, session_id, chat_id, option_text, time.time()),
             )
 
-    def get_choice(self, choice_id: str) -> tuple[str, str, str] | None:
+    def get_choice(self, choice_id: str) -> tuple[str, str, int, str] | None:
         with self.lock:
             row = self.connection.execute(
                 """
-                SELECT conv_key, session_id, option_text
+                SELECT conv_key, session_id, chat_id, option_text
                 FROM pending_choices WHERE choice_id = ?
                 """,
                 (choice_id,),
             ).fetchone()
         if row is None:
             return None
-        return str(row["conv_key"]), str(row["session_id"]), str(row["option_text"])
+        chat_id = row["chat_id"]
+        if not isinstance(chat_id, int):
+            return None
+        return (
+            str(row["conv_key"]),
+            str(row["session_id"]),
+            chat_id,
+            str(row["option_text"]),
+        )
 
     def delete_choices(self, conv_key: str) -> None:
         with self.lock, self.connection:
@@ -381,5 +420,8 @@ class Store:
             created_at=float(row["created_at"]),
             last_user_text=(
                 None if row["last_user_text"] is None else str(row["last_user_text"])
+            ),
+            last_pr_url=(
+                None if row["last_pr_url"] is None else str(row["last_pr_url"])
             ),
         )

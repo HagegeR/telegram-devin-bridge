@@ -49,7 +49,7 @@ class SessionWatcher:
         started_at = self.clock()
         wall_started_at = time.time()
         delivered = False
-        last_pr_url: str | None = None
+        last_pr_url = self.conversation.last_pr_url
         last_event_id = self.conversation.last_event_id
         try:
             while self.clock() - started_at < self.settings.devin_watch_timeout_seconds:
@@ -69,6 +69,7 @@ class SessionWatcher:
                         )
                         self.store.update_conversation(
                             self.conversation.conv_key,
+                            self.conversation.session_id,
                             last_event_id=message.event_id,
                         )
                     delivered = True
@@ -80,6 +81,11 @@ class SessionWatcher:
                         disable_notification=True,
                     )
                     last_pr_url = state.pr_url
+                    self.store.update_conversation(
+                        self.conversation.conv_key,
+                        self.conversation.session_id,
+                        last_pr_url=state.pr_url,
+                    )
                 if state.status_enum in {"expired", "finished"}:
                     await self._finish_reaction(expired=state.status_enum == "expired")
                     return
@@ -121,6 +127,8 @@ class SessionWatcher:
 
     async def _deliver(self, message: DevinMessage, state: SessionState) -> None:
         body, options = extract_options(message.message)
+        if not body and options:
+            body = "Choose an option:"
         rendered = markdown_to_telegram_markdown_v2(body)
         parts = chunk(rendered)
         markup: dict[str, object] | None = None
@@ -132,6 +140,7 @@ class SessionWatcher:
                     choice_id,
                     self.conversation.conv_key,
                     self.conversation.session_id,
+                    self.conversation.chat_id,
                     option,
                 )
                 buttons.append([{"text": option, "callback_data": choice_id}])

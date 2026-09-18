@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import cast
 
@@ -39,6 +39,8 @@ class Bridge:
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.watchers: dict[str, asyncio.Task[None]] = {}
+        self.locks: dict[str, asyncio.Lock] = {}
+        self.lock_refs: dict[str, int] = {}
         self.background_tasks: set[asyncio.Task[None]] = set()
         self.denied_notices: set[tuple[int, int]] = set()
 
@@ -78,8 +80,9 @@ class Bridge:
             )
             if message:
                 await self.handle_message(message)
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to process Telegram update")
+            await self._report_processing_failure(update, exc)
 
     async def handle_message(self, message: Mapping[str, object]) -> None:
         sender = _mapping(message.get("from"))
@@ -108,34 +111,60 @@ class Bridge:
         if chat.get("type") in {"group", "supergroup"}:
             text = strip_bot_mention(text, self.bot_username)
         if text.startswith("/"):
-            await handle_command(self, message, text)
+            command = _command_name(text)
+            if command in {"new", "resume", "retry", "stop", "playbook"}:
+                async with self._lock(self._conversation_key(message)):
+                    await handle_command(self, message, text)
+            else:
+                await handle_command(self, message, text)
             return
-        await self.handle_user_turn(message, text)
+        attachment = await self._attachment(message)
+        if not text and attachment is None:
+            await self.telegram.send_message(
+                chat_id,
+                "Unsupported message type; send text, a photo, a document, or a voice note.",
+                thread_id=_thread_id(message),
+            )
+            return
+        await self.handle_user_turn(message, text, attachment=attachment)
 
     async def handle_user_turn(
         self,
         message: Mapping[str, object],
         text: str,
+        *,
+        attachment: tuple[str, bytes, str] | None = None,
+    ) -> None:
+        conv_key = self._conversation_key(message)
+        async with self._lock(conv_key):
+            await self._handle_user_turn_locked(message, text, attachment)
+
+    async def _handle_user_turn_locked(
+        self,
+        message: Mapping[str, object],
+        text: str,
+        attachment: tuple[str, bytes, str] | None,
     ) -> None:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
         thread_id = _thread_id(message)
-        conv_key = Store.conv_key(
-            chat_id,
-            thread_id,
-            is_forum=bool(chat.get("is_forum")),
-        )
+        conv_key = self._conversation_key(message)
         message_id = _int(message.get("message_id"))
+        conversation = self.store.get_conversation(conv_key)
+        if conversation is not None:
+            self.store.update_conversation(
+                conv_key,
+                conversation.session_id,
+                last_user_text=text,
+            )
         await self.telegram.set_message_reaction(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
-        attachment = await self._attachment(message)
         if attachment is not None:
             filename, content, content_type = attachment
             url = await self.devin.upload_attachment(filename, content, content_type)
             text = f"{text}\n\nAttached file: {url} ({filename})".strip()
         if not text:
             text = "Please inspect the attached file."
-        conversation = self.store.get_conversation(conv_key)
         if conversation is None or await self._is_finished(conversation.session_id):
             title = f"Telegram: {text[:60]}"
             conversation = await self.create_session_for_message(
@@ -146,6 +175,11 @@ class Bridge:
                 start_watcher=False,
             )
         else:
+            self.store.update_conversation(
+                conv_key,
+                conversation.session_id,
+                last_user_text=text,
+            )
             await self.send_session_message(conversation.session_id, text)
             conversation = self.store.get_conversation(conv_key) or conversation
         await self.start_watcher(conversation, trigger_message_id=message_id)
@@ -173,7 +207,7 @@ class Bridge:
             title,
             playbook_id,
         )
-        self.store.save_conversation(
+        conversation = await self.replace_conversation(
             conv_key=conv_key,
             chat_id=chat_id,
             thread_id=thread_id,
@@ -189,14 +223,44 @@ class Bridge:
             title=title,
         )
         await self.send_text(message, f"Started session: {session_url}", silent=True)
-        conversation = self.store.get_conversation(conv_key)
-        if conversation is None:
-            raise RuntimeError("Conversation was not saved")
         if start_watcher:
             await self.start_watcher(
                 conversation,
                 trigger_message_id=_int(message.get("message_id")),
             )
+        return conversation
+
+    async def replace_conversation(
+        self,
+        *,
+        conv_key: str,
+        chat_id: int,
+        thread_id: int | None,
+        session_id: str,
+        session_url: str,
+        title: str,
+        last_event_id: str | None = None,
+        last_user_text: str | None = None,
+    ) -> Conversation:
+        previous = self.store.get_conversation(conv_key)
+        if previous is not None and previous.session_id != session_id:
+            task = self.watchers.pop(previous.session_id, None)
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.store.save_conversation(
+            conv_key=conv_key,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            session_id=session_id,
+            session_url=session_url,
+            title=title,
+            last_event_id=last_event_id,
+            last_user_text=last_user_text,
+        )
+        conversation = self.store.get_conversation(conv_key)
+        if conversation is None:
+            raise RuntimeError("Conversation was not saved")
         return conversation
 
     async def start_watcher(
@@ -235,34 +299,57 @@ class Bridge:
         if not is_allowed(authorization_message, self.settings):
             await self.telegram.answer_callback_query(callback_id, "This bot is private.")
             return
-        data = _text(callback.get("data")) or ""
-        choice = self.store.get_choice(data)
-        if choice is None:
-            await self.telegram.answer_callback_query(callback_id, "This choice expired")
-            return
-        conv_key, session_id, option = choice
         chat = _mapping(callback_message.get("chat"))
         chat_id = _int(chat.get("id"))
         callback_message_id = _int(callback_message.get("message_id"))
-        self.store.delete_choices(conv_key)
-        if option.startswith("__cmd:terminate:"):
-            await self.devin.terminate(option.removeprefix("__cmd:terminate:"))
-            self.store.clear_conversation(conv_key)
-            updated = "Session terminated."
-        elif option == "__cmd:cancel":
-            updated = "Cancelled."
-        else:
-            await self.devin.send_message(session_id, option)
-            updated = f"✅ {option}"
-        if callback_message_id:
-            try:
-                await self.telegram.edit_message_text(chat_id, callback_message_id, updated)
-            except (httpx.HTTPError, RuntimeError):
-                await self.telegram.edit_message_reply_markup(chat_id, callback_message_id)
-        await self.telegram.answer_callback_query(callback_id)
-        conversation = self.store.get_conversation(conv_key)
-        if conversation is not None:
-            await self.start_watcher(conversation)
+        conv_key = self._conversation_key(callback_message)
+        async with self._lock(conv_key):
+            data = _text(callback.get("data")) or ""
+            choice = self.store.get_choice(data)
+            if choice is None:
+                await self.telegram.answer_callback_query(callback_id, "This choice expired")
+                return
+            stored_conv_key, session_id, stored_chat_id, option = choice
+            active = self.store.get_conversation(conv_key)
+            if (
+                stored_conv_key != conv_key
+                or stored_chat_id != chat_id
+                or active is None
+                or active.session_id != session_id
+            ):
+                await self.telegram.answer_callback_query(callback_id, "This choice expired")
+                return
+            self.store.delete_choices(conv_key)
+            if option.startswith("__cmd:terminate:"):
+                await self.devin.terminate(option.removeprefix("__cmd:terminate:"))
+                self.store.clear_conversation(conv_key, session_id)
+                updated = "Session terminated."
+                active = None
+            elif option == "__cmd:cancel":
+                updated = "Cancelled."
+            else:
+                self.store.update_conversation(
+                    conv_key,
+                    session_id,
+                    last_user_text=option,
+                )
+                await self.devin.send_message(session_id, option)
+                updated = f"✅ {option}"
+            if callback_message_id:
+                try:
+                    await self.telegram.edit_message_text(
+                        chat_id,
+                        callback_message_id,
+                        updated,
+                    )
+                except (httpx.HTTPError, RuntimeError):
+                    await self.telegram.edit_message_reply_markup(
+                        chat_id,
+                        callback_message_id,
+                    )
+            await self.telegram.answer_callback_query(callback_id)
+            if active is not None:
+                await self.start_watcher(active)
 
     async def send_text(
         self,
@@ -354,6 +441,60 @@ class Bridge:
             "finished",
         }
 
+    @asynccontextmanager
+    async def _lock(self, conv_key: str) -> AsyncIterator[None]:
+        lock = self.locks.get(conv_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.locks[conv_key] = lock
+            self.lock_refs[conv_key] = 0
+        self.lock_refs[conv_key] += 1
+        await lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
+            self.lock_refs[conv_key] -= 1
+            if self.lock_refs[conv_key] == 0:
+                self.lock_refs.pop(conv_key, None)
+                self.locks.pop(conv_key, None)
+
+    def _conversation_key(self, message: Mapping[str, object]) -> str:
+        chat = _mapping(message.get("chat"))
+        return Store.conv_key(
+            _int(chat.get("id")),
+            _thread_id(message),
+            is_forum=bool(chat.get("is_forum")),
+        )
+
+    async def _report_processing_failure(
+        self,
+        update: Mapping[str, object],
+        exc: Exception,
+    ) -> None:
+        callback = _mapping(update.get("callback_query"))
+        message = _mapping(update.get("message")) or _mapping(
+            update.get("channel_post")
+        )
+        if not message and callback:
+            message = _mapping(callback.get("message"))
+        chat = _mapping(message.get("chat"))
+        chat_id = _int(chat.get("id"))
+        if not chat_id:
+            return
+        reason = _short_reason(exc)
+        try:
+            await self.telegram.send_message(
+                chat_id,
+                f"Couldn't process that message: {reason}. Use /retry.",
+                thread_id=_thread_id(message),
+            )
+            message_id = _int(message.get("message_id"))
+            if message_id:
+                await self.telegram.set_message_reaction(chat_id, message_id, "👎")
+        except Exception:
+            logger.exception("Failed to report update processing error")
+
     async def _attachment(
         self,
         message: Mapping[str, object],
@@ -364,6 +505,9 @@ class Bridge:
         content_type = "image/jpeg"
         if isinstance(photos, list) and photos:
             largest = _mapping(photos[-1])
+            size = largest.get("file_size")
+            if isinstance(size, int) and size > 20 * 1024 * 1024:
+                raise ValueError("Telegram attachments are limited to 20 MB")
             file_id = _text(largest.get("file_id"))
         attachment_fields = (
             ("document", "document", "application/octet-stream"),
@@ -503,3 +647,13 @@ def _int(value: object) -> int:
 def _thread_id(message: Mapping[str, object]) -> int | None:
     value = message.get("message_thread_id")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _command_name(text: str) -> str:
+    first = text.split(maxsplit=1)[0]
+    return first[1:].split("@", 1)[0].casefold().replace("_", "-")
+
+
+def _short_reason(exc: Exception) -> str:
+    text = str(exc).strip().replace("\n", " ")
+    return text[:120] or "temporary error"
