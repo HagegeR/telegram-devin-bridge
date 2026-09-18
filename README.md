@@ -1,44 +1,22 @@
 # Telegram–Devin Bridge
 
-A small FastAPI service that forwards private Telegram chats to Devin sessions.
+A FastAPI bridge that forwards Telegram conversations to Devin v1 sessions.
+Each direct chat or forum topic has an active Devin session, with SQLite
+history for switching between sessions.
 
-## Architecture
-
-1. Telegram sends updates to `POST /telegram/webhook`.
-2. The bridge creates one Devin session per Telegram chat, then forwards later messages to it.
-3. The bridge polls the Devin session for a new assistant message and sends it back to Telegram.
-
-The bridge stores only the Telegram chat ID, Devin session ID, and the last delivered Devin message ID in SQLite. Credentials are read from environment variables and are never written to the database.
-
-## Requirements
-
-- Python 3.11+
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
-- A Devin API key
-- A public HTTPS URL for the deployed service
-
-## Local setup
+## Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-```
-
-Set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `DEVIN_API_KEY`, and `PUBLIC_BASE_URL` in `.env`, then run:
-
-```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Register the webhook:
-
-```bash
 python -m app.set_webhook
 ```
 
-The deployment must expose HTTPS and route the configured public URL to port 8000.
+The deployment must expose HTTPS and route the configured public URL to port
+8000. `GET /health` returns `{"status":"ok"}` without configuration values.
 
 ## Configuration
 
@@ -51,20 +29,69 @@ The deployment must expose HTTPS and route the configured public URL to port 800
 | `DATABASE_PATH` | no | `./bridge.sqlite3` |
 | `DEVIN_API_BASE_URL` | no | `https://api.devin.ai` |
 | `DEVIN_MAX_ACU_LIMIT` | no | `3` |
-| `DEVIN_POLL_SECONDS` | no | `2` |
-| `DEVIN_REPLY_TIMEOUT_SECONDS` | no | `180` |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | no | empty (allow all chats) |
+| `DEVIN_POLL_SECONDS` | no | `3` |
+| `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` |
+| `TELEGRAM_ALLOWED_USERS` | no | empty |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | no | empty |
+| `TELEGRAM_ALLOW_ALL_USERS` | no | `false` |
+| `TELEGRAM_FREE_RESPONSE_CHATS` | no | empty |
+| `TELEGRAM_HOME_CHANNEL` | no | unset |
+| `TELEGRAM_NOTIFICATION_MODE` | no | `important` |
+| `NOTIFY_SECRET` | no | unset (`/notify` disabled) |
+| `BOT_USERNAME` | no | fetched from Telegram at startup |
 
-For production, set `TELEGRAM_ALLOWED_CHAT_IDS` to a comma-separated list of Telegram chat IDs so the bot cannot be used by unintended users.
+With allow-all disabled, an empty user/chat allowlist denies access and sends
+the requester their user ID once for onboarding. Group and supergroup messages
+must mention `@BOT_USERNAME`, reply to a bot message, or come from a
+`TELEGRAM_FREE_RESPONSE_CHATS` chat.
 
-## Safety notes
+## Commands
 
-- Do not commit `.env`.
+`/start`, `/help`, `/new [title]`, `/sessions`, `/resume <n>`, `/status`,
+`/stop`, `/playbook [n] [text]`, `/retry`, `/whoami`, and `/sethome` are
+available. `/new` creates a fresh active session without deleting history.
+`/stop` asks for inline confirmation. `/playbook` lists available Devin
+playbooks or starts one. `/retry` resends the last user message.
+
+## Notifications
+
+When `NOTIFY_SECRET` is set, send a notification with:
+
+```bash
+curl -X POST http://localhost:8000/notify \
+  -H 'Authorization: Bearer replace-with-notify-secret' \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Deployment finished","silent":true}'
+```
+
+The target is `chat_id`/`thread_id` in the request, the `/sethome` target, or
+`TELEGRAM_HOME_CHANNEL`. Notifications can set `markdown` to `false`.
+
+## Media, topics, and formatting
+
+Photos and documents up to Telegram's 20 MB download limit are uploaded to
+Devin and referenced in the user prompt. Devin replies are formatted as
+Telegram MarkdownV2, split at 4096 characters, and preserve fenced code
+blocks. A final `OPTIONS: one | two` line becomes inline buttons (up to eight
+options, each at most 60 characters).
+
+Forum topics use independent sessions only when Telegram marks the chat as a
+forum and supplies `message_thread_id`; ordinary DMs and groups use the chat
+ID. `message_thread_id` is preserved for replies and notifications.
+
+## Safety
+
+- Never commit `.env`, tokens, API keys, or real user/chat identifiers.
+- Keep the webhook behind HTTPS and use a random webhook secret.
 - Use a dedicated Devin API key with the smallest available scope.
-- Keep the Telegram webhook endpoint behind HTTPS.
-- Use a random webhook secret so arbitrary callers cannot enqueue Devin work.
-- Set `TELEGRAM_ALLOWED_CHAT_IDS` before sharing the bot.
 
-## Health check
+## `OPTIONS:` convention
 
-`GET /health` returns `{"status":"ok"}` without exposing configuration or credentials.
+Ask Devin to end a response with exactly one line such as:
+
+```text
+OPTIONS: Run it | Explain it | Cancel
+```
+
+The bridge removes that line from the message and renders one button per
+choice. The selected text is sent back to the same Devin session.
