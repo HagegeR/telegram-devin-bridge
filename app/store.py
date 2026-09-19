@@ -242,8 +242,8 @@ class Store:
                     title = excluded.title,
                     last_event_id = excluded.last_event_id,
                     last_user_text = excluded.last_user_text,
-                    last_pr_url = excluded.last_pr_url
-                    , updated_at = excluded.updated_at
+                    last_pr_url = excluded.last_pr_url,
+                    updated_at = excluded.updated_at
                 """,
                 (
                     conv_key,

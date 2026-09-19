@@ -213,7 +213,6 @@ class TelegramClient:
         *,
         thread_id: int | None = None,
         reply_to: int | None = None,
-        reply_to_message_id: int | None = None,
         parse_mode: str | None = None,
         reply_markup: dict[str, object] | None = None,
         disable_notification: bool = False,
@@ -227,10 +226,9 @@ class TelegramClient:
         }
         if thread_id is not None:
             body["message_thread_id"] = thread_id
-        anchor = reply_to_message_id if reply_to_message_id is not None else reply_to
-        if anchor is not None:
+        if reply_to is not None:
             body["reply_parameters"] = {
-                "message_id": anchor,
+                "message_id": reply_to,
                 "allow_sending_without_reply": True,
             }
         if parse_mode is not None:
@@ -315,7 +313,7 @@ class TelegramClient:
                     chat_id,
                     part,
                     thread_id=thread_id,
-                    reply_to_message_id=(
+                    reply_to=(
                         reply_to_message_id if index == 0 else None
                     ),
                     parse_mode="MarkdownV2",

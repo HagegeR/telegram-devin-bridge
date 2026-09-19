@@ -492,8 +492,12 @@ class Bridge:
                     )
             elif "🛑" in added:
                 await self.stop_conversation(conversation)
+                target = {"chat": chat, "from": user}
+                if conversation.thread_id is not None:
+                    target["message_thread_id"] = conversation.thread_id
+                    target["is_topic_message"] = True
                 await self.send_text(
-                    {"chat": chat, "from": user},
+                    target,
                     "Stopped session.",
                     silent=True,
                 )

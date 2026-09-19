@@ -1587,6 +1587,57 @@ async def test_watcher_status_and_cleanup(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_watcher_cleans_transient_status_messages(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    release_sleep = asyncio.Event()
+
+    class WorkingDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("working", "title", None, [])
+
+    async def sleep(_seconds: float) -> None:
+        await release_sleep.wait()
+
+    task = asyncio.create_task(
+        SessionWatcher(
+            conversation,
+            store,
+            WorkingDevin(),  # type: ignore[arg-type]
+            telegram,  # type: ignore[arg-type]
+            settings(
+                tmp_path,
+                devin_status_after_seconds=0,
+                devin_poll_seconds=5,
+            ),
+            transient_message_ids=[99],
+            sleep=sleep,
+        ).run()
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if telegram.sent:
+            break
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (222, 99) in telegram.deleted
+    assert any(message_id != 99 for _, message_id in telegram.deleted)
+
+
+@pytest.mark.asyncio
 async def test_watcher_private_draft_uses_status_text(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
@@ -1637,9 +1688,9 @@ async def test_watcher_private_draft_uses_status_text(tmp_path: Path) -> None:
 async def test_reaction_retry_stop_and_edited_message(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
-        conv_key="222",
+        conv_key="222:9",
         chat_id=222,
-        thread_id=None,
+        thread_id=9,
         session_id="s1",
         session_url="https://devin.test/s1",
         title="title",
@@ -1668,7 +1719,9 @@ async def test_reaction_retry_stop_and_edited_message(tmp_path: Path) -> None:
         }
     )
     assert devin.terminated == ["s1"]
-    assert any(item["text"] == "Stopped session." for item in telegram.sent)
+    stopped = [item for item in telegram.sent if item["text"] == "Stopped session."]
+    assert stopped
+    assert stopped[-1]["thread_id"] == 9
 
 
 @pytest.mark.asyncio

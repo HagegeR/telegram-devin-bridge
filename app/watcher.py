@@ -167,6 +167,9 @@ class SessionWatcher:
                 await self._finish_reaction(expired=True)
             except Exception:
                 logger.exception("Failed to report watcher error")
+        except asyncio.CancelledError:
+            await self._cleanup_transients()
+            raise
 
     async def _refresh_progress(
         self,
