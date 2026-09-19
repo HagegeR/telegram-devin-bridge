@@ -510,7 +510,11 @@ class TelegramClient:
         }
         if offset is not None:
             body["offset"] = offset
-        response = await self.client.post("/getUpdates", json=body)
+        response = await self.client.post(
+            "/getUpdates",
+            json=body,
+            timeout=timeout + 10,
+        )
         response.raise_for_status()
         payload = self._json_object(response)
         if payload.get("ok") is False:

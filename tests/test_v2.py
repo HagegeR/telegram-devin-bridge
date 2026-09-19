@@ -2096,6 +2096,21 @@ async def test_debounce_joins_fragments_and_uses_last_message(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_shutdown_flushes_pending_turns(tmp_path: Path) -> None:
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=10),
+        Store(":memory:"),
+        devin,
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    await runtime._queue_turn(message("pending"), "pending", None)
+    assert runtime.queued_count("222") == 1
+    await runtime.shutdown()
+    assert any("pending" in prompt for prompt in devin.created)
+
+
+@pytest.mark.asyncio
 async def test_second_attachment_flushes_previous_turn(tmp_path: Path) -> None:
     devin = _FakeDevin()
     runtime = Bridge(
@@ -2229,9 +2244,13 @@ def test_settings_validate_polling_mode(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_get_updates_accepts_list_result() -> None:
     requests: list[dict[str, object]] = []
+    timeouts: list[dict[str, int]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(cast(dict[str, object], json.loads(request.content)))
+        timeout = request.extensions["timeout"]
+        assert isinstance(timeout, dict)
+        timeouts.append(cast(dict[str, int], timeout))
         return httpx.Response(
             200,
             json={"ok": True, "result": [{"update_id": 4, "message": {}}]},
@@ -2245,6 +2264,7 @@ async def test_get_updates_accepts_list_result() -> None:
     updates = await telegram.get_updates(4, 50, ["message"])
     assert updates == [{"update_id": 4, "message": {}}]
     assert requests == [{"offset": 4, "timeout": 50, "allowed_updates": ["message"]}]
+    assert timeouts == [{"connect": 60, "read": 60, "write": 60, "pool": 60}]
     await telegram.close()
 
 
@@ -2341,6 +2361,34 @@ async def test_stop_cancel_keeps_queued_turns(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_confirmed_stop_clears_queued_turns(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
+    runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
+    await handle_command(runtime, message("/stop"), "/stop")
+    terminate_id = next(
+        choice_id
+        for choice_id, option in store.list_choices("222", 1)
+        if option.startswith("__cmd:terminate:")
+    )
+    await runtime.handle_callback({
+        "id": "terminate",
+        "data": terminate_id,
+        "from": {"id": 111},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
+    })
+    assert runtime.queued_count("222") == 0
+    assert store.get_conversation("222") is None
+    assert not devin.created
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_forum_reaction_resolves_document_message_index(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
@@ -2384,6 +2432,27 @@ async def test_long_text_token_survives_send_failure(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         await runtime._handle_long_text_callback("cb", callback_message, "222", "token")
     assert store.get_long_text("token") is not None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_long_text_token_consumed_when_markup_edit_fails(tmp_path: Path) -> None:
+    class MarkupFailTelegram(_FakeTelegram):
+        async def edit_message_reply_markup(
+            self,
+            _chat_id: int,
+            _message_id: int,
+            markup: dict[str, object] | None = None,
+        ) -> None:
+            raise RuntimeError("edit failed")
+
+    store = Store(":memory:")
+    store.add_long_text("token", "222", 222, "remaining text")
+    telegram = MarkupFailTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    callback_message = {"message_id": 4, "chat": {"id": 222, "type": "private"}}
+    await runtime._handle_long_text_callback("cb", callback_message, "222", "token")
+    assert store.get_long_text("token") is None
     await runtime.shutdown()
 
 
