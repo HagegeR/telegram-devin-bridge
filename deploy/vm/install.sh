@@ -97,6 +97,7 @@ else
 fi
 
 mkdir -p "$BRIDGE_HOME" "$DATA_DIR"
+rm -rf "$BRIDGE_HOME/app" "$BRIDGE_HOME/deploy" "$BRIDGE_HOME/tests"
 tar -C "$SOURCE_DIR" \
     --exclude='.git' \
     --exclude='.venv' \
