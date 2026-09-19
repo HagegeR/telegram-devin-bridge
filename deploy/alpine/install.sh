@@ -12,8 +12,10 @@ cp -R . /opt/telegram-devin-bridge
 cd /opt/telegram-devin-bridge
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env
-sed -i 's/^TELEGRAM_MODE=.*/TELEGRAM_MODE=polling/' .env
+if [ ! -f .env ]; then
+    cp .env.example .env
+    sed -i 's/^TELEGRAM_MODE=.*/TELEGRAM_MODE=polling/' .env
+fi
 chown -R telegram-devin:telegram-devin /opt/telegram-devin-bridge
 install -m 0755 deploy/alpine/telegram-devin-bridge.initd \
     /etc/init.d/telegram-devin-bridge
