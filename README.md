@@ -148,12 +148,69 @@ provides `message_thread_id` with either `chat.is_forum` or
 `message_thread_id` is preserved for replies and notifications.
 
 Polling mode calls `deleteWebhook` without dropping pending updates, then uses
-50-second Telegram long polling. The Alpine/OpenRC example in
-`deploy/alpine` runs `python -m app.poll`. Fly stores the SQLite database at
-`/data/bridge.sqlite3`; migrate it with:
+50-second Telegram long polling. The VM installer in `deploy/vm` runs
+`python -m app.poll` on Alpine (OpenRC) or any systemd Linux. Fly stores the
+SQLite database at `/data/bridge.sqlite3`; migrate it with:
 
 ```bash
 flyctl ssh sftp get /data/bridge.sqlite3
+```
+
+## VM deployment
+
+From a checked-out repository, install or upgrade the bridge with:
+
+```bash
+sh deploy/vm/install.sh
+```
+
+The installer detects `apk`, `apt-get`, `dnf`, `yum`, or `pacman`, creates the
+`telegram-devin` service account, installs the bridge under
+`/opt/telegram-devin-bridge`, and configures polling with the database at
+`/var/lib/telegram-devin-bridge/bridge.sqlite3`. It is safe to rerun: pull
+the new revision and run the same command to upgrade in place. Use
+`BRIDGE_HOME=/some/path` to choose another installation directory. Inspect
+the detected package manager, init system, and Python version without making
+changes:
+
+```bash
+sh deploy/vm/install.sh --dry-run
+```
+
+On Alpine/OpenRC:
+
+```bash
+rc-service telegram-devin-bridge status
+rc-service telegram-devin-bridge restart
+tail -f /var/log/telegram-devin-bridge.log
+tail -f /var/log/telegram-devin-bridge.err
+```
+
+On systemd Linux:
+
+```bash
+systemctl status telegram-devin-bridge
+systemctl restart telegram-devin-bridge
+journalctl -u telegram-devin-bridge -f
+```
+
+The installer creates `.env` from `.env.example` only when it does not exist,
+and preserves it during upgrades. Fill in `TELEGRAM_BOT_TOKEN`,
+`DEVIN_API_KEY`, and, when used, `DEVIN_SERVICE_USER_API_KEY`, `DEVIN_ORG_ID`,
+`TELEGRAM_ADMIN_USER_IDS`, `TELEGRAM_ALLOWED_USERS`,
+`TELEGRAM_ALLOWED_CHAT_IDS`, and `NOTIFY_SECRET`. Add any optional
+transcription or GitHub values needed by the deployment. `TELEGRAM_MODE` and
+`DATABASE_PATH` are set automatically for VM polling and should not contain
+real values in documentation.
+
+To migrate the SQLite database from Fly, download it and install it at the VM
+data path before starting the service:
+
+```bash
+flyctl ssh sftp get /data/bridge.sqlite3
+sudo install -o telegram-devin -g telegram-devin -m 0640 \
+  bridge.sqlite3 /var/lib/telegram-devin-bridge/bridge.sqlite3
+flyctl scale count 0
 ```
 
 ## Safety
