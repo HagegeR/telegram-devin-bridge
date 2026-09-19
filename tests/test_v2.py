@@ -1269,3 +1269,23 @@ async def test_whoami_group_send_includes_ephemeral_receiver(tmp_path: Path) -> 
     )
     assert telegram.sent[-1]["receiver_user_id"] == 111
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_devin_send_message_accepts_non_object_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/message"):
+            return httpx.Response(200, content=b"null")
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(200, json={})
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    await devin.send_message("devin-1", "hello")
+    await devin.terminate("devin-1")
+    await devin.close()
