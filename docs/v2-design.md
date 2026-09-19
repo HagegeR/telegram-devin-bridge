@@ -71,7 +71,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 
 ### Callback (`handle_callback`)
 - Authorization: same `is_allowed` on `callback_query.from`.
-- Look up `pending_choices[data]`; if missing -> `answer_callback_query("This choice expired")`. Else `send_message(session_id, option_text)`, delete the other choices for that conv, `edit_message_reply_markup` to remove buttons and append `\n\n✅ <option_text>` via `edit_message_text` (plain fallback), `answer_callback_query`, start watcher.
+- Look up `pending_choices[data]`. Wrong chat/conv -> `answer_callback_query("This choice expired")`. If the row exists and the session is still current -> `list_choices`, `delete_choices`, then `send_message(session_id, option_text)` for plain options (`edit_message_reply_markup` with the keyboard rebuilt as `disabled: {}` buttons and `✅` on the chosen one; `edit_message_text` for `__cmd:` results) or terminate/cancel handling, `answer_callback_query`, start watcher. If the row is missing or its session was superseded, recover the button label from the message's `reply_markup` (or use the stored `option_text`), rebuild the keyboard as disabled buttons when available (else `edit_message_text` `✅ <option>`), and forward it as a normal user turn — sending to the current session or creating a new one; `__cmd:` options and command-button labels (Terminate/Cancel) still expire.
 
 ### Commands (`commands.py`) – reply in the same conv/thread
 - `/start`, `/help` – list commands.

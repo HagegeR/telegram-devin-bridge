@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from typing import cast
 
@@ -16,7 +16,7 @@ from app.access import (
     should_respond_in_group,
     strip_bot_mention,
 )
-from app.commands import SYSTEM_PREAMBLE, handle_command
+from app.commands import COMMAND_BUTTON_LABELS, SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
 from app.formatting import chunk, markdown_to_telegram_markdown_v2
@@ -186,7 +186,8 @@ class Bridge:
                 conversation.session_id,
                 last_user_text=text,
             )
-        await self.telegram.set_message_reaction(chat_id, message_id, "👀")
+        if message_id:
+            await self.telegram.set_message_reaction(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
         if attachment is not None:
             filename, content, content_type = attachment
@@ -227,7 +228,10 @@ class Bridge:
             )
             await self.send_session_message(conversation.session_id, text)
             conversation = self.store.get_conversation(conv_key) or conversation
-        await self.start_watcher(conversation, trigger_message_id=message_id)
+        await self.start_watcher(
+            conversation,
+            trigger_message_id=message_id or None,
+        )
 
     async def create_session_for_message(
         self,
@@ -351,65 +355,86 @@ class Bridge:
         async with self._lock(conv_key):
             data = _text(callback.get("data")) or ""
             choice = self.store.get_choice(data)
-            if choice is None:
-                await self.telegram.answer_callback_query(callback_id, "This choice expired")
-                return
-            stored_conv_key, session_id, stored_chat_id, option = choice
             active = self.store.get_conversation(conv_key)
-            if (
-                stored_conv_key != conv_key
-                or stored_chat_id != chat_id
-                or active is None
-                or active.session_id != session_id
-            ):
-                await self.telegram.answer_callback_query(callback_id, "This choice expired")
-                return
-            choices = self.store.list_choices(conv_key)
-            self.store.delete_choices(conv_key)
-            plain_option = not option.startswith("__cmd:")
-            if option.startswith("__cmd:terminate:"):
-                await self.devin.terminate(option.removeprefix("__cmd:terminate:"))
-                self.store.clear_conversation(conv_key, session_id)
-                updated = "Session terminated."
-                active = None
-            elif option == "__cmd:cancel":
-                updated = "Cancelled."
+            option: str | None = None
+            if choice is not None:
+                stored_conv_key, session_id, stored_chat_id, option = choice
+                if stored_conv_key != conv_key or stored_chat_id != chat_id:
+                    await self.telegram.answer_callback_query(
+                        callback_id, "This choice expired"
+                    )
+                    return
+                if active is not None and active.session_id == session_id:
+                    choices = self.store.list_choices(conv_key)
+                    self.store.delete_choices(conv_key)
+                    plain_option = not option.startswith("__cmd:")
+                    if option.startswith("__cmd:terminate:"):
+                        await self.devin.terminate(
+                            option.removeprefix("__cmd:terminate:")
+                        )
+                        self.store.clear_conversation(conv_key, session_id)
+                        updated = "Session terminated."
+                        active = None
+                    elif option == "__cmd:cancel":
+                        updated = "Cancelled."
+                    else:
+                        self.store.update_conversation(
+                            conv_key,
+                            session_id,
+                            last_user_text=option,
+                        )
+                        await self.devin.send_message(session_id, option)
+                        updated = f"✅ {option}"
+                    if callback_message_id:
+                        try:
+                            if plain_option:
+                                await self.telegram.edit_message_reply_markup(
+                                    chat_id,
+                                    callback_message_id,
+                                    _disabled_keyboard(choices, data),
+                                )
+                            else:
+                                await self.telegram.edit_message_text(
+                                    chat_id,
+                                    callback_message_id,
+                                    updated,
+                                )
+                        except (httpx.HTTPError, RuntimeError):
+                            await self.telegram.edit_message_reply_markup(
+                                chat_id,
+                                callback_message_id,
+                            )
+                    await self.telegram.answer_callback_query(callback_id)
+                    if active is not None:
+                        await self.start_watcher(active)
+                    return
+                if option.startswith("__cmd:"):
+                    await self.telegram.answer_callback_query(
+                        callback_id, "This choice expired"
+                    )
+                    return
             else:
-                self.store.update_conversation(
-                    conv_key,
-                    session_id,
-                    last_user_text=option,
-                )
-                await self.devin.send_message(session_id, option)
-                updated = f"✅ {option}"
+                option = _callback_button_label(callback_message, data)
+                if option is None or option in COMMAND_BUTTON_LABELS:
+                    await self.telegram.answer_callback_query(
+                        callback_id, "This choice expired"
+                    )
+                    return
+            self.store.delete_choices(conv_key)
             if callback_message_id:
+                buttons = _reply_markup_buttons(callback_message)
                 try:
-                    if plain_option:
-                        markup = {
-                            "inline_keyboard": [
-                                [
-                                    {
-                                        "text": (
-                                            f"✅ {choice_option}"
-                                            if choice_id == data
-                                            else choice_option
-                                        ),
-                                        "disabled": {},
-                                    }
-                                ]
-                                for choice_id, choice_option in choices
-                            ]
-                        }
+                    if buttons:
                         await self.telegram.edit_message_reply_markup(
                             chat_id,
                             callback_message_id,
-                            markup,
+                            _disabled_keyboard(buttons, data),
                         )
                     else:
                         await self.telegram.edit_message_text(
                             chat_id,
                             callback_message_id,
-                            updated,
+                            f"✅ {option}",
                         )
                 except (httpx.HTTPError, RuntimeError):
                     await self.telegram.edit_message_reply_markup(
@@ -417,8 +442,14 @@ class Bridge:
                         callback_message_id,
                     )
             await self.telegram.answer_callback_query(callback_id)
-            if active is not None:
-                await self.start_watcher(active)
+            synthetic_message: dict[str, object] = {
+                "chat": callback_message.get("chat"),
+                "from": sender,
+            }
+            for key in ("message_thread_id", "is_topic_message"):
+                if key in callback_message:
+                    synthetic_message[key] = callback_message[key]
+            await self._handle_user_turn_locked(synthetic_message, option, None)
 
     async def send_text(
         self,
@@ -748,6 +779,51 @@ def _expand_text_links(
     for start, end, url in sorted(links, reverse=True):
         expanded = f"{expanded[:end]} ({url}){expanded[end:]}"
     return expanded
+
+
+def _reply_markup_buttons(
+    message: Mapping[str, object],
+) -> list[tuple[str | None, str]]:
+    keyboard = _mapping(message.get("reply_markup")).get("inline_keyboard")
+    buttons: list[tuple[str | None, str]] = []
+    if not isinstance(keyboard, list):
+        return buttons
+    for row in keyboard:
+        if not isinstance(row, list):
+            continue
+        for button in row:
+            candidate = _mapping(button)
+            label = _text(candidate.get("text"))
+            if label is not None:
+                buttons.append((_text(candidate.get("callback_data")), label))
+    return buttons
+
+
+def _callback_button_label(
+    message: Mapping[str, object],
+    data: str,
+) -> str | None:
+    for callback_data, label in _reply_markup_buttons(message):
+        if callback_data is not None and callback_data == data:
+            return label
+    return None
+
+
+def _disabled_keyboard(
+    buttons: Iterable[tuple[str | None, str]],
+    chosen: str,
+) -> dict[str, object]:
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": f"✅ {label}" if key == chosen else label,
+                    "disabled": {},
+                }
+            ]
+            for key, label in buttons
+        ]
+    }
 
 
 def _int(value: object) -> int:

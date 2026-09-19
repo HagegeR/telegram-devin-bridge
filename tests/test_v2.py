@@ -823,7 +823,8 @@ async def test_callback_rejects_wrong_chat_and_stale_session(tmp_path: Path) -> 
     store.add_choice("wrong-chat", "222", "s1", 222, "yes")
     store.add_choice("stale", "222", "s1", 222, "yes")
     telegram = _FakeTelegram()
-    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
     callback = {
         "id": "cb",
         "data": "wrong-chat",
@@ -835,7 +836,86 @@ async def test_callback_rejects_wrong_chat_and_stale_session(tmp_path: Path) -> 
     callback["data"] = "stale"
     callback["message"] = {"message_id": 4, "chat": {"id": 222, "type": "private"}}
     await runtime.handle_callback(callback)
-    assert telegram.answers == ["This choice expired", "This choice expired"]
+    assert telegram.answers == ["This choice expired"]
+    assert telegram.edits == ["✅ yes"]
+    assert devin.sent == [("s2", "yes")]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_callback_missing_choice_forwards_button_label(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "missing.sqlite3"))
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    callback = {
+        "id": "cb",
+        "data": "gone",
+        "from": {"id": 111},
+        "message": {
+            "message_id": 4,
+            "chat": {"id": 222, "type": "private"},
+            "reply_markup": {
+                "inline_keyboard": [
+                    [{"text": "Blue", "callback_data": "gone"}],
+                    [{"text": "Red", "callback_data": "other"}],
+                ]
+            },
+        },
+    }
+    await runtime.handle_callback(callback)
+    assert telegram.answers == []
+    assert telegram.edits == []
+    assert telegram.markup_edits[-1]["inline_keyboard"] == [
+        [{"text": "✅ Blue", "disabled": {}}],
+        [{"text": "Red", "disabled": {}}],
+    ]
+    assert devin.sent == [("s1", "Blue")]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_callback_missing_choice_rejects_command_label(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "cmdlabel.sqlite3"))
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    callback = {
+        "id": "cb",
+        "data": "old:cancel",
+        "from": {"id": 111},
+        "message": {
+            "message_id": 4,
+            "chat": {"id": 222, "type": "private"},
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "Terminate", "callback_data": "old"},
+                        {"text": "Cancel", "callback_data": "old:cancel"},
+                    ]
+                ]
+            },
+        },
+    }
+    await runtime.handle_callback(callback)
+    assert telegram.answers == ["This choice expired"]
+    assert devin.sent == []
     await runtime.shutdown()
 
 
