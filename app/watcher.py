@@ -5,7 +5,7 @@ import datetime
 import logging
 import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 
 import httpx
@@ -17,6 +17,13 @@ from app.store import Conversation, Store
 from app.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_STATUSES = frozenset({
+    "working",
+    "resumed",
+    "resume_requested",
+    "resume_requested_frontend",
+})
 
 
 class SessionWatcher:
@@ -71,12 +78,6 @@ class SessionWatcher:
         wall_started_at = time.time()
         last_pr_url = self.conversation.last_pr_url
         last_event_id = self.conversation.last_event_id
-        active_statuses = {
-            "working",
-            "resumed",
-            "resume_requested",
-            "resume_requested_frontend",
-        }
         interval = min(
             max(self.settings.devin_poll_fast_seconds, 0.5),
             self.poll_seconds,
@@ -156,7 +157,7 @@ class SessionWatcher:
                     await self._cleanup_transients()
                     await self._finish_reaction(expired=state.status_enum == "expired")
                     return
-                if state.status_enum not in active_statuses:
+                if state.status_enum not in ACTIVE_STATUSES:
                     settled = (
                         self.clock() - self.started_at
                         >= self.settings.devin_settle_seconds
@@ -345,23 +346,25 @@ class SessionWatcher:
             markup = {"inline_keyboard": buttons}
         body, documents = extract_large_code_blocks(body)
         for index, (filename, content) in enumerate(documents):
-            await self.telegram.send_document(
+            result = await self.telegram.send_document(
                 self.conversation.chat_id,
                 filename,
                 content,
                 thread_id=self.conversation.thread_id,
                 reply_to=reply_to_message_id if index == 0 else None,
             )
+            self._index_outbound(result)
         limit = max(1, self.settings.telegram_long_reply_chars)
         if not options and len(body) > 4 * limit:
-            await self.telegram.send_document(
+            result = await self.telegram.send_document(
                 self.conversation.chat_id,
                 "reply.md",
                 body.encode(),
                 thread_id=self.conversation.thread_id,
                 reply_to=reply_to_message_id,
             )
-            await self.telegram.send_markdown(
+            self._index_outbound(result)
+            results = await self.telegram.send_markdown(
                 self.conversation.chat_id,
                 body[:500],
                 thread_id=self.conversation.thread_id,
@@ -371,6 +374,7 @@ class SessionWatcher:
                 ),
                 reply_to_message_id=reply_to_message_id,
             )
+            self._index_outbound_many(results)
             return
         if not options and len(body) > limit:
             body, remaining = split_long_text(body, limit)
@@ -406,13 +410,7 @@ class SessionWatcher:
             **delivery_kwargs,
         )
         for result in results:
-            message_id = result.get("message_id")
-            if isinstance(message_id, int):
-                self.store.index_message(
-                    self.conversation.chat_id,
-                    message_id,
-                    self.conversation.conv_key,
-                )
+            self._index_outbound(result)
         if options:
             message_id = None
             if results:
@@ -439,6 +437,19 @@ class SessionWatcher:
         if summary:
             text += f"\n{summary}"
         return text
+
+    def _index_outbound(self, result: Mapping[str, object]) -> None:
+        message_id = result.get("message_id")
+        if isinstance(message_id, int):
+            self.store.index_message(
+                self.conversation.chat_id,
+                message_id,
+                self.conversation.conv_key,
+            )
+
+    def _index_outbound_many(self, results: list[dict[str, object]]) -> None:
+        for result in results:
+            self._index_outbound(result)
 
     @staticmethod
     def _structured_summary(value: object | None) -> str:

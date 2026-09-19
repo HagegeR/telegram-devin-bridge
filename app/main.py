@@ -31,7 +31,7 @@ from app.notify import register_notify_route
 from app.polling import run_polling
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
-from app.watcher import SessionWatcher
+from app.watcher import ACTIVE_STATUSES, SessionWatcher
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -67,6 +67,7 @@ class Bridge:
         self.pending_turns: dict[str, list[TurnFragment]] = {}
         self.debounce_tasks: dict[str, asyncio.Task[None]] = {}
         self.queued_turns: dict[str, list[QueuedTurn]] = {}
+        self.draining: set[str] = set()
         self.rate_windows: dict[int, deque[float]] = {}
         self.rate_warnings: dict[int, float] = {}
         self.shutting_down = False
@@ -168,16 +169,6 @@ class Bridge:
             self.settings.free_response_chats,
         ):
             return
-        if self._rate_limited(user_id):
-            now = time.monotonic()
-            if now - self.rate_warnings.get(user_id, 0) >= 60:
-                self.rate_warnings[user_id] = now
-                await self.telegram.send_message(
-                    chat_id,
-                    "Slow down — try again in a moment.",
-                    thread_id=_thread_id(message),
-                )
-            return
         text = _expand_text_links(message, "text")
         if not text:
             text = _expand_text_links(message, "caption") or ""
@@ -201,6 +192,16 @@ class Bridge:
                     await handle_command(self, message, text)
             else:
                 await handle_command(self, message, text)
+            return
+        if self._rate_limited(user_id):
+            now = time.monotonic()
+            if now - self.rate_warnings.get(user_id, 0) >= 60:
+                self.rate_warnings[user_id] = now
+                await self.telegram.send_message(
+                    chat_id,
+                    "Slow down — try again in a moment.",
+                    thread_id=_thread_id(message),
+                )
             return
         attachment = await self._attachment(message)
         if not text and attachment is None:
@@ -285,23 +286,32 @@ class Bridge:
             task is not None
             and not task.done()
             and watcher is not None
-            and watcher.last_status == "working"
+            and watcher.last_status in ACTIVE_STATUSES
         )
 
     async def _drain_queue(self, conv_key: str) -> None:
-        if self._conversation_busy(conv_key):
-            return
-        queued = self.queued_turns.get(conv_key)
-        if not queued:
-            return
-        message, text, attachment = queued.pop(0)
-        if not queued:
-            self.queued_turns.pop(conv_key, None)
         try:
-            await self.handle_user_turn(message, text, attachment=attachment)
-        except Exception as exc:
-            logger.exception("Failed to drain Telegram turn for %s", conv_key)
-            await self._report_processing_failure({"message": message}, exc)
+            if conv_key in self.draining or self._conversation_busy(conv_key):
+                return
+            self.draining.add(conv_key)
+            queued = self.queued_turns.get(conv_key)
+            if not queued or self._conversation_busy(conv_key):
+                return
+            message, text, attachment = queued.pop(0)
+            if not queued:
+                self.queued_turns.pop(conv_key, None)
+            if self._conversation_busy(conv_key):
+                self.queued_turns.setdefault(conv_key, []).insert(
+                    0, (message, text, attachment)
+                )
+                return
+            try:
+                await self.handle_user_turn(message, text, attachment=attachment)
+            except Exception as exc:
+                logger.exception("Failed to drain Telegram turn for %s", conv_key)
+                await self._report_processing_failure({"message": message}, exc)
+        finally:
+            self.draining.discard(conv_key)
 
     def clear_queued_turns(self, conv_key: str) -> None:
         self.queued_turns.pop(conv_key, None)
@@ -593,7 +603,7 @@ class Bridge:
         task.add_done_callback(watcher_done)
 
     async def _watcher_status_changed(self, conv_key: str, status: str) -> None:
-        if status == "working" or self.shutting_down:
+        if status in ACTIVE_STATUSES or self.shutting_down:
             return
         drain = asyncio.create_task(self._drain_queue(conv_key))
         self.background_tasks.add(drain)
@@ -770,11 +780,29 @@ class Bridge:
         if _mapping(message.get("chat")).get("type") in {"group", "supergroup"}:
             text = strip_bot_mention(text, self.bot_username)
         conv_key = self._conversation_key(message)
+        message_id = _int(message.get("message_id"))
+        if text.startswith("/"):
+            return
+        pending = self.pending_turns.get(conv_key, [])
+        for index, (pending_message, _, attachment) in enumerate(pending):
+            if _int(pending_message.get("message_id")) != message_id:
+                continue
+            pending[index] = (
+                message,
+                self._contextualize_message(message, text),
+                attachment,
+            )
+            if message_id:
+                await self.telegram.set_message_reaction(
+                    _int(_mapping(message.get("chat")).get("id")),
+                    message_id,
+                    "✏️",
+                )
+            return
         conversation = self.store.get_conversation(conv_key)
         if conversation is None:
             return
-        message_id = _int(message.get("message_id"))
-        if conversation.last_user_message_id != message_id or text.startswith("/"):
+        if conversation.last_user_message_id != message_id:
             return
         async with self._lock(conv_key):
             conversation = self.store.get_conversation(conv_key)
@@ -858,22 +886,23 @@ class Bridge:
             await self.telegram.answer_callback_query(callback_id, "This page expired")
             return
         _, _, remaining, _ = stored
-        self.store.delete_long_text(token)
         limit = max(1, self.settings.telegram_long_reply_chars)
         if len(remaining) > 4 * limit:
-            await self.telegram.send_document(
+            document = await self.telegram.send_document(
                 chat_id,
                 "reply.md",
                 remaining.encode(),
                 thread_id=_thread_id(callback_message),
                 reply_to=_int(callback_message.get("message_id")) or None,
             )
-            await self.telegram.send_markdown(
+            self._index_outbound(chat_id, conv_key, document)
+            results = await self.telegram.send_markdown(
                 chat_id,
                 remaining[:500],
                 thread_id=_thread_id(callback_message),
                 reply_to_message_id=_int(callback_message.get("message_id")) or None,
             )
+            self._index_outbound_many(chat_id, conv_key, results)
             try:
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
@@ -881,16 +910,19 @@ class Bridge:
                 )
             except (RuntimeError, httpx.HTTPError):
                 logger.debug("Failed to clear long-text keyboard", exc_info=True)
+                return
             await self.telegram.answer_callback_query(callback_id)
+            self.store.delete_long_text(token)
             return
         body, documents = extract_large_code_blocks(remaining)
         for filename, content in documents:
-            await self.telegram.send_document(
+            document = await self.telegram.send_document(
                 chat_id,
                 filename,
                 content,
                 thread_id=_thread_id(callback_message),
             )
+            self._index_outbound(chat_id, conv_key, document)
         if len(body) > limit:
             page, rest = split_long_text(body, limit)
         else:
@@ -904,13 +936,14 @@ class Bridge:
                     {"text": "Show more ▾", "callback_data": f"more:{next_token}"}
                 ]]
             }
-        await self.telegram.send_markdown(
+        results = await self.telegram.send_markdown(
             chat_id,
             page,
             thread_id=_thread_id(callback_message),
             reply_markup=markup,
             reply_to_message_id=_int(callback_message.get("message_id")) or None,
         )
+        self._index_outbound_many(chat_id, conv_key, results)
         try:
             await self.telegram.edit_message_reply_markup(
                 chat_id,
@@ -918,7 +951,9 @@ class Bridge:
             )
         except (RuntimeError, httpx.HTTPError):
             logger.debug("Failed to clear long-text keyboard", exc_info=True)
+            return
         await self.telegram.answer_callback_query(callback_id)
+        self.store.delete_long_text(token)
 
     async def send_text(
         self,
@@ -965,6 +1000,25 @@ class Bridge:
                 if isinstance(sent_id, int):
                     self.store.index_message(chat_id, sent_id, conv_key)
             return _sent_message_id(results)
+
+    def _index_outbound(
+        self,
+        chat_id: int,
+        conv_key: str,
+        result: Mapping[str, object],
+    ) -> None:
+        message_id = result.get("message_id")
+        if isinstance(message_id, int):
+            self.store.index_message(chat_id, message_id, conv_key)
+
+    def _index_outbound_many(
+        self,
+        chat_id: int,
+        conv_key: str,
+        results: list[dict[str, object]],
+    ) -> None:
+        for result in results:
+            self._index_outbound(chat_id, conv_key, result)
 
     async def send_markup(
         self,
@@ -1227,6 +1281,7 @@ def create_app(
 
 
 app = create_app()
+bridge = cast(Bridge, app.state.bridge)
 
 
 def _mapping(value: object) -> Mapping[str, object]:

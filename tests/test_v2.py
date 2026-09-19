@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
 import httpx
 import pytest
 
+import app.main as main_module
 from app.access import is_allowed, is_topic_chat, should_respond_in_group
 from app.clients import DevinClient, DevinMessage, SessionState, TelegramClient
 from app.commands import handle_command
@@ -2266,3 +2268,138 @@ async def test_polling_mode_disables_webhook_route(tmp_path: Path) -> None:
         health = await client.get("/health")
     assert response.status_code == 404
     assert health.json() == {"status": "ok"}
+
+@pytest.mark.asyncio
+async def test_poll_reuses_fastapi_bridge() -> None:
+    import app.poll as poll_module
+
+    assert poll_module.bridge is main_module.bridge
+
+
+@pytest.mark.asyncio
+async def test_concurrent_queue_drains_serialize(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), _FakeTelegram())  # type: ignore[arg-type]
+    runtime.queued_turns["222"] = [
+        (message("one", message_id=1), "one", None),
+        (message("two", message_id=2), "two", None),
+    ]
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def handle_turn(_: Mapping[str, object], text: str, *, attachment: object = None) -> None:
+        calls.append(text)
+        started.set()
+        await release.wait()
+
+    runtime.handle_user_turn = handle_turn  # type: ignore[method-assign]
+    first = asyncio.create_task(runtime._drain_queue("222"))
+    await started.wait()
+    second = asyncio.create_task(runtime._drain_queue("222"))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(first, second)
+    assert calls == ["one"]
+    assert runtime.queued_count("222") == 1
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_does_not_block_commands(tmp_path: Path) -> None:
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), _FakeTelegram())  # type: ignore[arg-type]
+    runtime._rate_limited = lambda _user_id: True  # type: ignore[method-assign]
+    await runtime.handle_message(message("/status"))
+    assert "Slow down" not in str(runtime.telegram.sent[-1]["text"])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancel_keeps_queued_turns(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
+    await handle_command(runtime, message("/stop"), "/stop")
+    choices = store.list_choices("222", 1)
+    cancel_id = next(choice_id for choice_id, option in choices if option == "__cmd:cancel")
+    await runtime.handle_callback({
+        "id": "cancel", "data": cancel_id,
+        "from": {"id": 111},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
+    })
+    assert runtime.queued_count("222") == 1
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_forum_reaction_resolves_document_message_index(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9", chat_id=222, thread_id=9, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    conversation = store.get_conversation("222:9")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class DocumentDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState(
+                "finished", "title", None,
+                [DevinMessage("devin_message", "e1", "```python\n" + "x" * 1600 + "\n```", None)],
+            )
+
+    await SessionWatcher(
+        conversation, store, DocumentDevin(), telegram, settings(tmp_path),  # type: ignore[arg-type]
+    ).run()
+    await Bridge(settings(tmp_path), store, _FakeDevin(), telegram).handle_reaction({
+        "user": {"id": 111},
+        "chat": {"id": 222, "type": "supergroup", "is_forum": True},
+        "message_id": 1,
+        "old_reaction": [],
+        "new_reaction": [{"type": "emoji", "emoji": "🔁"}],
+    })
+    assert store.conv_key_for_message(222, 1) == "222:9"
+
+
+@pytest.mark.asyncio
+async def test_long_text_token_survives_send_failure(tmp_path: Path) -> None:
+    class FailingTelegram(_FakeTelegram):
+        async def send_markdown(self, *_: object, **__: object) -> list[dict[str, object]]:
+            raise RuntimeError("send failed")
+
+    store = Store(":memory:")
+    store.add_long_text("token", "222", 222, "remaining text")
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), FailingTelegram())  # type: ignore[arg-type]
+    callback_message = {"message_id": 4, "chat": {"id": 222, "type": "private"}}
+    with pytest.raises(RuntimeError):
+        await runtime._handle_long_text_callback("cb", callback_message, "222", "token")
+    assert store.get_long_text("token") is not None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_edit_pending_debounce_turn_uses_edited_text(tmp_path: Path) -> None:
+    devin = _FakeDevin()
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=10),
+        Store(":memory:"), devin, telegram,  # type: ignore[arg-type]
+    )
+    original = message("original", message_id=12)
+    await runtime._queue_turn(original, "original", None)
+    await runtime.handle_edited_message({**original, "text": "edited"})
+    assert runtime.pending_turns["222"][0][1] == "edited"
+    assert telegram.reactions[-1] == "✏️"
+    await runtime._flush_pending("222")
+    assert "edited" in devin.created[0]
+    await runtime.shutdown()

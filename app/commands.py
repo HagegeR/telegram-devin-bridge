@@ -316,7 +316,6 @@ async def _stop(
         )
         await runtime.send_text(message, "No active session.")
         return
-    runtime.clear_queued_turns(conversation.conv_key)
     choice_id = runtime.new_choice_id()
     message_id = await runtime.send_markup(
         message,
