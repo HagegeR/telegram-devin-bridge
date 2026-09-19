@@ -1,2 +1,2 @@
 #!/bin/sh
-exec /root/telegram-devin-bridge/deploy/self-update.sh >> /var/log/telegram-devin-bridge-update.log 2>&1
+exec sh /root/telegram-devin-bridge/deploy/self-update.sh >> /var/log/telegram-devin-bridge-update.log 2>&1
