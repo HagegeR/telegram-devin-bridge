@@ -18,6 +18,11 @@ SYSTEM_PREAMBLE = (
 )
 
 
+TERMINATE_BUTTON_LABEL = "Terminate"
+CANCEL_BUTTON_LABEL = "Cancel"
+COMMAND_BUTTON_LABELS = frozenset({TERMINATE_BUTTON_LABEL, CANCEL_BUTTON_LABEL})
+
+
 class CommandRuntime(Protocol):
     settings: Settings
     store: Store
@@ -233,8 +238,8 @@ async def _stop(
         message,
         "Terminate the active Devin session?",
         {"inline_keyboard": [[
-            {"text": "Terminate", "callback_data": choice_id},
-            {"text": "Cancel", "callback_data": f"{choice_id}:cancel"},
+            {"text": TERMINATE_BUTTON_LABEL, "callback_data": choice_id},
+            {"text": CANCEL_BUTTON_LABEL, "callback_data": f"{choice_id}:cancel"},
         ]]},
     )
 

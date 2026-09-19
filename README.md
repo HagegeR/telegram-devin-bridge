@@ -101,4 +101,7 @@ OPTIONS: Run it | Explain it | Cancel
 ```
 
 The bridge removes that line from the message and renders one button per
-choice. The selected text is sent back to the same Devin session.
+choice. The selected text is sent back to the same Devin session. Clicking an
+old button still works: the label is forwarded as a normal message (to the
+current session, or a new one if it finished). Only buttons clicked from a
+different chat, or command buttons like Terminate/Cancel, expire.

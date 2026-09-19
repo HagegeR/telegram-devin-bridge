@@ -11,7 +11,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 
 from app.access import is_allowed, should_respond_in_group, strip_bot_mention
-from app.commands import SYSTEM_PREAMBLE, handle_command
+from app.commands import COMMAND_BUTTON_LABELS, SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
 from app.formatting import chunk, markdown_to_telegram_markdown_v2
@@ -157,7 +157,8 @@ class Bridge:
                 conversation.session_id,
                 last_user_text=text,
             )
-        await self.telegram.set_message_reaction(chat_id, message_id, "👀")
+        if message_id:
+            await self.telegram.set_message_reaction(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
         if attachment is not None:
             filename, content, content_type = attachment
@@ -182,7 +183,10 @@ class Bridge:
             )
             await self.send_session_message(conversation.session_id, text)
             conversation = self.store.get_conversation(conv_key) or conversation
-        await self.start_watcher(conversation, trigger_message_id=message_id)
+        await self.start_watcher(
+            conversation,
+            trigger_message_id=message_id or None,
+        )
 
     async def create_session_for_message(
         self,
@@ -306,50 +310,79 @@ class Bridge:
         async with self._lock(conv_key):
             data = _text(callback.get("data")) or ""
             choice = self.store.get_choice(data)
-            if choice is None:
-                await self.telegram.answer_callback_query(callback_id, "This choice expired")
-                return
-            stored_conv_key, session_id, stored_chat_id, option = choice
             active = self.store.get_conversation(conv_key)
-            if (
-                stored_conv_key != conv_key
-                or stored_chat_id != chat_id
-                or active is None
-                or active.session_id != session_id
-            ):
-                await self.telegram.answer_callback_query(callback_id, "This choice expired")
-                return
-            self.store.delete_choices(conv_key)
-            if option.startswith("__cmd:terminate:"):
-                await self.devin.terminate(option.removeprefix("__cmd:terminate:"))
-                self.store.clear_conversation(conv_key, session_id)
-                updated = "Session terminated."
-                active = None
-            elif option == "__cmd:cancel":
-                updated = "Cancelled."
+            option: str | None = None
+            if choice is not None:
+                stored_conv_key, session_id, stored_chat_id, option = choice
+                if stored_conv_key != conv_key or stored_chat_id != chat_id:
+                    await self.telegram.answer_callback_query(
+                        callback_id, "This choice expired"
+                    )
+                    return
+                if active is not None and active.session_id == session_id:
+                    self.store.delete_choices(conv_key)
+                    if option.startswith("__cmd:terminate:"):
+                        await self.devin.terminate(
+                            option.removeprefix("__cmd:terminate:")
+                        )
+                        self.store.clear_conversation(conv_key, session_id)
+                        updated = "Session terminated."
+                        active = None
+                    elif option == "__cmd:cancel":
+                        updated = "Cancelled."
+                    else:
+                        self.store.update_conversation(
+                            conv_key,
+                            session_id,
+                            last_user_text=option,
+                        )
+                        await self.devin.send_message(session_id, option)
+                        updated = f"✅ {option}"
+                    await self._edit_callback_message(
+                        chat_id, callback_message_id, updated
+                    )
+                    await self.telegram.answer_callback_query(callback_id)
+                    if active is not None:
+                        await self.start_watcher(active)
+                    return
+                if option.startswith("__cmd:"):
+                    await self.telegram.answer_callback_query(
+                        callback_id, "This choice expired"
+                    )
+                    return
             else:
-                self.store.update_conversation(
-                    conv_key,
-                    session_id,
-                    last_user_text=option,
-                )
-                await self.devin.send_message(session_id, option)
-                updated = f"✅ {option}"
-            if callback_message_id:
-                try:
-                    await self.telegram.edit_message_text(
-                        chat_id,
-                        callback_message_id,
-                        updated,
+                option = _callback_button_label(callback_message, data)
+                if option is None or option in COMMAND_BUTTON_LABELS:
+                    await self.telegram.answer_callback_query(
+                        callback_id, "This choice expired"
                     )
-                except (httpx.HTTPError, RuntimeError):
-                    await self.telegram.edit_message_reply_markup(
-                        chat_id,
-                        callback_message_id,
-                    )
+                    return
+            self.store.delete_choices(conv_key)
+            await self._edit_callback_message(
+                chat_id, callback_message_id, f"✅ {option}"
+            )
             await self.telegram.answer_callback_query(callback_id)
-            if active is not None:
-                await self.start_watcher(active)
+            synthetic_message: dict[str, object] = {
+                "chat": callback_message.get("chat"),
+                "from": sender,
+            }
+            for key in ("message_thread_id", "is_topic_message"):
+                if key in callback_message:
+                    synthetic_message[key] = callback_message[key]
+            await self._handle_user_turn_locked(synthetic_message, option, None)
+
+    async def _edit_callback_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+    ) -> None:
+        if not message_id:
+            return
+        try:
+            await self.telegram.edit_message_text(chat_id, message_id, text)
+        except (httpx.HTTPError, RuntimeError):
+            await self.telegram.edit_message_reply_markup(chat_id, message_id)
 
     async def send_text(
         self,
@@ -638,6 +671,23 @@ def _expand_text_links(
     for start, end, url in sorted(links, reverse=True):
         expanded = f"{expanded[:end]} ({url}){expanded[end:]}"
     return expanded
+
+
+def _callback_button_label(
+    message: Mapping[str, object],
+    data: str,
+) -> str | None:
+    keyboard = _mapping(message.get("reply_markup")).get("inline_keyboard")
+    if not isinstance(keyboard, list):
+        return None
+    for row in keyboard:
+        if not isinstance(row, list):
+            continue
+        for button in row:
+            candidate = _mapping(button)
+            if candidate.get("callback_data") == data:
+                return _text(candidate.get("text"))
+    return None
 
 
 def _int(value: object) -> int:
