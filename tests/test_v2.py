@@ -2377,7 +2377,18 @@ async def test_access_request_admin_approval_denial_and_non_admin(tmp_path: Path
     await runtime.handle_callback(approve)
     assert 222 in runtime.approved_users
     assert is_allowed(message("hi", user_id=222), config, runtime.approved_users)
-    await runtime.handle_callback({**request, "id": "request-2", "from": {"id": 223}, "data": "acc:req"})
+    denied_request = {
+        **request,
+        "id": "request-2",
+        "from": {"id": 333, "username": "bob", "first_name": "Bob"},
+    }
+    await runtime.handle_callback(denied_request)
+    await runtime.handle_callback({
+        **approve, "id": "deny", "data": "acc:no:333",
+    })
+    denied = store.get_access_request(333)
+    assert denied is not None and denied.status == "denied"
+    assert any(item["chat_id"] == 333 for item in telegram.sent)
     await runtime.handle_callback({
         **approve, "id": "deny", "data": "acc:no:222", "from": {"id": 223},
     })
