@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import time
+from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import cast
@@ -19,8 +21,14 @@ from app.access import (
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
-from app.formatting import chunk, markdown_to_telegram_markdown_v2
+from app.formatting import (
+    chunk,
+    extract_large_code_blocks,
+    markdown_to_telegram_markdown_v2,
+    split_long_text,
+)
 from app.notify import register_notify_route
+from app.polling import run_polling
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
 from app.watcher import SessionWatcher
@@ -28,6 +36,10 @@ from app.watcher import SessionWatcher
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+Attachment = tuple[str, bytes, str]
+TurnFragment = tuple[Mapping[str, object], str, Attachment | None]
+QueuedTurn = tuple[Mapping[str, object], str, Attachment | None]
 
 
 class Bridge:
@@ -46,10 +58,18 @@ class Bridge:
         self.bot_topics_enabled = False
         self.implicit_topics: set[tuple[int, int]] = set()
         self.watchers: dict[str, asyncio.Task[None]] = {}
+        self.active_watchers: dict[str, SessionWatcher] = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self.lock_refs: dict[str, int] = {}
         self.background_tasks: set[asyncio.Task[None]] = set()
         self.denied_notices: set[tuple[int, int]] = set()
+        self.transient_messages: dict[str, list[int]] = {}
+        self.pending_turns: dict[str, list[TurnFragment]] = {}
+        self.debounce_tasks: dict[str, asyncio.Task[None]] = {}
+        self.queued_turns: dict[str, list[QueuedTurn]] = {}
+        self.rate_windows: dict[int, deque[float]] = {}
+        self.rate_warnings: dict[int, float] = {}
+        self.shutting_down = False
 
     async def startup(self) -> None:
         profile = await self.telegram.get_me()
@@ -57,8 +77,14 @@ class Bridge:
         if not self.bot_username and username is not None:
             self.bot_username = username
         self.bot_topics_enabled = bool(profile.get("has_topics_enabled"))
+        self.store.cleanup_long_texts()
 
     async def shutdown(self) -> None:
+        self.shutting_down = True
+        for task in self.debounce_tasks.values():
+            task.cancel()
+        if self.debounce_tasks:
+            await asyncio.gather(*self.debounce_tasks.values(), return_exceptions=True)
         for task in self.watchers.values():
             task.cancel()
         if self.watchers:
@@ -84,6 +110,14 @@ class Bridge:
             callback = _mapping(update.get("callback_query"))
             if callback:
                 await self.handle_callback(callback)
+                return
+            reaction = _mapping(update.get("message_reaction"))
+            if reaction:
+                await self.handle_reaction(reaction)
+                return
+            edited = _mapping(update.get("edited_message"))
+            if edited:
+                await self.handle_edited_message(edited)
                 return
             message = _mapping(update.get("message")) or _mapping(
                 update.get("channel_post")
@@ -134,14 +168,35 @@ class Bridge:
             self.settings.free_response_chats,
         ):
             return
+        if self._rate_limited(user_id):
+            now = time.monotonic()
+            if now - self.rate_warnings.get(user_id, 0) >= 60:
+                self.rate_warnings[user_id] = now
+                await self.telegram.send_message(
+                    chat_id,
+                    "Slow down — try again in a moment.",
+                    thread_id=_thread_id(message),
+                )
+            return
         text = _expand_text_links(message, "text")
         if not text:
             text = _expand_text_links(message, "caption") or ""
         if chat.get("type") in {"group", "supergroup"}:
             text = strip_bot_mention(text, self.bot_username)
+        if not text.startswith("/"):
+            text = self._contextualize_message(message, text)
         if text.startswith("/"):
             command = _command_name(text)
-            if command in {"new", "resume", "retry", "stop", "playbook"}:
+            if command in {
+                "new",
+                "resume",
+                "retry",
+                "stop",
+                "cancel",
+                "playbook",
+                "close",
+                "rename",
+            }:
                 async with self._lock(self._conversation_key(message)):
                     await handle_command(self, message, text)
             else:
@@ -155,7 +210,166 @@ class Bridge:
                 thread_id=_thread_id(message),
             )
             return
-        await self.handle_user_turn(message, text, attachment=attachment)
+        await self._queue_turn(message, text, attachment)
+
+    async def _queue_turn(
+        self,
+        message: Mapping[str, object],
+        text: str,
+        attachment: Attachment | None,
+    ) -> None:
+        conv_key = self._conversation_key(message)
+        pending = self.pending_turns.setdefault(conv_key, [])
+        if attachment is not None and any(
+            fragment_attachment is not None
+            for _, _, fragment_attachment in pending
+        ):
+            await self._flush_pending(conv_key)
+            pending = self.pending_turns.setdefault(conv_key, [])
+        pending.append((message, text, attachment))
+        if self.settings.telegram_debounce_seconds <= 0:
+            await self._flush_pending(conv_key)
+            return
+        existing = self.debounce_tasks.get(conv_key)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        task = asyncio.create_task(self._debounce_flush(conv_key))
+        self.debounce_tasks[conv_key] = task
+
+    async def _debounce_flush(self, conv_key: str) -> None:
+        try:
+            await asyncio.sleep(self.settings.telegram_debounce_seconds)
+            await self._flush_pending(conv_key)
+        except asyncio.CancelledError:
+            return
+        finally:
+            current = self.debounce_tasks.get(conv_key)
+            if current is asyncio.current_task():
+                self.debounce_tasks.pop(conv_key, None)
+
+    async def _flush_pending(self, conv_key: str) -> None:
+        fragments = self.pending_turns.pop(conv_key, [])
+        if not fragments:
+            return
+        message = fragments[-1][0]
+        try:
+            text = "\n\n".join(value for _, value, _ in fragments if value)
+            attachment = next(
+                (value for _, _, value in fragments if value is not None),
+                None,
+            )
+            turn = (message, text, attachment)
+            if (
+                self.settings.telegram_queue_while_busy
+                and self._conversation_busy(conv_key)
+            ):
+                self.queued_turns.setdefault(conv_key, []).append(turn)
+                await self.telegram.set_message_reaction(
+                    _int(_mapping(message.get("chat")).get("id")),
+                    _int(message.get("message_id")),
+                    "⏳",
+                )
+                return
+            await self.handle_user_turn(message, text, attachment=attachment)
+        except Exception as exc:
+            logger.exception("Failed to flush Telegram turn for %s", conv_key)
+            await self._report_processing_failure({"message": message}, exc)
+
+    def _conversation_busy(self, conv_key: str) -> bool:
+        conversation = self.store.get_conversation(conv_key)
+        if conversation is None:
+            return False
+        task = self.watchers.get(conversation.session_id)
+        watcher = self.active_watchers.get(conversation.session_id)
+        return (
+            task is not None
+            and not task.done()
+            and watcher is not None
+            and watcher.last_status == "working"
+        )
+
+    async def _drain_queue(self, conv_key: str) -> None:
+        if self._conversation_busy(conv_key):
+            return
+        queued = self.queued_turns.get(conv_key)
+        if not queued:
+            return
+        message, text, attachment = queued.pop(0)
+        if not queued:
+            self.queued_turns.pop(conv_key, None)
+        try:
+            await self.handle_user_turn(message, text, attachment=attachment)
+        except Exception as exc:
+            logger.exception("Failed to drain Telegram turn for %s", conv_key)
+            await self._report_processing_failure({"message": message}, exc)
+
+    def clear_queued_turns(self, conv_key: str) -> None:
+        self.queued_turns.pop(conv_key, None)
+        self.pending_turns.pop(conv_key, None)
+        task = self.debounce_tasks.pop(conv_key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def queued_count(self, conv_key: str) -> int:
+        return len(self.queued_turns.get(conv_key, []))
+
+    def _rate_limited(self, user_id: int) -> bool:
+        limit = self.settings.telegram_rate_limit_per_minute
+        if limit <= 0 or user_id <= 0:
+            return False
+        now = time.monotonic()
+        window = self.rate_windows.setdefault(user_id, deque())
+        while window and window[0] <= now - 60:
+            window.popleft()
+        if len(window) >= limit:
+            return True
+        window.append(now)
+        return False
+
+    def _contextualize_message(
+        self,
+        message: Mapping[str, object],
+        text: str,
+    ) -> str:
+        pieces: list[str] = []
+        reply = _mapping(message.get("reply_to_message"))
+        if reply and not any(
+            reply.get(field) is not None
+            for field in (
+                "forum_topic_created",
+                "forum_topic_edited",
+                "forum_topic_closed",
+                "forum_topic_reopened",
+            )
+        ):
+            reply_sender = _mapping(reply.get("from"))
+            is_bot_reply = bool(reply_sender.get("is_bot"))
+            same_bot = (
+                is_bot_reply
+                and _text(reply_sender.get("username")) == self.bot_username
+            )
+            if not is_bot_reply or same_bot:
+                quote = _mapping(message.get("quote"))
+                quoted = _text(quote.get("text"))
+                if quoted is None:
+                    quoted = _expand_text_links(reply, "text")
+                if not quoted:
+                    quoted = _expand_text_links(reply, "caption")
+                if quoted:
+                    pieces.append(f'> Re: "{quoted[:300]}"')
+        forward = _mapping(message.get("forward_origin"))
+        if forward:
+            forwarded_text = (
+                _expand_text_links(forward, "text")
+                or _expand_text_links(forward, "caption")
+                or text
+            )
+            pieces.append(f"Forwarded message:\n{forwarded_text}")
+            return "\n\n".join(pieces)
+        if pieces:
+            pieces.append(text)
+            return "\n\n".join(pieces)
+        return text
 
     async def handle_user_turn(
         self,
@@ -179,12 +393,15 @@ class Bridge:
         thread_id = _thread_id(message)
         conv_key = self._conversation_key(message)
         message_id = _int(message.get("message_id"))
+        if message_id:
+            self.store.index_message(chat_id, message_id, conv_key)
         conversation = self.store.get_conversation(conv_key)
         if conversation is not None:
             self.store.update_conversation(
                 conv_key,
                 conversation.session_id,
                 last_user_text=text,
+                last_user_message_id=message_id,
             )
         await self.telegram.set_message_reaction(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
@@ -224,6 +441,7 @@ class Bridge:
                 conv_key,
                 conversation.session_id,
                 last_user_text=text,
+                last_user_message_id=message_id,
             )
             await self.send_session_message(conversation.session_id, text)
             conversation = self.store.get_conversation(conv_key) or conversation
@@ -263,6 +481,11 @@ class Bridge:
             session_url=session_url,
             title=title,
             last_user_text=last_user_text or prompt,
+            last_user_message_id=(
+                _int(message.get("message_id"))
+                if last_user_text is not None
+                else None
+            ),
         )
         self.store.add_history(
             conv_key=conv_key,
@@ -270,7 +493,13 @@ class Bridge:
             session_url=session_url,
             title=title,
         )
-        await self.send_text(message, f"Started session: {session_url}", silent=True)
+        started_id = await self.send_text(
+            message,
+            f"Started session: {session_url}",
+            silent=True,
+        )
+        if started_id is not None:
+            self.transient_messages.setdefault(conv_key, []).append(started_id)
         if start_watcher:
             await self.start_watcher(
                 conversation,
@@ -289,10 +518,13 @@ class Bridge:
         title: str,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_user_message_id: int | None = None,
     ) -> Conversation:
         previous = self.store.get_conversation(conv_key)
         if previous is not None and previous.session_id != session_id:
+            self.clear_queued_turns(conv_key)
             task = self.watchers.pop(previous.session_id, None)
+            self.active_watchers.pop(previous.session_id, None)
             if task is not None and not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -305,6 +537,7 @@ class Bridge:
             title=title,
             last_event_id=last_event_id,
             last_user_text=last_user_text,
+            last_user_message_id=last_user_message_id,
         )
         conversation = self.store.get_conversation(conv_key)
         if conversation is None:
@@ -320,6 +553,9 @@ class Bridge:
     ) -> None:
         existing = self.watchers.get(conversation.session_id)
         if existing is not None and not existing.done():
+            watcher = self.active_watchers.get(conversation.session_id)
+            if watcher is not None and trigger_message_id is not None:
+                watcher.set_trigger(trigger_message_id)
             return
         watcher = SessionWatcher(
             conversation,
@@ -329,12 +565,39 @@ class Bridge:
             self.settings,
             poll_seconds=poll_seconds,
             trigger_message_id=trigger_message_id,
+            transient_message_ids=self.transient_messages.pop(
+                conversation.conv_key,
+                [],
+            ),
+            on_status_change=lambda status: self._watcher_status_changed(
+                conversation.conv_key,
+                status,
+            ),
         )
         task = asyncio.create_task(watcher.run())
         self.watchers[conversation.session_id] = task
-        task.add_done_callback(
-            lambda _: self.watchers.pop(conversation.session_id, None)
-        )
+        self.active_watchers[conversation.session_id] = watcher
+
+        def watcher_done(_: asyncio.Task[None]) -> None:
+            current = self.watchers.get(conversation.session_id) is task
+            if current:
+                self.watchers.pop(conversation.session_id, None)
+                if self.active_watchers.get(conversation.session_id) is watcher:
+                    self.active_watchers.pop(conversation.session_id, None)
+            if not current or self.shutting_down:
+                return
+            drain = asyncio.create_task(self._drain_queue(conversation.conv_key))
+            self.background_tasks.add(drain)
+            drain.add_done_callback(self.background_tasks.discard)
+
+        task.add_done_callback(watcher_done)
+
+    async def _watcher_status_changed(self, conv_key: str, status: str) -> None:
+        if status == "working" or self.shutting_down:
+            return
+        drain = asyncio.create_task(self._drain_queue(conv_key))
+        self.background_tasks.add(drain)
+        drain.add_done_callback(self.background_tasks.discard)
 
     async def handle_callback(self, callback: Mapping[str, object]) -> None:
         callback_id = _text(callback.get("id")) or ""
@@ -353,6 +616,14 @@ class Bridge:
         conv_key = self._conversation_key(callback_message)
         async with self._lock(conv_key):
             data = _text(callback.get("data")) or ""
+            if data.startswith("more:"):
+                await self._handle_long_text_callback(
+                    callback_id,
+                    callback_message,
+                    conv_key,
+                    data.removeprefix("more:"),
+                )
+                return
             choice = self.store.get_choice(data)
             if choice is None:
                 await self.telegram.answer_callback_query(callback_id, "This choice expired")
@@ -382,6 +653,7 @@ class Bridge:
                     conv_key,
                     session_id,
                     last_user_text=option,
+                    last_user_message_id=None,
                 )
                 await self.devin.send_message(session_id, option)
                 updated = f"✅ {option}"
@@ -432,6 +704,222 @@ class Bridge:
             if active is not None:
                 await self.start_watcher(active)
 
+    async def handle_reaction(self, reaction: Mapping[str, object]) -> None:
+        user = _mapping(reaction.get("user"))
+        if not user:
+            return
+        authorization = {
+            "from": user,
+            "chat": reaction.get("chat", {}),
+        }
+        if not is_allowed(authorization, self.settings):
+            return
+        chat = _mapping(reaction.get("chat"))
+        chat_id = _int(chat.get("id"))
+        message_id = _int(reaction.get("message_id"))
+        old_emojis = _reaction_emojis(reaction.get("old_reaction"))
+        new_emojis = _reaction_emojis(reaction.get("new_reaction"))
+        added = new_emojis - old_emojis
+        conv_key = self.store.conv_key_for_message(chat_id, message_id)
+        if conv_key is None:
+            if chat.get("is_forum"):
+                return
+            conversation = self.store.get_conversation_for_chat(chat_id)
+        else:
+            conversation = self.store.get_conversation(conv_key)
+        if conversation is None:
+            return
+        async with self._lock(conversation.conv_key):
+            if "🔁" in added and conversation.last_user_text:
+                if message_id:
+                    await self.telegram.set_message_reaction(
+                        chat_id,
+                        message_id,
+                        "👀",
+                    )
+                await self.retry_conversation(
+                    conversation,
+                    trigger_message_id=message_id,
+                )
+            elif "🛑" in added:
+                await self.stop_conversation(conversation)
+                target = {"chat": chat, "from": user}
+                if conversation.thread_id is not None:
+                    target["message_thread_id"] = conversation.thread_id
+                    target["is_topic_message"] = True
+                await self.send_text(
+                    target,
+                    "Stopped session.",
+                    silent=True,
+                )
+
+    async def handle_edited_message(self, message: Mapping[str, object]) -> None:
+        if not is_allowed(message, self.settings):
+            return
+        if not should_respond_in_group(
+            message,
+            self.bot_username,
+            self.settings.free_response_chats,
+        ):
+            return
+        text = _expand_text_links(message, "text")
+        if text is None:
+            text = _expand_text_links(message, "caption")
+        if text is None:
+            return
+        if _mapping(message.get("chat")).get("type") in {"group", "supergroup"}:
+            text = strip_bot_mention(text, self.bot_username)
+        conv_key = self._conversation_key(message)
+        conversation = self.store.get_conversation(conv_key)
+        if conversation is None:
+            return
+        message_id = _int(message.get("message_id"))
+        if conversation.last_user_message_id != message_id or text.startswith("/"):
+            return
+        async with self._lock(conv_key):
+            conversation = self.store.get_conversation(conv_key)
+            if conversation is None:
+                return
+            if conversation.last_user_text == text:
+                return
+            self.store.update_conversation(
+                conv_key,
+                conversation.session_id,
+                last_user_text=text,
+                last_user_message_id=message_id,
+            )
+            await self.devin.send_message(
+                conversation.session_id,
+                f"Correction to my previous message: {text}",
+            )
+            message_id = _int(message.get("message_id"))
+            if message_id:
+                await self.telegram.set_message_reaction(
+                    conversation.chat_id,
+                    message_id,
+                    "✏️",
+                )
+            updated = self.store.get_conversation(conv_key) or conversation
+            await self.start_watcher(
+                updated,
+                trigger_message_id=message_id,
+            )
+
+    async def retry_conversation(
+        self,
+        conversation: Conversation,
+        *,
+        trigger_message_id: int | None = None,
+    ) -> None:
+        if not conversation.last_user_text:
+            return
+        existing = self.watchers.pop(conversation.session_id, None)
+        if existing is not None and not existing.done():
+            existing.cancel()
+            await asyncio.gather(existing, return_exceptions=True)
+        self.store.update_conversation(
+            conversation.conv_key,
+            conversation.session_id,
+            last_user_text=conversation.last_user_text,
+        )
+        await self.devin.send_message(
+            conversation.session_id,
+            conversation.last_user_text,
+        )
+        await self.start_watcher(
+            conversation,
+            trigger_message_id=trigger_message_id,
+        )
+
+    async def stop_conversation(self, conversation: Conversation) -> None:
+        self.clear_queued_turns(conversation.conv_key)
+        task = self.watchers.pop(conversation.session_id, None)
+        self.active_watchers.pop(conversation.session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await self.devin.terminate(conversation.session_id)
+        self.store.clear_conversation(
+            conversation.conv_key,
+            conversation.session_id,
+        )
+
+    async def _handle_long_text_callback(
+        self,
+        callback_id: str,
+        callback_message: Mapping[str, object],
+        conv_key: str,
+        token: str,
+    ) -> None:
+        stored = self.store.get_long_text(token)
+        chat = _mapping(callback_message.get("chat"))
+        chat_id = _int(chat.get("id"))
+        if stored is None or stored[0] != conv_key or stored[1] != chat_id:
+            await self.telegram.answer_callback_query(callback_id, "This page expired")
+            return
+        _, _, remaining, _ = stored
+        self.store.delete_long_text(token)
+        limit = max(1, self.settings.telegram_long_reply_chars)
+        if len(remaining) > 4 * limit:
+            await self.telegram.send_document(
+                chat_id,
+                "reply.md",
+                remaining.encode(),
+                thread_id=_thread_id(callback_message),
+                reply_to=_int(callback_message.get("message_id")) or None,
+            )
+            await self.telegram.send_markdown(
+                chat_id,
+                remaining[:500],
+                thread_id=_thread_id(callback_message),
+                reply_to_message_id=_int(callback_message.get("message_id")) or None,
+            )
+            try:
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    _int(callback_message.get("message_id")),
+                )
+            except (RuntimeError, httpx.HTTPError):
+                logger.debug("Failed to clear long-text keyboard", exc_info=True)
+            await self.telegram.answer_callback_query(callback_id)
+            return
+        body, documents = extract_large_code_blocks(remaining)
+        for filename, content in documents:
+            await self.telegram.send_document(
+                chat_id,
+                filename,
+                content,
+                thread_id=_thread_id(callback_message),
+            )
+        if len(body) > limit:
+            page, rest = split_long_text(body, limit)
+        else:
+            page, rest = body, ""
+        markup: dict[str, object] | None = None
+        if rest:
+            next_token = secrets.token_urlsafe(12)
+            self.store.add_long_text(next_token, conv_key, chat_id, rest)
+            markup = {
+                "inline_keyboard": [[
+                    {"text": "Show more ▾", "callback_data": f"more:{next_token}"}
+                ]]
+            }
+        await self.telegram.send_markdown(
+            chat_id,
+            page,
+            thread_id=_thread_id(callback_message),
+            reply_markup=markup,
+            reply_to_message_id=_int(callback_message.get("message_id")) or None,
+        )
+        try:
+            await self.telegram.edit_message_reply_markup(
+                chat_id,
+                _int(callback_message.get("message_id")),
+            )
+        except (RuntimeError, httpx.HTTPError):
+            logger.debug("Failed to clear long-text keyboard", exc_info=True)
+        await self.telegram.answer_callback_query(callback_id)
+
     async def send_text(
         self,
         message: Mapping[str, object],
@@ -439,7 +927,7 @@ class Bridge:
         *,
         silent: bool = False,
         ephemeral: bool = False,
-    ) -> None:
+    ) -> int | None:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
         sender = _mapping(message.get("from"))
@@ -449,22 +937,34 @@ class Bridge:
             else None
         )
         try:
-            await self.telegram.send_markdown(
+            results = await self.telegram.send_markdown(
                 chat_id,
                 text,
                 thread_id=_thread_id(message),
                 disable_notification=silent,
                 receiver_user_id=receiver_user_id,
             )
+            conv_key = self._conversation_key(message)
+            for result in results:
+                sent_id = result.get("message_id")
+                if isinstance(sent_id, int):
+                    self.store.index_message(chat_id, sent_id, conv_key)
+            return _sent_message_id(results)
         except RuntimeError as exc:
             if receiver_user_id is None or "ephemeral" not in str(exc).casefold():
                 raise
-            await self.telegram.send_markdown(
+            results = await self.telegram.send_markdown(
                 chat_id,
                 text,
                 thread_id=_thread_id(message),
                 disable_notification=silent,
             )
+            conv_key = self._conversation_key(message)
+            for result in results:
+                sent_id = result.get("message_id")
+                if isinstance(sent_id, int):
+                    self.store.index_message(chat_id, sent_id, conv_key)
+            return _sent_message_id(results)
 
     async def send_markup(
         self,
@@ -512,6 +1012,12 @@ class Bridge:
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int:
         return await self.telegram.create_forum_topic(chat_id, name)
+
+    async def edit_forum_topic(self, chat_id: int, thread_id: int, name: str) -> None:
+        await self.telegram.edit_forum_topic(chat_id, thread_id, name)
+
+    async def delete_forum_topic(self, chat_id: int, thread_id: int) -> None:
+        await self.telegram.delete_forum_topic(chat_id, thread_id)
 
     async def list_playbooks(self) -> list[Playbook]:
         return await self.devin.list_playbooks()
@@ -684,7 +1190,15 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await runtime.startup()
+        polling_task: asyncio.Task[None] | None = None
+        if actual_settings.telegram_mode == "polling":
+            polling_task = asyncio.create_task(
+                run_polling(runtime.telegram, runtime.handle_update)
+            )
         yield
+        if polling_task is not None:
+            polling_task.cancel()
+            await asyncio.gather(polling_task, return_exceptions=True)
         await runtime.shutdown()
 
     application = FastAPI(title="Telegram–Devin Bridge", lifespan=lifespan)
@@ -698,6 +1212,8 @@ def create_app(
         request: Request,
         x_telegram_bot_api_secret_token: str | None = Header(default=None),
     ) -> dict[str, bool]:
+        if actual_settings.telegram_mode == "polling":
+            raise HTTPException(status_code=404, detail="Polling mode is active")
         if x_telegram_bot_api_secret_token != actual_settings.telegram_webhook_secret:
             raise HTTPException(status_code=403, detail="Invalid webhook secret")
         payload = await request.json()
@@ -778,6 +1294,19 @@ def _int(value: object) -> int:
 def _thread_id(message: Mapping[str, object]) -> int | None:
     value = message.get("message_thread_id")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _reaction_emojis(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    result: set[str] = set()
+    for item in value:
+        reaction = _mapping(item)
+        if reaction.get("type") == "emoji":
+            emoji = _text(reaction.get("emoji"))
+            if emoji is not None:
+                result.add(emoji)
+    return result
 
 
 def _command_name(text: str) -> str:

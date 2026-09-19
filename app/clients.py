@@ -12,6 +12,7 @@ from app.formatting import (
     markdown_to_telegram_markdown_v2,
     normalize_rich_linebreaks,
 )
+from app.telegram_updates import ALLOWED_UPDATES
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class SessionState:
     title: str
     pr_url: str | None
     messages: list[DevinMessage]
+    structured_output: object | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,7 @@ class DevinClient:
             title=self._optional_str(payload.get("title")) or "",
             pr_url=pr_url,
             messages=messages,
+            structured_output=payload.get("structured_output"),
         )
 
     async def list_playbooks(self) -> list[Playbook]:
@@ -225,7 +228,10 @@ class TelegramClient:
         if thread_id is not None:
             body["message_thread_id"] = thread_id
         if reply_to is not None:
-            body["reply_parameters"] = {"message_id": reply_to}
+            body["reply_parameters"] = {
+                "message_id": reply_to,
+                "allow_sending_without_reply": True,
+            }
         if parse_mode is not None:
             body["parse_mode"] = parse_mode
         if reply_markup is not None:
@@ -242,6 +248,7 @@ class TelegramClient:
         markdown: str,
         *,
         thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
         reply_markup: dict[str, object] | None = None,
         disable_notification: bool = False,
         receiver_user_id: int | None = None,
@@ -253,6 +260,11 @@ class TelegramClient:
         }
         if thread_id is not None:
             body["message_thread_id"] = thread_id
+        if reply_to_message_id is not None:
+            body["reply_parameters"] = {
+                "message_id": reply_to_message_id,
+                "allow_sending_without_reply": True,
+            }
         if reply_markup is not None:
             body["reply_markup"] = reply_markup
         if receiver_user_id is not None:
@@ -267,6 +279,7 @@ class TelegramClient:
         text: str,
         *,
         thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
         reply_markup: dict[str, object] | None = None,
         disable_notification: bool = False,
         receiver_user_id: int | None = None,
@@ -278,6 +291,7 @@ class TelegramClient:
                         chat_id,
                         text,
                         thread_id=thread_id,
+                        reply_to_message_id=reply_to_message_id,
                         reply_markup=reply_markup,
                         disable_notification=disable_notification,
                         receiver_user_id=receiver_user_id,
@@ -300,6 +314,9 @@ class TelegramClient:
                     chat_id,
                     part,
                     thread_id=thread_id,
+                    reply_to=(
+                        reply_to_message_id if index == 0 else None
+                    ),
                     parse_mode="MarkdownV2",
                     reply_markup=reply_markup if index == len(parts) - 1 else None,
                     disable_notification=disable_notification,
@@ -373,6 +390,14 @@ class TelegramClient:
             body["message_thread_id"] = thread_id
         await self._request("POST", "/sendMessageDraft", body, None)
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        await self._request(
+            "POST",
+            "/deleteMessage",
+            {"chat_id": chat_id, "message_id": message_id},
+            None,
+        )
+
     async def set_message_reaction(
         self,
         chat_id: int,
@@ -428,6 +453,88 @@ class TelegramClient:
             None,
         )
 
+    async def delete_forum_topic(self, chat_id: int, thread_id: int) -> None:
+        await self._request(
+            "POST",
+            "/deleteForumTopic",
+            {"chat_id": chat_id, "message_thread_id": thread_id},
+            None,
+        )
+
+    async def send_document(
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        *,
+        thread_id: int | None = None,
+        caption: str | None = None,
+        reply_to: int | None = None,
+    ) -> dict[str, object]:
+        data: dict[str, str] = {"chat_id": str(chat_id)}
+        if thread_id is not None:
+            data["message_thread_id"] = str(thread_id)
+        if caption is not None:
+            data["caption"] = caption
+        if reply_to is not None:
+            data["reply_parameters"] = (
+                f'{{"message_id": {reply_to}, '
+                '"allow_sending_without_reply": true}'
+            )
+        response = await self.client.post(
+            "/sendDocument",
+            data=data,
+            files={"document": (filename, content, "text/markdown")},
+        )
+        response.raise_for_status()
+        payload = self._json_object(response)
+        if payload.get("ok") is False:
+            description = payload.get("description")
+            if isinstance(description, str):
+                raise RuntimeError(description)
+            raise RuntimeError("Telegram API request failed")
+        result = payload.get("result", {})
+        if not isinstance(result, dict):
+            return {}
+        return cast(dict[str, object], result)
+
+    async def get_updates(
+        self,
+        offset: int | None,
+        timeout: int,
+        allowed_updates: list[str],
+    ) -> list[dict[str, object]]:
+        body: dict[str, object] = {
+            "timeout": timeout,
+            "allowed_updates": allowed_updates,
+        }
+        if offset is not None:
+            body["offset"] = offset
+        response = await self.client.post("/getUpdates", json=body)
+        response.raise_for_status()
+        payload = self._json_object(response)
+        if payload.get("ok") is False:
+            description = payload.get("description")
+            if isinstance(description, str):
+                raise RuntimeError(description)
+            raise RuntimeError("Telegram API request failed")
+        result = payload.get("result")
+        if not isinstance(result, list):
+            return []
+        return [
+            cast(dict[str, object], item)
+            for item in result
+            if isinstance(item, dict)
+        ]
+
+    async def delete_webhook(self) -> None:
+        await self._request(
+            "POST",
+            "/deleteWebhook",
+            {"drop_pending_updates": False},
+            None,
+        )
+
     async def download_file(self, file_path: str) -> bytes:
         limit = 20 * 1024 * 1024
         async with self.client.stream(
@@ -454,8 +561,26 @@ class TelegramClient:
         payload = await self._request("GET", "/getMe", None, None)
         return payload
 
-    async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
-        await self._request("POST", "/setMyCommands", {"commands": commands}, None)
+    async def set_my_commands(
+        self,
+        commands: list[dict[str, str]],
+        scope: Mapping[str, object] | None = None,
+    ) -> None:
+        body: dict[str, object] = {"commands": commands}
+        if scope is not None:
+            body["scope"] = dict(scope)
+        await self._request("POST", "/setMyCommands", body, None)
+
+    async def set_my_description(self, text: str) -> None:
+        await self._request("POST", "/setMyDescription", {"description": text}, None)
+
+    async def set_my_short_description(self, text: str) -> None:
+        await self._request(
+            "POST",
+            "/setMyShortDescription",
+            {"short_description": text},
+            None,
+        )
 
     async def set_webhook(self, public_base_url: str, webhook_secret: str) -> None:
         await self._request(
@@ -464,6 +589,7 @@ class TelegramClient:
             {
                 "url": f"{public_base_url.rstrip('/')}/telegram/webhook",
                 "secret_token": webhook_secret,
+                "allowed_updates": ALLOWED_UPDATES,
             },
             None,
         )

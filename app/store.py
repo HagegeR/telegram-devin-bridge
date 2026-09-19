@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+UNSET = object()
+
 
 @dataclass(frozen=True)
 class Conversation:
@@ -18,7 +20,9 @@ class Conversation:
     last_event_id: str | None
     created_at: float
     last_user_text: str | None
+    last_user_message_id: int | None
     last_pr_url: str | None
+    updated_at: float
 
 
 @dataclass(frozen=True)
@@ -64,7 +68,9 @@ class Store:
                     last_event_id TEXT,
                     created_at REAL NOT NULL,
                     last_user_text TEXT,
-                    last_pr_url TEXT
+                    last_user_message_id INTEGER,
+                    last_pr_url TEXT,
+                    updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS session_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,9 +93,23 @@ class Store:
                     created_at REAL NOT NULL,
                     message_id INTEGER
                 );
+                CREATE TABLE IF NOT EXISTS long_texts (
+                    token TEXT PRIMARY KEY,
+                    conv_key TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS message_index (
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    conv_key TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY(chat_id, message_id)
                 );
                 """
             )
@@ -107,6 +127,18 @@ class Store:
                 self.connection.execute(
                     "ALTER TABLE conversations ADD COLUMN last_pr_url TEXT"
                 )
+            if "updated_at" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN updated_at REAL"
+                )
+                self.connection.execute(
+                    "UPDATE conversations SET updated_at = created_at "
+                    "WHERE updated_at IS NULL"
+                )
+            if "last_user_message_id" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN last_user_message_id INTEGER"
+                )
             choice_columns = {
                 str(row["name"])
                 for row in self.connection.execute(
@@ -121,6 +153,21 @@ class Store:
                 self.connection.execute(
                     "ALTER TABLE pending_choices ADD COLUMN message_id INTEGER"
                 )
+            message_index_columns = {
+                str(row["name"])
+                for row in self.connection.execute(
+                    "PRAGMA table_info(message_index)"
+                )
+            }
+            if "created_at" not in message_index_columns:
+                self.connection.execute(
+                    "ALTER TABLE message_index ADD COLUMN created_at REAL"
+                )
+                self.connection.execute(
+                    "UPDATE message_index SET created_at = ? "
+                    "WHERE created_at IS NULL",
+                    (time.time(),),
+                )
             legacy_table = self.connection.execute(
                 """
                 SELECT 1 FROM sqlite_master
@@ -129,6 +176,10 @@ class Store:
             ).fetchone()
             if legacy_table is not None:
                 self._migrate_legacy_sessions()
+            self.connection.execute(
+                "DELETE FROM message_index WHERE created_at < ?",
+                (time.time() - 30 * 86400,),
+            )
 
     def _migrate_legacy_sessions(self) -> None:
         rows = self.connection.execute(
@@ -155,8 +206,9 @@ class Store:
                     """
                     INSERT INTO conversations(
                         conv_key, chat_id, thread_id, session_id, session_url,
-                        title, last_event_id, created_at, last_user_text
-                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL)
+                        title, last_event_id, created_at, last_user_text,
+                        last_user_message_id, updated_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, ?)
                     """,
                     (
                         conv_key,
@@ -165,6 +217,7 @@ class Store:
                         session_url,
                         "Telegram conversation",
                         row["last_message_id"],
+                        timestamp,
                         timestamp,
                     ),
                 )
@@ -207,6 +260,7 @@ class Store:
         title: str,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_user_message_id: int | None = None,
         last_pr_url: str | None = None,
         created_at: float | None = None,
     ) -> None:
@@ -220,8 +274,9 @@ class Store:
                 """
                 INSERT INTO conversations(
                     conv_key, chat_id, thread_id, session_id, session_url,
-                    title, last_event_id, created_at, last_user_text, last_pr_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    title, last_event_id, created_at, last_user_text,
+                    last_user_message_id, last_pr_url, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(conv_key) DO UPDATE SET
                     chat_id = excluded.chat_id,
                     thread_id = excluded.thread_id,
@@ -230,7 +285,9 @@ class Store:
                     title = excluded.title,
                     last_event_id = excluded.last_event_id,
                     last_user_text = excluded.last_user_text,
-                    last_pr_url = excluded.last_pr_url
+                    last_user_message_id = excluded.last_user_message_id,
+                    last_pr_url = excluded.last_pr_url,
+                    updated_at = excluded.updated_at
                 """,
                 (
                     conv_key,
@@ -242,7 +299,9 @@ class Store:
                     last_event_id,
                     timestamp,
                     last_user_text,
+                    last_user_message_id,
                     last_pr_url,
+                    timestamp,
                 ),
             )
 
@@ -253,21 +312,27 @@ class Store:
         *,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_user_message_id: object = UNSET,
         last_pr_url: str | None = None,
     ) -> None:
         assignments: list[str] = []
-        values: list[str | None] = []
+        values: list[object] = []
         if last_event_id is not None:
             assignments.append("last_event_id = ?")
             values.append(last_event_id)
         if last_user_text is not None:
             assignments.append("last_user_text = ?")
             values.append(last_user_text)
+        if last_user_message_id is not UNSET:
+            assignments.append("last_user_message_id = ?")
+            values.append(last_user_message_id)
         if last_pr_url is not None:
             assignments.append("last_pr_url = ?")
             values.append(last_pr_url)
         if not assignments:
             return
+        values.append(time.time())
+        assignments.append("updated_at = ?")
         values.extend((conv_key, session_id))
         with self.lock, self.connection:
             self.connection.execute(
@@ -281,6 +346,47 @@ class Store:
             self.connection.execute(
                 "DELETE FROM conversations WHERE conv_key = ? AND session_id = ?",
                 (conv_key, session_id),
+            )
+
+    def get_conversation_for_chat(self, chat_id: int) -> Conversation | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM conversations WHERE chat_id = ? "
+                "ORDER BY updated_at DESC, created_at DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+        return self._conversation(row)
+
+    def index_message(self, chat_id: int, message_id: int, conv_key: str) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO message_index(chat_id, message_id, conv_key, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                    conv_key = excluded.conv_key,
+                    created_at = excluded.created_at
+                """,
+                (chat_id, message_id, conv_key, time.time()),
+            )
+
+    def conv_key_for_message(self, chat_id: int, message_id: int) -> str | None:
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT conv_key FROM message_index
+                WHERE chat_id = ? AND message_id = ?
+                """,
+                (chat_id, message_id),
+            ).fetchone()
+        return None if row is None else str(row["conv_key"])
+
+    def cleanup_message_index(self, max_age_seconds: float = 30 * 86400) -> None:
+        cutoff = time.time() - max_age_seconds
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM message_index WHERE created_at < ?",
+                (cutoff,),
             )
 
     def add_history(
@@ -435,6 +541,50 @@ class Store:
                 (conv_key,),
             )
 
+    def add_long_text(
+        self,
+        token: str,
+        conv_key: str,
+        chat_id: int,
+        text: str,
+    ) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT OR REPLACE INTO long_texts(
+                    token, conv_key, chat_id, text, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (token, conv_key, chat_id, text, time.time()),
+            )
+
+    def get_long_text(self, token: str) -> tuple[str, int, str, str] | None:
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT conv_key, chat_id, text, token
+                FROM long_texts WHERE token = ?
+                """,
+                (token,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["conv_key"]), int(row["chat_id"]), str(row["text"]), str(row["token"])
+
+    def delete_long_text(self, token: str) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM long_texts WHERE token = ?",
+                (token,),
+            )
+
+    def cleanup_long_texts(self, max_age_seconds: float = 7 * 86400) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM long_texts WHERE created_at < ?",
+                (time.time() - max_age_seconds,),
+            )
+
     def get_setting(self, key: str) -> str | None:
         with self.lock:
             row = self.connection.execute(
@@ -471,7 +621,13 @@ class Store:
             last_user_text=(
                 None if row["last_user_text"] is None else str(row["last_user_text"])
             ),
+            last_user_message_id=(
+                None
+                if row["last_user_message_id"] is None
+                else int(row["last_user_message_id"])
+            ),
             last_pr_url=(
                 None if row["last_pr_url"] is None else str(row["last_pr_url"])
             ),
+            updated_at=float(row["updated_at"] or row["created_at"]),
         )

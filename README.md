@@ -13,6 +13,8 @@ pip install -r requirements.txt
 cp .env.example .env
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 python -m app.set_webhook
+# Or run long polling without FastAPI:
+python -m app.poll
 ```
 
 The deployment must expose HTTPS and route the configured public URL to port
@@ -23,16 +25,23 @@ The deployment must expose HTTPS and route the configured public URL to port
 | Variable | Required | Default |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | yes | — |
-| `TELEGRAM_WEBHOOK_SECRET` | yes | — |
+| `TELEGRAM_WEBHOOK_SECRET` | webhook only | — |
 | `DEVIN_API_KEY` | yes | — |
-| `PUBLIC_BASE_URL` | yes | — |
+| `TELEGRAM_MODE` | no | `webhook` (`webhook` or `polling`) |
+| `PUBLIC_BASE_URL` | webhook only | — |
 | `DATABASE_PATH` | no | `./bridge.sqlite3` |
 | `DEVIN_API_BASE_URL` | no | `https://api.devin.ai` |
 | `DEVIN_MAX_ACU_LIMIT` | no | `3` |
-| `DEVIN_POLL_SECONDS` | no | `3` |
+| `DEVIN_POLL_FAST_SECONDS` | no | `1.0` |
+| `DEVIN_POLL_SECONDS` | no | `5` |
 | `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` |
 | `DEVIN_SETTLE_SECONDS` | no | `30` |
+| `DEVIN_STATUS_AFTER_SECONDS` | no | `8` |
 | `DEVIN_SESSION_INSTRUCTIONS` | no | empty |
+| `TELEGRAM_DEBOUNCE_SECONDS` | no | `1.5` |
+| `TELEGRAM_QUEUE_WHILE_BUSY` | no | `true` |
+| `TELEGRAM_LONG_REPLY_CHARS` | no | `3500` |
+| `TELEGRAM_RATE_LIMIT_PER_MINUTE` | no | `20` (`0` disables) |
 | `TELEGRAM_RICH_MESSAGES` | no | `true` |
 | `TELEGRAM_DRAFTS` | no | `false` |
 | `TELEGRAM_ALLOWED_USERS` | no | empty |
@@ -51,13 +60,16 @@ must mention `@BOT_USERNAME`, reply to a bot message, or come from a
 
 ## Commands
 
-`/start`, `/help`, `/new [title]`, `/topic <name>`, `/sessions`, `/resume <n>`, `/status`,
-`/stop`, `/playbook [n] [text]`, `/retry`, `/whoami`, and `/sethome` are
+`/start`, `/help`, `/new [title]`, `/topic <name>`, `/close`, `/rename <name>`,
+`/sessions`, `/resume <n>`, `/status`, `/stop` (`/cancel`), `/playbook [n] [text]`, `/retry`,
+`/whoami`, and `/sethome` are
 available. `/new` creates a fresh active session without deleting history.
 `/topic <name>` creates a Telegram topic with its own Devin session and posts
 an instructional seed message into it. Private-chat topics must first be
 enabled from the chat's bot settings; groups must have Topics enabled.
-`/stop` asks for inline confirmation. `/playbook` lists available Devin
+`/close` and `/rename` manage the current forum topic. React 🔁 to retry the
+last user message or 🛑 to stop the active session. `/stop` asks for inline
+confirmation. `/playbook` lists available Devin
 playbooks or starts one. `/retry` resends the last user message.
 
 ## Notifications
@@ -105,10 +117,27 @@ injected secret grants Devin v3 API access for editing automations.
 `DEVIN_SETTLE_SECONDS` keeps a newly started watcher alive while Devin's API
 still reports a stale non-active status after the message is submitted.
 
+Rapid text and file messages are debounced per chat/topic and joined into one
+Devin turn. When a session is working, later turns are queued and drained in
+order after it finishes; `/status` shows the queued count. Replies extract
+large fenced code blocks as `snippet-*` documents and paginate long text with
+a `Show more` button. Very large replies are sent as `reply.md` with a preview.
+Reply and forward context is included in prompts. The per-user sliding-window
+rate limit sends at most one warning per minute; set it to zero to disable it.
+
 Forum and private-chat topics use independent sessions whenever Telegram
 provides `message_thread_id` with either `chat.is_forum` or
 `is_topic_message`; ordinary DMs and groups use the chat ID.
 `message_thread_id` is preserved for replies and notifications.
+
+Polling mode calls `deleteWebhook` without dropping pending updates, then uses
+50-second Telegram long polling. The Alpine/OpenRC example in
+`deploy/alpine` runs `python -m app.poll`. Fly stores the SQLite database at
+`/data/bridge.sqlite3`; migrate it with:
+
+```bash
+flyctl ssh sftp get /data/bridge.sqlite3
+```
 
 ## Safety
 
