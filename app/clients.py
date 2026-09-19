@@ -174,8 +174,8 @@ class DevinClient:
         response = await self.client.get(
             f"/v3/organizations/{org_id}/consumption/daily/sessions/{session_id}",
             params={
-                "start_time": start.astimezone(timezone.utc).isoformat(),
-                "end_time": end.astimezone(timezone.utc).isoformat(),
+                "time_after": int(start.astimezone(timezone.utc).timestamp()),
+                "time_before": int(end.astimezone(timezone.utc).timestamp()),
             },
             headers=(
                 {"Authorization": f"Bearer {self.service_user_api_key}"}
