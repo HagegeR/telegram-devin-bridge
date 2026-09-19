@@ -27,6 +27,8 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_BOT_TOKEN` | yes | — |
 | `TELEGRAM_WEBHOOK_SECRET` | webhook only | — |
 | `DEVIN_API_KEY` | yes | — |
+| `DEVIN_SERVICE_USER_API_KEY` | no | unset |
+| `DEVIN_ORG_ID` | no | unset |
 | `TELEGRAM_MODE` | no | `webhook` (`webhook` or `polling`) |
 | `PUBLIC_BASE_URL` | webhook only | — |
 | `DATABASE_PATH` | no | `./bridge.sqlite3` |
@@ -50,6 +52,12 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_FREE_RESPONSE_CHATS` | no | empty |
 | `TELEGRAM_HOME_CHANNEL` | no | unset |
 | `TELEGRAM_NOTIFICATION_MODE` | no | `important` |
+| `TELEGRAM_ADMIN_USER_IDS` | no | empty |
+| `TRANSCRIPTION_API_KEY` | no | unset |
+| `TRANSCRIPTION_BASE_URL` | no | `https://api.openai.com/v1` |
+| `TRANSCRIPTION_MODEL` | no | `whisper-1` |
+| `TELEGRAM_ATTACH_VOICE` | no | `false` |
+| `GITHUB_TOKEN` | no | unset |
 | `NOTIFY_SECRET` | no | unset (`/notify` disabled) |
 | `BOT_USERNAME` | no | fetched from Telegram at startup |
 
@@ -62,7 +70,7 @@ must mention `@BOT_USERNAME`, reply to a bot message, or come from a
 
 `/start`, `/help`, `/new [title]`, `/topic <name>`, `/close`, `/rename <name>`,
 `/sessions`, `/resume <n>`, `/status`, `/stop` (`/cancel`), `/playbook [n] [text]`, `/retry`,
-`/whoami`, and `/sethome` are
+`/whoami`, `/sethome`, `/settings`, `/usage`, `/users`, and `/revoke <id>` are
 available. `/new` creates a fresh active session without deleting history.
 `/topic <name>` creates a Telegram topic with its own Devin session and posts
 an instructional seed message into it. Private-chat topics must first be
@@ -71,6 +79,10 @@ enabled from the chat's bot settings; groups must have Topics enabled.
 last user message or 🛑 to stop the active session. `/stop` asks for inline
 confirmation. `/playbook` lists available Devin
 playbooks or starts one. `/retry` resends the last user message.
+`/settings` controls notification, draft, status timer, and default playbook
+behavior for the current chat or topic. `/usage` reports Devin ACUs when an
+organization ID is configured. Administrators can approve private-chat access
+requests and manage approved users with `/users` and `/revoke`.
 
 ## Notifications
 
@@ -116,6 +128,11 @@ injected secret grants Devin v3 API access for editing automations.
 
 `DEVIN_SETTLE_SECONDS` keeps a newly started watcher alive while Devin's API
 still reports a stale non-active status after the message is submitted.
+
+`TRANSCRIPTION_API_KEY` enables transcription for voice, audio, and video-note
+messages. `TELEGRAM_ATTACH_VOICE=true` keeps the original audio attached.
+Artifact images and documents from Devin are forwarded to Telegram, and GitHub
+pull requests are rendered as compact cards when metadata is available.
 
 Rapid text and file messages are debounced per chat/topic and joined into one
 Devin turn. When a session is working, later turns are queued and drained in

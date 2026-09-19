@@ -101,6 +101,19 @@ class CommandRuntime(Protocol):
 
     async def list_playbooks(self) -> list[Playbook]: ...
 
+    async def settings_menu(
+        self,
+        message: Mapping[str, object],
+        *,
+        edit_message_id: int | None = None,
+    ) -> None: ...
+
+    async def usage(self, message: Mapping[str, object]) -> None: ...
+
+    async def list_users(self, message: Mapping[str, object]) -> None: ...
+
+    async def revoke_user(self, message: Mapping[str, object], user_id: int) -> None: ...
+
 
 async def handle_command(
     runtime: CommandRuntime,
@@ -138,6 +151,7 @@ async def handle_command(
             message,
             SYSTEM_PREAMBLE + prompt,
             title,
+            playbook_id=runtime.store.get_settings(conv_key).default_playbook,
         )
     elif command == "topic":
         name = args.strip()
@@ -196,6 +210,19 @@ async def handle_command(
                 ),
                 ephemeral=True,
             )
+    elif command == "settings":
+        await runtime.settings_menu(message)
+    elif command == "usage":
+        await runtime.usage(message)
+    elif command == "users":
+        await runtime.list_users(message)
+    elif command == "revoke":
+        try:
+            user_id = int(args)
+        except ValueError:
+            await runtime.send_text(message, "Usage: /revoke <id>")
+            return
+        await runtime.revoke_user(message, user_id)
     elif command == "close":
         if thread_id is None:
             await runtime.send_text(
@@ -418,7 +445,7 @@ def _help_text() -> str:
     return (
         "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
         "/resume <n>\n/status\n/stop (/cancel)\n/playbook [n] [text]\n/retry\n"
-        "/whoami\n/sethome\n/help"
+        "/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n/help"
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import cast
 
 import httpx
@@ -47,9 +48,11 @@ class DevinClient:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 30,
+        service_user_api_key: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.max_acu_limit = max_acu_limit
+        self.service_user_api_key = service_user_api_key
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -144,6 +147,67 @@ class DevinClient:
         if not isinstance(value, str):
             raise TypeError("Devin attachment response was not a URL")
         return value
+
+    async def download_attachment(
+        self,
+        url: str,
+    ) -> tuple[bytes, str] | None:
+        try:
+            response = await self.client.get(url, follow_redirects=True)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        if len(response.content) > 20 * 1024 * 1024:
+            return None
+        return response.content, response.headers.get(
+            "content-type",
+            "application/octet-stream",
+        ).split(";", 1)[0]
+
+    async def session_consumption(
+        self,
+        org_id: str,
+        session_id: str,
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, object]:
+        response = await self.client.get(
+            f"/v3/organizations/{org_id}/consumption/daily/sessions/{session_id}",
+            params={
+                "start_time": start.astimezone(timezone.utc).isoformat(),
+                "end_time": end.astimezone(timezone.utc).isoformat(),
+            },
+            headers=(
+                {"Authorization": f"Bearer {self.service_user_api_key}"}
+                if self.service_user_api_key
+                else None
+            ),
+        )
+        response.raise_for_status()
+        value = response.json()
+        if not isinstance(value, dict):
+            raise TypeError("Devin consumption response was not an object")
+        return cast(dict[str, object], value)
+
+    async def fetch_github_pr(
+        self,
+        url: str,
+        token: str | None = None,
+    ) -> dict[str, object] | None:
+        headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        api_url = url.replace(
+            "https://github.com/",
+            "https://api.github.com/repos/",
+        ).replace("/pull/", "/pulls/")
+        try:
+            response = await self.client.get(api_url, headers=headers, timeout=10)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        value = response.json()
+        return cast(dict[str, object], value) if isinstance(value, dict) else None
 
     async def _call(
         self,
@@ -470,6 +534,7 @@ class TelegramClient:
         thread_id: int | None = None,
         caption: str | None = None,
         reply_to: int | None = None,
+        content_type: str = "text/markdown",
     ) -> dict[str, object]:
         data: dict[str, str] = {"chat_id": str(chat_id)}
         if thread_id is not None:
@@ -484,7 +549,7 @@ class TelegramClient:
         response = await self.client.post(
             "/sendDocument",
             data=data,
-            files={"document": (filename, content, "text/markdown")},
+            files={"document": (filename, content, content_type)},
         )
         response.raise_for_status()
         payload = self._json_object(response)
@@ -497,6 +562,38 @@ class TelegramClient:
         if not isinstance(result, dict):
             return {}
         return cast(dict[str, object], result)
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        *,
+        thread_id: int | None = None,
+        caption: str | None = None,
+        reply_to: int | None = None,
+    ) -> dict[str, object]:
+        data: dict[str, str] = {"chat_id": str(chat_id)}
+        if thread_id is not None:
+            data["message_thread_id"] = str(thread_id)
+        if caption is not None:
+            data["caption"] = caption
+        if reply_to is not None:
+            data["reply_parameters"] = (
+                f'{{"message_id": {reply_to}, '
+                '"allow_sending_without_reply": true}'
+            )
+        response = await self.client.post(
+            "/sendPhoto",
+            data=data,
+            files={"photo": (filename, content, "image/jpeg")},
+        )
+        response.raise_for_status()
+        payload = self._json_object(response)
+        if payload.get("ok") is False:
+            raise RuntimeError("Telegram API request failed")
+        result = payload.get("result", {})
+        return cast(dict[str, object], result) if isinstance(result, dict) else {}
 
     async def get_updates(
         self,

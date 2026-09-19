@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -32,6 +34,9 @@ class SessionWatcher:
         trigger_message_id: int | None = None,
         transient_message_ids: list[int] | None = None,
         on_status_change: Callable[[str], Awaitable[None]] | None = None,
+        drafts_enabled: bool | None = None,
+        status_after_seconds: float | None = None,
+        silent: bool = False,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -49,7 +54,17 @@ class SessionWatcher:
         self.trigger_message_id = trigger_message_id
         self.transient_message_ids = transient_message_ids or []
         self.on_status_change = on_status_change
-        self.drafts_ok = settings.telegram_drafts
+        self.drafts_ok = (
+            settings.telegram_drafts
+            if drafts_enabled is None
+            else drafts_enabled
+        )
+        self.status_after_seconds = (
+            settings.devin_status_after_seconds
+            if status_after_seconds is None
+            else status_after_seconds
+        )
+        self.silent = silent
         self.draft_id = secrets.randbelow(2**31 - 1) + 1
         self.status_message_id: int | None = None
         self.last_status_text: str | None = None
@@ -135,7 +150,7 @@ class SessionWatcher:
                         self.conversation.chat_id,
                         f"PR: {state.pr_url}",
                         thread_id=self.conversation.thread_id,
-                        disable_notification=True,
+                        disable_notification=self.silent,
                     )
                     last_pr_url = state.pr_url
                     self.store.update_conversation(
@@ -162,7 +177,7 @@ class SessionWatcher:
                     self.conversation.chat_id,
                     "Devin is still working; I'll deliver replies when you next message.",
                     thread_id=self.conversation.thread_id,
-                    disable_notification=True,
+                    disable_notification=self.silent,
                 )
         except Exception as exc:
             logger.exception("Session watcher failed for conversation %s", self.conversation.conv_key)
@@ -186,7 +201,7 @@ class SessionWatcher:
         state: SessionState,
     ) -> None:
         elapsed = self.clock() - started_at
-        if elapsed < self.settings.devin_status_after_seconds:
+        if elapsed < self.status_after_seconds:
             if self.drafts_ok and self.conversation.chat_id > 0:
                 await self._send_draft("")
             else:
@@ -218,7 +233,7 @@ class SessionWatcher:
                     self.conversation.chat_id,
                     status_text,
                     thread_id=self.conversation.thread_id,
-                    disable_notification=True,
+                    disable_notification=self.silent,
                 )
                 if isinstance(result, dict):
                     value = result.get("message_id")
@@ -307,6 +322,70 @@ class SessionWatcher:
         body, options = extract_options(message.message)
         if not body and options:
             body = "Choose an option:"
+        attachment_urls = re.findall(
+            r"https://app\.devin\.ai/attachments/[^/\s]+/[^\s]+",
+            body,
+        )
+        for url in attachment_urls:
+            downloaded = await self.devin.download_attachment(url)
+            if downloaded is None:
+                continue
+            content, content_type = downloaded
+            filename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+            if content_type.startswith("image/"):
+                await self.telegram.send_photo(
+                    self.conversation.chat_id,
+                    filename,
+                    content,
+                    thread_id=self.conversation.thread_id,
+                    caption=filename,
+                    reply_to=reply_to_message_id,
+                )
+            else:
+                await self.telegram.send_document(
+                    self.conversation.chat_id,
+                    filename,
+                    content,
+                    content_type=content_type,
+                    thread_id=self.conversation.thread_id,
+                    reply_to=reply_to_message_id,
+                )
+            body = body.replace(f"\n{url}\n", "\n")
+            if body == url:
+                body = ""
+        pr_urls = re.findall(
+            r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+            body,
+        )
+        if state.pr_url and state.pr_url.startswith("https://github.com/"):
+            pr_urls.append(state.pr_url)
+        for pr_url in dict.fromkeys(pr_urls):
+            metadata = await self.devin.fetch_github_pr(
+                pr_url,
+                self.settings.github_token,
+            )
+            if metadata is None:
+                continue
+            number = metadata.get("number")
+            title = metadata.get("title")
+            state_name = metadata.get("state")
+            merged = metadata.get("merged")
+            additions = metadata.get("additions")
+            deletions = metadata.get("deletions")
+            base = metadata.get("base")
+            head = metadata.get("head")
+            if not all(
+                isinstance(value, (str, int, bool))
+                for value in (number, title, state_name, merged, additions, deletions)
+            ):
+                continue
+            base_name = base.get("ref") if isinstance(base, dict) else ""
+            head_name = head.get("ref") if isinstance(head, dict) else ""
+            status = "merged" if merged else str(state_name)
+            body += (
+                f"\n\n🔗 PR #{number} · {title} · {status} · "
+                f"+{additions} −{deletions} · {base_name}←{head_name}"
+            )
         markup: dict[str, object] | None = None
         choice_ids: list[tuple[str, str]] = []
         if options:
@@ -333,6 +412,8 @@ class SessionWatcher:
             markup = {"inline_keyboard": buttons}
         body, documents = extract_large_code_blocks(body)
         for index, (filename, content) in enumerate(documents):
+            if filename.endswith(".txt") and "```diff" in message.message:
+                filename = filename[:-4] + ".diff"
             await self.telegram.send_document(
                 self.conversation.chat_id,
                 filename,
@@ -354,8 +435,11 @@ class SessionWatcher:
                 body[:500],
                 thread_id=self.conversation.thread_id,
                 disable_notification=(
-                    self.settings.telegram_notification_mode == "important"
-                    and state.status_enum == "working"
+                    self.silent
+                    or (
+                        self.settings.telegram_notification_mode == "important"
+                        and state.status_enum == "working"
+                    )
                 ),
                 reply_to_message_id=reply_to_message_id,
             )
@@ -382,8 +466,11 @@ class SessionWatcher:
             "thread_id": self.conversation.thread_id,
             "reply_markup": markup,
             "disable_notification": (
-                self.settings.telegram_notification_mode == "important"
-                and state.status_enum == "working"
+                self.silent
+                or (
+                    self.settings.telegram_notification_mode == "important"
+                    and state.status_enum == "working"
+                )
             ),
         }
         if reply_to_message_id is not None:

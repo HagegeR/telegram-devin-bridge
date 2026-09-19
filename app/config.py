@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     telegram_webhook_secret: str | None = None
     devin_api_key: str
+    devin_service_user_api_key: str | None = None
+    devin_org_id: str | None = None
     public_base_url: str | None = None
     database_path: str = "./bridge.sqlite3"
     devin_api_base_url: str = "https://api.devin.ai"
@@ -33,6 +35,12 @@ class Settings(BaseSettings):
     telegram_notification_mode: str = "important"
     notify_secret: str | None = None
     bot_username: str | None = None
+    telegram_admin_user_ids: str = ""
+    transcription_api_key: str | None = None
+    transcription_base_url: str = "https://api.openai.com/v1"
+    transcription_model: str = "whisper-1"
+    telegram_attach_voice: bool = False
+    github_token: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 
@@ -68,6 +76,10 @@ class Settings(BaseSettings):
     @property
     def free_response_chats(self) -> frozenset[int]:
         return self._csv_ints(self.telegram_free_response_chats)
+
+    @property
+    def admin_user_ids(self) -> frozenset[int]:
+        return self._csv_ints(self.telegram_admin_user_ids)
 
 
 @lru_cache
