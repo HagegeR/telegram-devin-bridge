@@ -352,6 +352,7 @@ class SessionWatcher:
                     thread_id=self.conversation.thread_id,
                     caption=filename,
                     reply_to=reply_to_message_id,
+                    content_type=content_type,
                 )
             else:
                 await self.telegram.send_document(

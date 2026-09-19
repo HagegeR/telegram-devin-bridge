@@ -572,6 +572,7 @@ class TelegramClient:
         thread_id: int | None = None,
         caption: str | None = None,
         reply_to: int | None = None,
+        content_type: str = "image/jpeg",
     ) -> dict[str, object]:
         data: dict[str, str] = {"chat_id": str(chat_id)}
         if thread_id is not None:
@@ -586,7 +587,7 @@ class TelegramClient:
         response = await self.client.post(
             "/sendPhoto",
             data=data,
-            files={"photo": (filename, content, "image/jpeg")},
+            files={"photo": (filename, content, content_type)},
         )
         response.raise_for_status()
         payload = self._json_object(response)

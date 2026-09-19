@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
 import secrets
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import httpx
@@ -1109,12 +1109,12 @@ class Bridge:
         if conversation is None:
             await self.send_text(message, "No Devin session is active in this conversation.")
             return
-        end = datetime.datetime.now(datetime.timezone.utc)
+        end = datetime.now(timezone.utc)
         start = max(
-            end - datetime.timedelta(days=30),
-            datetime.datetime.fromtimestamp(
+            end - timedelta(days=30),
+            datetime.fromtimestamp(
                 conversation.created_at,
-                datetime.timezone.utc,
+                timezone.utc,
             ),
         )
         try:
@@ -1133,19 +1133,20 @@ class Bridge:
                 )
                 return
             raise
-        rows = payload.get("data", payload.get("daily", []))
+        total = payload.get("total_acus")
+        total_acus = float(total) if isinstance(total, (int, float)) else 0.0
+        rows = payload.get("consumption_by_date", [])
         daily: list[tuple[str, float]] = []
         if isinstance(rows, list):
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                date = row.get("date", row.get("day"))
-                amount = row.get("acus", row.get("acu", row.get("consumption")))
+                date = row.get("date")
+                amount = row.get("acus")
                 if isinstance(date, str) and isinstance(amount, (int, float)):
                     daily.append((date, float(amount)))
         daily = daily[-7:]
-        total = sum(amount for _, amount in daily)
-        lines = [f"Session ACUs: {total:.2f} (last 30 days)"]
+        lines = [f"Session ACUs: {total_acus:.2f} (last 30 days)"]
         lines.extend(f"{date} · {amount:.2f}" for date, amount in reversed(daily))
         lines.append(
             "Usage is aggregated daily and refreshed roughly hourly — not real-time."
@@ -1276,10 +1277,8 @@ class Bridge:
     ) -> None:
         sender = _mapping(callback.get("from"))
         sender_id = _int(sender.get("id"))
-        callback_message = _mapping(callback.get("message"))
-        chat_id = _int(_mapping(callback_message.get("chat")).get("id"))
         if data == "acc:req":
-            user_id = chat_id
+            user_id = sender_id
             request = self.store.get_access_request(user_id)
             if request is None:
                 self.store.save_access_request(
@@ -1306,7 +1305,10 @@ class Bridge:
         parts = data.split(":")
         if len(parts) != 3 or parts[1] not in {"ok", "no"}:
             return
-        user_id = _int(parts[2])
+        try:
+            user_id = int(parts[2])
+        except ValueError:
+            return
         approved = parts[1] == "ok"
         self.store.decide_access_request(user_id, "approved" if approved else "denied", sender_id)
         if approved:
