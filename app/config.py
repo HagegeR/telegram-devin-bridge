@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     devin_poll_seconds: float = 3
     devin_watch_timeout_seconds: float = 1800
     devin_settle_seconds: float = 30
+    devin_session_instructions: str = ""
     telegram_rich_messages: bool = True
     telegram_drafts: bool = False
     telegram_allowed_chat_ids: str = ""

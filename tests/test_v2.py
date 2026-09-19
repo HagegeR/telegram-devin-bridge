@@ -719,6 +719,21 @@ async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_session_instructions_prefix_new_session_prompt(tmp_path: Path) -> None:
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path, devin_session_instructions="  Org rules here.  "),
+        Store(":memory:"),
+        devin,
+        _FakeTelegram(),  # type: ignore[arg-type]
+    )
+    await runtime.handle_user_turn(message("hello", message_id=1), "hello")
+    assert devin.created[0].startswith("Org rules here.\n\n")
+    assert devin.created[0].endswith("hello")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_topic_command_creates_and_seeds_topic(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
