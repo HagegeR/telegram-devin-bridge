@@ -39,10 +39,9 @@ class SessionWatcher:
         self.devin = devin
         self.telegram = telegram
         self.settings = settings
-        self.poll_seconds = (
-            settings.devin_poll_seconds
-            if poll_seconds is None
-            else poll_seconds
+        self.poll_seconds = max(
+            0.5,
+            settings.devin_poll_seconds if poll_seconds is None else poll_seconds,
         )
         self.clock = clock
         self.sleep = sleep
@@ -55,12 +54,16 @@ class SessionWatcher:
         self.status_sent_at: float | None = None
         self.last_chat_action_at: float | None = None
         self.delivered_count = 0
-        self.cleaned_up = False
+        self.delivered = False
+        self.draft_used = False
+
+    def set_trigger(self, message_id: int) -> None:
+        self.trigger_message_id = message_id
+        self.delivered = False
 
     async def run(self) -> None:
         started_at = self.clock()
         wall_started_at = time.time()
-        delivered = False
         last_pr_url = self.conversation.last_pr_url
         last_event_id = self.conversation.last_event_id
         active_statuses = {
@@ -70,8 +73,8 @@ class SessionWatcher:
             "resume_requested_frontend",
         }
         interval = min(
-            max(self.settings.devin_poll_fast_seconds, 0),
-            max(self.poll_seconds, 0),
+            max(self.settings.devin_poll_fast_seconds, 0.5),
+            self.poll_seconds,
         )
         previous_status: str | None = None
         try:
@@ -90,22 +93,22 @@ class SessionWatcher:
                 previous_status = state.status_enum
                 if first_poll or new_messages or status_changed:
                     interval = min(
-                        max(self.settings.devin_poll_fast_seconds, 0),
-                        max(self.poll_seconds, 0),
+                        max(self.settings.devin_poll_fast_seconds, 0.5),
+                        self.poll_seconds,
                     )
                 else:
                     interval = min(
-                        max(interval * 1.5, self.settings.devin_poll_fast_seconds),
-                        max(self.poll_seconds, 0),
+                        max(interval * 1.5, self.settings.devin_poll_fast_seconds, 0.5),
+                        self.poll_seconds,
                     )
                 for message in new_messages:
-                    if not delivered:
+                    if not self.delivered:
                         await self._cleanup_transients()
                     await self._deliver(
                         message,
                         state,
                         reply_to_message_id=(
-                            self.trigger_message_id if not delivered else None
+                            self.trigger_message_id if not self.delivered else None
                         ),
                     )
                     if message.event_id is not None:
@@ -119,7 +122,7 @@ class SessionWatcher:
                             self.conversation.session_id,
                             last_event_id=message.event_id,
                         )
-                    delivered = True
+                    self.delivered = True
                     self.delivered_count += 1
                 if state.pr_url is not None and state.pr_url != last_pr_url:
                     await self.telegram.send_message(
@@ -140,7 +143,7 @@ class SessionWatcher:
                     return
                 if state.status_enum not in active_statuses:
                     settled = self.clock() - started_at >= self.settings.devin_settle_seconds
-                    if delivered or settled:
+                    if self.delivered or settled:
                         await self._cleanup_transients()
                         await self._finish_reaction(expired=False)
                         return
@@ -148,7 +151,7 @@ class SessionWatcher:
                     await self._refresh_progress(started_at, state)
                 await self.sleep(interval)
             await self._cleanup_transients()
-            if not delivered:
+            if not self.delivered:
                 await self.telegram.send_message(
                     self.conversation.chat_id,
                     "Devin is still working; I'll deliver replies when you next message.",
@@ -232,6 +235,7 @@ class SessionWatcher:
                 text,
                 thread_id=self.conversation.thread_id,
             )
+            self.draft_used = True
         except (RuntimeError, httpx.HTTPError):
             self.drafts_ok = False
             await self._send_chat_action()
@@ -253,12 +257,11 @@ class SessionWatcher:
             logger.warning("Failed to send typing action chat=%s", self.conversation.chat_id)
 
     async def _cleanup_transients(self) -> None:
-        if self.cleaned_up:
-            return
-        self.cleaned_up = True
         message_ids = list(self.transient_message_ids)
+        self.transient_message_ids.clear()
         if self.status_message_id is not None:
             message_ids.append(self.status_message_id)
+            self.status_message_id = None
         for message_id in message_ids:
             try:
                 await self.telegram.delete_message(
@@ -272,6 +275,21 @@ class SessionWatcher:
                     message_id,
                     exc_info=True,
                 )
+        if self.drafts_ok and self.draft_used and self.conversation.chat_id > 0:
+            try:
+                await self.telegram.send_message_draft(
+                    self.conversation.chat_id,
+                    self.draft_id,
+                    "",
+                    thread_id=self.conversation.thread_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to clear draft chat=%s",
+                    self.conversation.chat_id,
+                    exc_info=True,
+                )
+            self.draft_used = False
 
     async def _deliver(
         self,
@@ -322,6 +340,14 @@ class SessionWatcher:
             body,
             **delivery_kwargs,
         )
+        for result in results:
+            message_id = result.get("message_id")
+            if isinstance(message_id, int):
+                self.store.index_message(
+                    self.conversation.chat_id,
+                    message_id,
+                    self.conversation.conv_key,
+                )
         if options:
             message_id = None
             if results:
