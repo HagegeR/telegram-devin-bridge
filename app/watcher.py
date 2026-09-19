@@ -14,7 +14,12 @@ import httpx
 
 from app.config import Settings
 from app.devin import DevinClient, DevinMessage, SessionState
-from app.formatting import extract_large_code_blocks, extract_options, split_long_text
+from app.formatting import (
+    extract_attachments,
+    extract_large_code_blocks,
+    extract_options,
+    split_long_text,
+)
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
 
@@ -338,14 +343,19 @@ class SessionWatcher:
         *,
         reply_to_message_id: int | None = None,
     ) -> None:
-        body, options = extract_options(message.message)
+        body, attachment_urls = extract_attachments(message.message)
+        body, options = extract_options(body)
         if not body and options:
             body = "Choose an option:"
-        attachment_urls = re.findall(
-            r"https://app\.devin\.ai/attachments/[^/\s)\]]+/[^\s)\]]+",
+        bare_attachment_urls = re.findall(
+            r"https://app\.devin\.ai/attachments/[^/\s)\]]+/[^\s)\]\"'<>]+",
             body,
         )
-        attachment_urls = [url.rstrip(".,;:!?") for url in attachment_urls]
+        attachment_urls.extend(
+            url.rstrip(".,;:!?")
+            for url in bare_attachment_urls
+            if url.rstrip(".,;:!?") not in attachment_urls
+        )
         for url in attachment_urls:
             downloaded = await self.devin.download_attachment(url)
             if downloaded is None:

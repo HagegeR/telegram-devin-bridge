@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 
 
@@ -213,6 +214,30 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     ):
         return text, []
     return "\n".join(lines[:index]).rstrip(), options
+
+
+def extract_attachments(text: str) -> tuple[str, list[str]]:
+    pattern = re.compile(r"^\s*ATTACHMENT:(\{.*\})\s*$")
+    urls: list[str] = []
+    lines = text.splitlines()
+    found = False
+    remaining: list[str] = []
+    for line in lines:
+        match = pattern.fullmatch(line)
+        if match is None:
+            remaining.append(line)
+            continue
+        found = True
+        try:
+            value = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        url = value.get("url") if isinstance(value, dict) else None
+        if isinstance(url, str) and url not in urls:
+            urls.append(url)
+    if not found:
+        return text, []
+    return "\n".join(remaining).rstrip(), urls
 
 
 def extract_large_code_blocks(
