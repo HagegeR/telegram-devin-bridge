@@ -6,7 +6,11 @@ from collections.abc import Mapping
 from app.config import Settings
 
 
-def is_allowed(message: Mapping[str, object], settings: Settings) -> bool:
+def is_allowed(
+    message: Mapping[str, object],
+    settings: Settings,
+    approved_users: set[int] | frozenset[int] | None = None,
+) -> bool:
     sender = _mapping(message.get("from"))
     chat = _mapping(message.get("chat"))
     if bool(sender.get("is_bot")):
@@ -14,6 +18,13 @@ def is_allowed(message: Mapping[str, object], settings: Settings) -> bool:
     user_id = _int(sender.get("id"))
     chat_id = _int(chat.get("id"))
     if settings.telegram_allow_all_users:
+        return True
+    approved = (
+        approved_users is not None
+        and user_id in approved_users
+        and chat_id == user_id
+    )
+    if approved:
         return True
     if settings.allowed_users and user_id not in settings.allowed_users:
         return False

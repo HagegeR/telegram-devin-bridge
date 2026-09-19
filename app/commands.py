@@ -4,7 +4,7 @@ import re
 from collections.abc import Mapping
 from typing import Protocol
 
-from app.access import is_topic_chat
+from app.access import is_allowed, is_topic_chat
 from app.config import Settings
 from app.devin import Playbook, SessionState
 from app.store import Conversation, Store
@@ -23,6 +23,7 @@ class CommandRuntime(Protocol):
     settings: Settings
     store: Store
     bot_topics_enabled: bool
+    approved_users: set[int]
 
     async def send_text(
         self,
@@ -31,7 +32,7 @@ class CommandRuntime(Protocol):
         *,
         silent: bool = False,
         ephemeral: bool = False,
-    ) -> None: ...
+    ) -> int | None: ...
 
     async def create_session_for_message(
         self,
@@ -46,6 +47,28 @@ class CommandRuntime(Protocol):
     async def start_watcher(self, conversation: Conversation) -> None: ...
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int: ...
+
+    async def delete_forum_topic(self, chat_id: int, thread_id: int) -> None: ...
+
+    async def edit_forum_topic(
+        self,
+        chat_id: int,
+        thread_id: int,
+        name: str,
+    ) -> None: ...
+
+    async def stop_conversation(self, conversation: Conversation) -> None: ...
+
+    def clear_queued_turns(self, conv_key: str) -> None: ...
+
+    def queued_count(self, conv_key: str) -> int: ...
+
+    async def retry_conversation(
+        self,
+        conversation: Conversation,
+        *,
+        trigger_message_id: int | None = None,
+    ) -> None: ...
 
     async def replace_conversation(
         self,
@@ -79,6 +102,19 @@ class CommandRuntime(Protocol):
 
     async def list_playbooks(self) -> list[Playbook]: ...
 
+    async def settings_menu(
+        self,
+        message: Mapping[str, object],
+        *,
+        edit_message_id: int | None = None,
+    ) -> None: ...
+
+    async def usage(self, message: Mapping[str, object]) -> None: ...
+
+    async def list_users(self, message: Mapping[str, object]) -> None: ...
+
+    async def revoke_user(self, message: Mapping[str, object], user_id: int) -> None: ...
+
 
 async def handle_command(
     runtime: CommandRuntime,
@@ -106,6 +142,7 @@ async def handle_command(
             )
         await runtime.send_text(message, help_text, ephemeral=True)
     elif command == "new":
+        runtime.clear_queued_turns(conv_key)
         title = args.strip() or "Telegram conversation"
         prompt = (
             f"The user started a new conversation titled '{title}'. "
@@ -115,6 +152,7 @@ async def handle_command(
             message,
             SYSTEM_PREAMBLE + prompt,
             title,
+            playbook_id=runtime.store.get_settings(conv_key).default_playbook,
         )
     elif command == "topic":
         name = args.strip()
@@ -157,17 +195,65 @@ async def handle_command(
             state = await runtime.get_state(conversation.session_id)
             status = state.status_enum
             pr_line = f"\nPR: {state.pr_url}" if state.pr_url else ""
+            queued_line = (
+                f" · {runtime.queued_count(conv_key)} queued"
+                if runtime.queued_count(conv_key)
+                else ""
+            )
             await runtime.send_text(
                 message,
                 (
                     f"{conversation.title}\n"
                     f"Status: {status}\n"
                     f"Session: {conversation.session_url}"
+                    f"{queued_line}"
                     f"{pr_line}"
                 ),
                 ephemeral=True,
             )
-    elif command == "stop":
+    elif command == "settings":
+        await runtime.settings_menu(message)
+    elif command == "usage":
+        await runtime.usage(message)
+    elif command == "users":
+        await runtime.list_users(message)
+    elif command == "revoke":
+        try:
+            user_id = int(args)
+        except ValueError:
+            await runtime.send_text(message, "Usage: /revoke <id>")
+            return
+        await runtime.revoke_user(message, user_id)
+    elif command == "close":
+        if thread_id is None:
+            await runtime.send_text(
+                message,
+                "This command only works inside a topic.",
+            )
+            return
+        if conversation is not None:
+            await runtime.stop_conversation(conversation)
+        runtime.clear_queued_turns(conv_key)
+        try:
+            await runtime.delete_forum_topic(chat_id, thread_id)
+        except RuntimeError as exc:
+            reason = str(exc).strip().replace("\n", " ")[:120] or "temporary error"
+            await runtime.send_text(
+                message,
+                f"Couldn't delete this topic: {reason}",
+            )
+    elif command == "rename":
+        if thread_id is None:
+            await runtime.send_text(
+                message,
+                "This command only works inside a topic.",
+            )
+            return
+        if not args:
+            await runtime.send_text(message, "Usage: /rename <name>")
+            return
+        await runtime.edit_forum_topic(chat_id, thread_id, args)
+    elif command in {"stop", "cancel"}:
         await _stop(runtime, message, conversation)
     elif command == "playbook":
         await _playbook(runtime, message, args)
@@ -175,16 +261,7 @@ async def handle_command(
         if conversation is None or not conversation.last_user_text:
             await runtime.send_text(message, "Nothing to retry.")
         else:
-            runtime.store.update_conversation(
-                conversation.conv_key,
-                conversation.session_id,
-                last_user_text=conversation.last_user_text,
-            )
-            await runtime.send_session_message(
-                conversation.session_id,
-                conversation.last_user_text,
-            )
-            await runtime.start_watcher(conversation)
+            await runtime.retry_conversation(conversation)
     elif command == "whoami":
         await _whoami(runtime, message)
     elif command == "sethome":
@@ -259,6 +336,13 @@ async def _stop(
     conversation: Conversation | None,
 ) -> None:
     if conversation is None:
+        runtime.clear_queued_turns(
+            Store.conv_key(
+                _int(_mapping(message.get("chat")).get("id")),
+                _thread_id(message),
+                is_forum=is_topic_chat(message),
+            )
+        )
         await runtime.send_text(message, "No active session.")
         return
     choice_id = runtime.new_choice_id()
@@ -334,10 +418,7 @@ async def _whoami(runtime: CommandRuntime, message: Mapping[str, object]) -> Non
     chat = _mapping(message.get("chat"))
     user_id = _int(sender.get("id"))
     chat_id = _int(chat.get("id"))
-    allowed = runtime.settings.telegram_allow_all_users or (
-        user_id in runtime.settings.allowed_users
-        or chat_id in runtime.settings.allowed_chat_ids
-    )
+    allowed = is_allowed(message, runtime.settings, runtime.approved_users)
     home = runtime.store.get_setting("home_chat_id") == str(chat_id)
     await runtime.send_text(
         message,
@@ -360,8 +441,9 @@ def _parse(text: str) -> tuple[str, str]:
 
 def _help_text() -> str:
     return (
-        "/new [title]\n/topic <name>\n/sessions\n/resume <n>\n/status\n/stop\n"
-        "/playbook [n] [text]\n/retry\n/whoami\n/sethome\n/help"
+        "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
+        "/resume <n>\n/status\n/stop (/cancel)\n/playbook [n] [text]\n/retry\n"
+        "/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n/help"
     )
 
 
