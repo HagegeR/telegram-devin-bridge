@@ -9,6 +9,7 @@ COMMANDS = [
     ("start", "Start the bridge"),
     ("help", "List available commands"),
     ("new", "Start a new Devin session"),
+    ("topic", "Create a topic with its own Devin session"),
     ("sessions", "List saved sessions"),
     ("resume", "Resume a saved session"),
     ("status", "Show active session status"),

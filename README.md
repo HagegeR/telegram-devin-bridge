@@ -48,9 +48,12 @@ must mention `@BOT_USERNAME`, reply to a bot message, or come from a
 
 ## Commands
 
-`/start`, `/help`, `/new [title]`, `/sessions`, `/resume <n>`, `/status`,
+`/start`, `/help`, `/new [title]`, `/topic <name>`, `/sessions`, `/resume <n>`, `/status`,
 `/stop`, `/playbook [n] [text]`, `/retry`, `/whoami`, and `/sethome` are
 available. `/new` creates a fresh active session without deleting history.
+`/topic <name>` creates a Telegram topic with its own Devin session and posts
+an instructional seed message into it. Private-chat topics must first be
+enabled from the chat's bot settings; groups must have Topics enabled.
 `/stop` asks for inline confirmation. `/playbook` lists available Devin
 playbooks or starts one. `/retry` resends the last user message.
 
@@ -82,9 +85,10 @@ options, each at most 60 characters).
 `DEVIN_SETTLE_SECONDS` keeps a newly started watcher alive while Devin's API
 still reports a stale non-active status after the message is submitted.
 
-Forum topics use independent sessions only when Telegram marks the chat as a
-forum and supplies `message_thread_id`; ordinary DMs and groups use the chat
-ID. `message_thread_id` is preserved for replies and notifications.
+Forum and private-chat topics use independent sessions whenever Telegram
+provides `message_thread_id` with either `chat.is_forum` or
+`is_topic_message`; ordinary DMs and groups use the chat ID.
+`message_thread_id` is preserved for replies and notifications.
 
 ## Safety
 

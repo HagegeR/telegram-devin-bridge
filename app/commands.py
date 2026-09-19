@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping
 from typing import Protocol
 
+from app.access import is_topic_chat
 from app.config import Settings
 from app.devin import Playbook, SessionState
 from app.store import Conversation, Store
@@ -41,6 +42,8 @@ class CommandRuntime(Protocol):
     ) -> Conversation: ...
 
     async def start_watcher(self, conversation: Conversation) -> None: ...
+
+    async def create_forum_topic(self, chat_id: int, name: str) -> int: ...
 
     async def replace_conversation(
         self,
@@ -84,7 +87,7 @@ async def handle_command(
     conv_key = Store.conv_key(
         chat_id,
         thread_id,
-        is_forum=bool(_mapping(message.get("chat")).get("is_forum")),
+        is_forum=is_topic_chat(message),
     )
     conversation = runtime.store.get_conversation(conv_key)
     if command in {"start", "help"}:
@@ -100,6 +103,35 @@ async def handle_command(
             SYSTEM_PREAMBLE + prompt,
             title,
         )
+    elif command == "topic":
+        name = args.strip()
+        if not name:
+            await runtime.send_text(message, "Usage: /topic <name>")
+            return
+        try:
+            thread_id = await runtime.create_forum_topic(chat_id, name)
+        except Exception as exc:
+            reason = str(exc).casefold()
+            if (
+                "not a forum" in reason
+                or "forums_disabled" in reason
+                or "forum" in reason
+            ):
+                await runtime.send_text(
+                    message,
+                    "Topics aren't enabled here. Private chat: open this chat, "
+                    "tap the bot name → enable Topics. Group: group settings → Topics.",
+                )
+            else:
+                raise
+            return
+        seed_message = dict(message)
+        seed_message["message_thread_id"] = thread_id
+        await runtime.send_text(
+            seed_message,
+            f"📌 {name} — send a message here to start a Devin session.",
+        )
+        await runtime.send_text(message, f"Created topic {name}.")
     elif command == "sessions":
         await _sessions(runtime, message, conv_key, conversation)
     elif command == "resume":
@@ -306,7 +338,7 @@ def _parse(text: str) -> tuple[str, str]:
 
 def _help_text() -> str:
     return (
-        "/new [title]\n/sessions\n/resume <n>\n/status\n/stop\n"
+        "/new [title]\n/topic <name>\n/sessions\n/resume <n>\n/status\n/stop\n"
         "/playbook [n] [text]\n/retry\n/whoami\n/sethome\n/help"
     )
 

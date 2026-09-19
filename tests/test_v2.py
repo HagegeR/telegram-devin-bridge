@@ -9,7 +9,7 @@ from typing import cast
 import httpx
 import pytest
 
-from app.access import is_allowed, should_respond_in_group
+from app.access import is_allowed, is_topic_chat, should_respond_in_group
 from app.clients import DevinClient, DevinMessage, SessionState, TelegramClient
 from app.commands import handle_command
 from app.config import Settings
@@ -125,6 +125,22 @@ def test_store_topics_dedupe_and_history(tmp_path: Path) -> None:
     store.close()
 
 
+def test_private_topic_uses_thread_conversation_key() -> None:
+    root = message("root")
+    topic = {
+        **root,
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
+    assert not is_topic_chat(root)
+    assert is_topic_chat(topic)
+    assert Store.conv_key(222) != Store.conv_key(
+        222,
+        9,
+        is_forum=is_topic_chat(topic),
+    )
+
+
 def test_store_migrates_legacy_sessions(tmp_path: Path) -> None:
     database_path = tmp_path / "legacy.sqlite3"
     connection = sqlite3.connect(database_path)
@@ -210,6 +226,11 @@ async def test_clients_use_injected_mock_transports() -> None:
 
     async def telegram_handler(request: httpx.Request) -> httpx.Response:
         telegram_paths.append(request.url.path)
+        if request.url.path.endswith("/createForumTopic"):
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"message_thread_id": 19}},
+            )
         return httpx.Response(200, json={"ok": True, "result": {}})
 
     devin = DevinClient(
@@ -229,9 +250,28 @@ async def test_clients_use_injected_mock_transports() -> None:
     )
     assert (await devin.get_session("s1")).status_enum == "finished"
     await telegram.send_message(222, "hello")
+    assert await telegram.create_forum_topic(222, "New topic") == 19
     assert "/v1/sessions" in devin_paths
     assert any(path.endswith("/sendMessage") for path in telegram_paths)
     await devin.close()
+    await telegram.close()
+
+
+@pytest.mark.asyncio
+async def test_telegram_topic_error_includes_description() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"ok": False, "description": "Bad Request: not a forum"},
+        )
+
+    telegram = TelegramClient(
+        "fake-token",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(RuntimeError, match="not a forum"):
+        await telegram.create_forum_topic(222, "New topic")
     await telegram.close()
 
 
@@ -549,9 +589,17 @@ class _FakeTelegram:
         self.reactions: list[str] = []
         self.answers: list[str] = []
         self.edits: list[str] = []
+        self.created_topics: list[tuple[int, str]] = []
+        self.topic_error: Exception | None = None
 
     async def send_message(self, chat_id: int, text: str, **kwargs: object) -> None:
         self.sent.append({"chat_id": chat_id, "text": text, **kwargs})
+
+    async def create_forum_topic(self, chat_id: int, name: str) -> int:
+        if self.topic_error is not None:
+            raise self.topic_error
+        self.created_topics.append((chat_id, name))
+        return 19
 
     async def send_chat_action(self, *_: object, **__: object) -> None:
         return None
@@ -619,6 +667,35 @@ async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> No
     assert len(devin.created) == 1
     assert {text for _, text in devin.sent} == {"two"}
     assert "one" in devin.created[0]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_topic_command_creates_and_seeds_topic(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    command_message = {
+        **message("/topic New topic"),
+        "message_thread_id": 7,
+        "is_topic_message": True,
+    }
+    await handle_command(runtime, command_message, "/topic New topic")
+    assert telegram.created_topics == [(222, "New topic")]
+    assert telegram.sent[0]["thread_id"] == 19
+    assert str(telegram.sent[0]["text"]).startswith("📌 New topic")
+    assert telegram.sent[1]["text"].startswith("Created topic New topic")
+    assert telegram.sent[1]["thread_id"] == 7
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_topic_command_reports_disabled_topics(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    telegram.topic_error = RuntimeError("Bad Request: not a forum")
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/topic New topic"), "/topic New topic")
+    assert len(telegram.sent) == 1
+    assert str(telegram.sent[0]["text"]).startswith("Topics aren't enabled here")
     await runtime.shutdown()
 
 
@@ -814,6 +891,21 @@ async def test_unsupported_content_does_not_react_or_create_session(
     sticker["sticker"] = {"file_id": "sticker"}
     await runtime.handle_message(sticker)
     assert telegram.sent[0]["text"].startswith("Unsupported message type")
+    assert telegram.reactions == []
+    assert devin.created == []
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_forum_topic_service_message_is_ignored(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, telegram)  # type: ignore[arg-type]
+    service = message("", message_id=8)
+    service.pop("text")
+    service["forum_topic_created"] = {"name": "New topic"}
+    await runtime.handle_message(service)
+    assert telegram.sent == []
     assert telegram.reactions == []
     assert devin.created == []
     await runtime.shutdown()
