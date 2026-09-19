@@ -277,7 +277,7 @@ class TelegramClient:
                 reason = str(exc).casefold()
                 if (
                     "method not found" in reason
-                    or "not found" in reason
+                    or ("method" in reason and "not found" in reason)
                     or "unknown method" in reason
                 ):
                     self.rich_enabled = False

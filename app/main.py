@@ -394,7 +394,6 @@ class Bridge:
                                             if choice_id == data
                                             else choice_option
                                         ),
-                                        "callback_data": choice_id,
                                         "disabled": {},
                                     }
                                 ]
