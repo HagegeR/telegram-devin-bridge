@@ -887,7 +887,8 @@ class Bridge:
         try:
             await self.devin.terminate(conversation.session_id)
         except Exception:
-            await self.start_watcher(conversation)
+            current = self.store.get_conversation(conversation.conv_key) or conversation
+            await self.start_watcher(current)
             raise
         self.clear_queued_turns(conversation.conv_key)
         self.store.clear_conversation(
