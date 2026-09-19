@@ -307,6 +307,17 @@ async def test_telegram_api_ok_and_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_telegram_api_unexpected_json_shape() -> None:
+    async with _telegram_client(
+        lambda r: httpx.Response(200, json=[])
+    ) as client:
+        result = await doctor.check_telegram_api(client, "token")
+    assert result == CheckResult(
+        "telegram api", "fail", "getMe returned unexpected JSON shape"
+    )
+
+
+@pytest.mark.asyncio
 async def test_devin_api_ok_and_rejected() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.headers.get("authorization") == "Bearer good-key":
@@ -333,6 +344,19 @@ async def test_webhook_mismatch_fail() -> None:
         )
     assert result.status == "fail"
     assert "set_webhook" in result.hint
+
+
+@pytest.mark.asyncio
+async def test_webhook_unexpected_json_shape() -> None:
+    async with _telegram_client(
+        lambda r: httpx.Response(200, json={"result": []})
+    ) as client:
+        result = await doctor.check_webhook(
+            client, "token", "https://devin-bridge.example.ts.net"
+        )
+    assert result == CheckResult(
+        "webhook", "fail", "getWebhookInfo returned unexpected JSON shape"
+    )
 
 
 @pytest.mark.asyncio

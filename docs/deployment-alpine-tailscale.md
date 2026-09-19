@@ -162,10 +162,11 @@ tailscale funnel status
 
 ## Self-update
 
-`deploy/self-update.sh` pulls `origin/main` (or `SELF_UPDATE_BRANCH`), checks
-out the remote head — the host checkout is deploy-only and local changes are
-discarded on purpose — reinstalls requirements if `requirements.txt` changed,
-and restarts the service detached. Admins can trigger it from Telegram with
+`deploy/self-update.sh` takes a host-wide lock and records a deploy marker, pulls `origin/main` (or
+`SELF_UPDATE_BRANCH`), checks out the remote head — the host checkout is
+deploy-only and local changes are discarded on purpose — reinstalls requirements
+if `requirements.txt` changed, and restarts the service detached. Admins can
+trigger it from Telegram with
 `/update` (or `/update check` for a dry run; requires
 `TELEGRAM_ADMIN_USER_IDS`).
 

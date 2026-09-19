@@ -212,11 +212,17 @@ async def check_telegram_api(
         )
     if response.status_code == 200:
         try:
-            username = response.json().get("result", {}).get("username", "?")
+            payload = response.json()
         except ValueError:
             return CheckResult(
                 "telegram api", "fail", "getMe returned non-JSON body"
             )
+        result = payload.get("result") if isinstance(payload, dict) else None
+        if not isinstance(result, dict):
+            return CheckResult(
+                "telegram api", "fail", "getMe returned unexpected JSON shape"
+            )
+        username = result.get("username", "?")
         return CheckResult("telegram api", "ok", f"getMe ok, bot @{username}")
     if response.status_code == 401:
         return CheckResult(
@@ -317,12 +323,17 @@ async def check_webhook(
             f"https://api.telegram.org/bot{token}/getWebhookInfo",
             timeout=HTTP_TIMEOUT,
         )
-        payload = response.json().get("result", {})
+        body = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         return CheckResult(
             "webhook",
             "fail",
             _redact(f"getWebhookInfo failed: {_describe(exc)}", token),
+        )
+    payload = body.get("result") if isinstance(body, dict) else None
+    if not isinstance(payload, dict):
+        return CheckResult(
+            "webhook", "fail", "getWebhookInfo returned unexpected JSON shape"
         )
     actual = payload.get("url", "")
     if actual != expected:

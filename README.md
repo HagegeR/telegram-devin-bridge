@@ -139,8 +139,8 @@ Two deployment styles exist — pick one:
 
 ## Self-update
 
-`deploy/self-update.sh` fetches `origin/<branch>` (`SELF_UPDATE_BRANCH`,
-default `main`), checks out the remote head, reinstalls requirements when
+`deploy/self-update.sh` takes a host-wide lock and records a deploy marker, fetches `origin/<branch>`
+(`SELF_UPDATE_BRANCH`, default `main`), checks out the remote head, reinstalls requirements when
 `requirements.txt` changed, and restarts the OpenRC service detached.
 `--check` reports without touching anything. The host checkout is
 deploy-only: `git checkout -B` discards local changes on purpose. Admins can
