@@ -84,7 +84,8 @@ class Store:
                     session_id TEXT NOT NULL,
                     chat_id INTEGER NOT NULL,
                     option_text TEXT NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    message_id INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -115,6 +116,10 @@ class Store:
             if "chat_id" not in choice_columns:
                 self.connection.execute(
                     "ALTER TABLE pending_choices ADD COLUMN chat_id INTEGER"
+                )
+            if "message_id" not in choice_columns:
+                self.connection.execute(
+                    "ALTER TABLE pending_choices ADD COLUMN message_id INTEGER"
                 )
             legacy_table = self.connection.execute(
                 """
@@ -346,15 +351,25 @@ class Store:
         session_id: str,
         chat_id: int,
         option_text: str,
+        message_id: int | None = None,
     ) -> None:
         with self.lock, self.connection:
             self.connection.execute(
                 """
                 INSERT OR REPLACE INTO pending_choices(
-                    choice_id, conv_key, session_id, chat_id, option_text, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    choice_id, conv_key, session_id, chat_id, option_text,
+                    created_at, message_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (choice_id, conv_key, session_id, chat_id, option_text, time.time()),
+                (
+                    choice_id,
+                    conv_key,
+                    session_id,
+                    chat_id,
+                    option_text,
+                    time.time(),
+                    message_id,
+                ),
             )
 
     def get_choice(self, choice_id: str) -> tuple[str, str, int, str] | None:
@@ -378,18 +393,40 @@ class Store:
             str(row["option_text"]),
         )
 
-    def list_choices(self, conv_key: str) -> list[tuple[str, str]]:
+    def list_choices(
+        self,
+        conv_key: str,
+        message_id: int | None = None,
+    ) -> list[tuple[str, str]]:
+        where = "conv_key = ?"
+        values: tuple[object, ...] = (conv_key,)
+        if message_id is not None:
+            where += " AND message_id = ?"
+            values += (message_id,)
+        with self.lock:
+            rows = self.connection.execute(
+                f"""
+                SELECT choice_id, option_text
+                FROM pending_choices
+                WHERE {where}
+                ORDER BY created_at, choice_id
+                """,
+                values,
+            ).fetchall()
+        return [(str(row["choice_id"]), str(row["option_text"])) for row in rows]
+
+    def list_choice_messages(self, conv_key: str) -> list[int]:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT choice_id, option_text
+                SELECT DISTINCT message_id
                 FROM pending_choices
-                WHERE conv_key = ?
-                ORDER BY created_at, choice_id
+                WHERE conv_key = ? AND message_id IS NOT NULL
+                ORDER BY message_id
                 """,
                 (conv_key,),
             ).fetchall()
-        return [(str(row["choice_id"]), str(row["option_text"])) for row in rows]
+        return [int(row["message_id"]) for row in rows]
 
     def delete_choices(self, conv_key: str) -> None:
         with self.lock, self.connection:

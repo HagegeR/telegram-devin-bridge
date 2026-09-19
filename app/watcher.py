@@ -8,6 +8,8 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
+import httpx
+
 from app.config import Settings
 from app.devin import DevinClient, DevinMessage, SessionState
 from app.formatting import extract_options
@@ -149,20 +151,30 @@ class SessionWatcher:
         if not body and options:
             body = "Choose an option:"
         markup: dict[str, object] | None = None
+        choice_ids: list[tuple[str, str]] = []
         if options:
+            for message_id in self.store.list_choice_messages(
+                self.conversation.conv_key
+            ):
+                try:
+                    await self.telegram.edit_message_reply_markup(
+                        self.conversation.chat_id,
+                        message_id,
+                    )
+                except (RuntimeError, httpx.HTTPError):
+                    logger.warning(
+                        "Failed to clear stale choice keyboard chat=%s message=%s",
+                        self.conversation.chat_id,
+                        message_id,
+                    )
+            self.store.delete_choices(self.conversation.conv_key)
             buttons: list[list[dict[str, object]]] = []
             for option in options:
                 choice_id = secrets.token_urlsafe(8)
-                self.store.add_choice(
-                    choice_id,
-                    self.conversation.conv_key,
-                    self.conversation.session_id,
-                    self.conversation.chat_id,
-                    option,
-                )
+                choice_ids.append((choice_id, option))
                 buttons.append([{"text": option, "callback_data": choice_id}])
             markup = {"inline_keyboard": buttons}
-        await self.telegram.send_markdown(
+        results = await self.telegram.send_markdown(
             self.conversation.chat_id,
             body,
             thread_id=self.conversation.thread_id,
@@ -172,6 +184,21 @@ class SessionWatcher:
                 and state.status_enum == "working"
             ),
         )
+        if options:
+            message_id = None
+            if results:
+                candidate = results[-1].get("message_id")
+                if isinstance(candidate, int):
+                    message_id = candidate
+            for choice_id, option in choice_ids:
+                self.store.add_choice(
+                    choice_id,
+                    self.conversation.conv_key,
+                    self.conversation.session_id,
+                    self.conversation.chat_id,
+                    option,
+                    message_id,
+                )
 
     def _new_messages(
         self,

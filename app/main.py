@@ -364,7 +364,7 @@ class Bridge:
             ):
                 await self.telegram.answer_callback_query(callback_id, "This choice expired")
                 return
-            choices = self.store.list_choices(conv_key)
+            choices = self.store.list_choices(conv_key, callback_message_id)
             self.store.delete_choices(conv_key)
             plain_option = not option.startswith("__cmd:")
             if option.startswith("__cmd:terminate:"):
@@ -400,6 +400,15 @@ class Bridge:
                                 for choice_id, choice_option in choices
                             ]
                         }
+                        if not choices:
+                            markup = {
+                                "inline_keyboard": [[
+                                    {
+                                        "text": f"✅ {option}",
+                                        "disabled": {},
+                                    }
+                                ]]
+                            }
                         await self.telegram.edit_message_reply_markup(
                             chat_id,
                             callback_message_id,
@@ -461,7 +470,7 @@ class Bridge:
         markup: dict[str, object],
         *,
         ephemeral: bool = False,
-    ) -> None:
+    ) -> int | None:
         chat = _mapping(message.get("chat"))
         sender = _mapping(message.get("from"))
         receiver_user_id = (
@@ -470,22 +479,24 @@ class Bridge:
             else None
         )
         try:
-            await self.telegram.send_markdown(
+            results = await self.telegram.send_markdown(
                 _int(chat.get("id")),
                 text,
                 thread_id=_thread_id(message),
                 reply_markup=markup,
                 receiver_user_id=receiver_user_id,
             )
+            return _sent_message_id(results)
         except RuntimeError as exc:
             if receiver_user_id is None or "ephemeral" not in str(exc).casefold():
                 raise
-            await self.telegram.send_markdown(
+            results = await self.telegram.send_markdown(
                 _int(chat.get("id")),
                 text,
                 thread_id=_thread_id(message),
                 reply_markup=markup,
             )
+            return _sent_message_id(results)
 
     async def get_session_status(self, session_id: str) -> str:
         return (await self.devin.get_session(session_id)).status_enum
@@ -705,6 +716,13 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 def _text(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _sent_message_id(results: list[dict[str, object]]) -> int | None:
+    if not results:
+        return None
+    message_id = results[-1].get("message_id")
+    return message_id if isinstance(message_id, int) else None
 
 
 def _expand_text_links(
