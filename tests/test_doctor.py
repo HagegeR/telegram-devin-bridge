@@ -585,3 +585,17 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     stranger_msg = {"from": {"id": 7}, "chat": {"id": 5}}
     await runtime.self_update(stranger_msg, "")
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_timeout_exception_names_type() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("")
+
+    async with _telegram_client(handler) as client:
+        local = await doctor.check_local_health(client, 8000)
+        public = await doctor.check_public_health(
+            client, "https://devin-bridge.example.ts.net"
+        )
+    assert local.status == "fail" and "ConnectTimeout" in local.detail
+    assert public.status == "fail" and "ConnectTimeout" in public.detail

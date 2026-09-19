@@ -51,6 +51,11 @@ def _redact(text: str, *secrets: str) -> str:
     return text
 
 
+def _describe(exc: BaseException) -> str:
+    text = str(exc)
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 def _is_placeholder(value: str | None) -> bool:
     if not value:
         return True
@@ -189,7 +194,9 @@ async def check_telegram_api(
         )
     except httpx.HTTPError as exc:
         return CheckResult(
-            "telegram api", "fail", _redact(f"transport error: {exc}", token)
+            "telegram api",
+            "fail",
+            _redact(f"transport error: {_describe(exc)}", token),
         )
     if response.status_code == 200:
         username = response.json().get("result", {}).get("username", "?")
@@ -214,7 +221,9 @@ async def check_devin_api(
         )
     except httpx.HTTPError as exc:
         return CheckResult(
-            "devin api", "fail", _redact(f"transport error: {exc}", api_key)
+            "devin api",
+            "fail",
+            _redact(f"transport error: {_describe(exc)}", api_key),
         )
     if response.status_code == 200:
         return CheckResult("devin api", "ok", "list sessions ok")
@@ -238,14 +247,17 @@ async def check_local_health(
             f"http://127.0.0.1:{port}/health", timeout=HTTP_TIMEOUT
         )
         ok = response.json() == {"status": "ok"}
-    except (httpx.HTTPError, ValueError):
+        reason = "" if ok else "unexpected body"
+    except (httpx.HTTPError, ValueError) as exc:
         ok = False
+        reason = _describe(exc)
     if ok:
         return CheckResult("local health", "ok", f"127.0.0.1:{port}/health ok")
+    suffix = f" ({reason})" if reason else ""
     return CheckResult(
         "local health",
         "fail",
-        f"127.0.0.1:{port}/health not healthy",
+        f"127.0.0.1:{port}/health not healthy{suffix}",
         "service not running: rc-service telegram-devin-bridge status; "
         "tail /var/log/telegram-devin-bridge.log",
     )
@@ -258,14 +270,17 @@ async def check_public_health(
     try:
         response = await client.get(url, timeout=HTTP_TIMEOUT)
         ok = response.json() == {"status": "ok"}
-    except (httpx.HTTPError, ValueError):
+        reason = "" if ok else "unexpected body"
+    except (httpx.HTTPError, ValueError) as exc:
         ok = False
+        reason = _describe(exc)
     if ok:
         return CheckResult("public health", "ok", f"{url} ok")
+    suffix = f" ({reason})" if reason else ""
     return CheckResult(
         "public health",
         "fail",
-        f"{url} not healthy",
+        f"{url} not healthy{suffix}",
         "tunnel/funnel down: `tailscale funnel status`, or DNS/TLS for the "
         "public host",
     )
@@ -288,7 +303,9 @@ async def check_webhook(
         payload = response.json().get("result", {})
     except (httpx.HTTPError, ValueError) as exc:
         return CheckResult(
-            "webhook", "fail", _redact(f"getWebhookInfo failed: {exc}", token)
+            "webhook",
+            "fail",
+            _redact(f"getWebhookInfo failed: {_describe(exc)}", token),
         )
     actual = payload.get("url", "")
     if actual != expected:
