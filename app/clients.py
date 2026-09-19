@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import cast
+from typing import TypeVar, cast
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -16,6 +16,33 @@ from app.formatting import (
     normalize_rich_linebreaks,
 )
 from app.telegram_updates import ALLOWED_UPDATES
+
+RETRY_ATTEMPTS = 5
+RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
+T = TypeVar("T")
+
+
+async def _with_transport_retry(
+    send: Callable[[], Awaitable[T]],
+    *,
+    idempotent: bool = False,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> T:
+    for attempt in range(RETRY_ATTEMPTS):
+        try:
+            return await send()
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # failed before anything was transmitted — always safe to retry
+            if attempt == RETRY_ATTEMPTS - 1:
+                raise
+            await sleep(RETRY_BACKOFF[attempt])
+        except httpx.TransportError:
+            # mid-flight failure: retry only for idempotent requests so
+            # mutations are never duplicated
+            if not idempotent or attempt == RETRY_ATTEMPTS - 1:
+                raise
+            await sleep(RETRY_BACKOFF[attempt])
+    raise AssertionError("unreachable")
 
 
 @dataclass(frozen=True)
@@ -144,9 +171,12 @@ class DevinClient:
         content: bytes,
         content_type: str,
     ) -> str:
-        response = await self.client.post(
-            "/v1/attachments",
-            files={"file": (filename, content, content_type)},
+        response = await _with_transport_retry(
+            lambda: self.client.post(
+                "/v1/attachments",
+                files={"file": (filename, content, content_type)},
+            ),
+            idempotent=False,
         )
         response.raise_for_status()
         value = response.json()
@@ -165,7 +195,12 @@ class DevinClient:
             if urlparse(current_url).hostname != "app.devin.ai":
                 return None
             client = self.client if hop == 0 else self.public_client
-            try:
+
+            async def _hop(
+                client: httpx.AsyncClient = client,
+                current_url: str = current_url,
+                hop: int = hop,
+            ) -> tuple[bytes, str] | str | None:
                 async with client.stream(
                     "GET",
                     current_url,
@@ -177,12 +212,8 @@ class DevinClient:
                         location = response.headers.get("location")
                         if not location:
                             return None
-                        current_url = urljoin(current_url, location)
-                        continue
-                    try:
-                        response.raise_for_status()
-                    except httpx.HTTPError:
-                        return None
+                        return urljoin(current_url, location)
+                    response.raise_for_status()
                     content_length = response.headers.get("content-length")
                     if content_length is not None:
                         try:
@@ -201,8 +232,15 @@ class DevinClient:
                         "content-type",
                         "application/octet-stream",
                     ).split(";", 1)[0]
+
+            try:
+                result = await _with_transport_retry(_hop, idempotent=True)
             except httpx.HTTPError:
                 return None
+            if isinstance(result, str):
+                current_url = result
+                continue
+            return result
         return None
 
     async def session_consumption(
@@ -265,7 +303,10 @@ class DevinClient:
         *,
         json: Mapping[str, object] | None = None,
     ) -> None:
-        response = await self.client.request(method, path, json=json)
+        response = await _with_transport_retry(
+            lambda: self.client.request(method, path, json=json),
+            idempotent=method == "GET",
+        )
         response.raise_for_status()
 
     async def _json(
@@ -275,7 +316,10 @@ class DevinClient:
         *,
         json: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
-        response = await self.client.request(method, path, json=json)
+        response = await _with_transport_retry(
+            lambda: self.client.request(method, path, json=json),
+            idempotent=method == "GET",
+        )
         response.raise_for_status()
         value = response.json()
         if not isinstance(value, dict):
@@ -596,10 +640,13 @@ class TelegramClient:
                 f'{{"message_id": {reply_to}, '
                 '"allow_sending_without_reply": true}'
             )
-        response = await self.client.post(
-            "/sendDocument",
-            data=data,
-            files={"document": (filename, content, content_type)},
+        response = await _with_transport_retry(
+            lambda: self.client.post(
+                "/sendDocument",
+                data=data,
+                files={"document": (filename, content, content_type)},
+            ),
+            idempotent=False,
         )
         response.raise_for_status()
         payload = self._json_object(response)
@@ -634,10 +681,13 @@ class TelegramClient:
                 f'{{"message_id": {reply_to}, '
                 '"allow_sending_without_reply": true}'
             )
-        response = await self.client.post(
-            "/sendPhoto",
-            data=data,
-            files={"photo": (filename, content, content_type)},
+        response = await _with_transport_retry(
+            lambda: self.client.post(
+                "/sendPhoto",
+                data=data,
+                files={"photo": (filename, content, content_type)},
+            ),
+            idempotent=False,
         )
         response.raise_for_status()
         payload = self._json_object(response)
@@ -688,6 +738,11 @@ class TelegramClient:
         )
 
     async def download_file(self, file_path: str) -> bytes:
+        return await _with_transport_retry(
+            lambda: self._download(file_path), idempotent=True
+        )
+
+    async def _download(self, file_path: str) -> bytes:
         limit = 20 * 1024 * 1024
         async with self.client.stream(
             "GET",
@@ -753,7 +808,11 @@ class TelegramClient:
         body: dict[str, object] | None,
         parse_mode: str | None,
     ) -> dict[str, object]:
-        response = await self.client.request(method, path, json=body)
+        idempotent = method == "GET"
+        response = await _with_transport_retry(
+            lambda: self.client.request(method, path, json=body),
+            idempotent=idempotent,
+        )
         if response.status_code == 429:
             payload = self._json_object(response)
             parameters = payload.get("parameters")
@@ -764,14 +823,23 @@ class TelegramClient:
             )
             if isinstance(retry_after, (int, float)):
                 await asyncio.sleep(float(retry_after))
-                response = await self.client.request(method, path, json=body)
+                response = await _with_transport_retry(
+                    lambda: self.client.request(method, path, json=body),
+                    idempotent=idempotent,
+                )
         if response.status_code == 400 and parse_mode is not None and body is not None:
             plain_body = dict(body)
             plain_body.pop("parse_mode", None)
-            response = await self.client.request(method, path, json=plain_body)
+            response = await _with_transport_retry(
+                lambda: self.client.request(method, path, json=plain_body),
+                idempotent=idempotent,
+            )
             if response.status_code == 400 and "reply_markup" in plain_body:
                 plain_body.pop("reply_markup", None)
-                response = await self.client.request(method, path, json=plain_body)
+                response = await _with_transport_retry(
+                    lambda: self.client.request(method, path, json=plain_body),
+                    idempotent=idempotent,
+                )
         if response.is_error:
             payload = self._json_object(response)
             description = payload.get("description")

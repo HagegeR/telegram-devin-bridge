@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+supervisor=supervise-daemon
+description="Telegram Devin Bridge"
+directory="/root/telegram-devin-bridge"
+command="/root/telegram-devin-bridge/.venv/bin/uvicorn"
+command_args="app.main:app --host 127.0.0.1 --port 8000"
+output_log="/var/log/telegram-devin-bridge.log"
+error_log="/var/log/telegram-devin-bridge.log"
+respawn_delay=5
+respawn_max=0
+depend() { need net; use dns; after tailscale dnsmasq; }
+
+start_pre() {
+	i=0
+	while [ $i -lt 20 ]; do
+		if nslookup api.telegram.org 127.0.0.1 >/dev/null 2>&1 || 		   getent hosts api.telegram.org >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 3
+		i=$((i+1))
+	done
+	ewarn "starting without DNS; supervise-daemon will respawn"
+	return 0
+}

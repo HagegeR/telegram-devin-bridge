@@ -58,7 +58,9 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TRANSCRIPTION_MODEL` | no | `whisper-1` |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
 | `GITHUB_TOKEN` | no | unset |
+| `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
 | `NOTIFY_SECRET` | no | unset (`/notify` disabled) |
+| `DOCTOR_SECRET` | no | unset (`/doctor` disabled) |
 | `BOT_USERNAME` | no | fetched from Telegram at startup |
 
 With allow-all disabled, an empty user/chat allowlist denies access and sends
@@ -97,6 +99,69 @@ curl -X POST http://localhost:8000/notify \
 
 The target is `chat_id`/`thread_id` in the request, the `/sethome` target, or
 `TELEGRAM_HOME_CHANNEL`. Notifications can set `markdown` to `false`.
+
+`GET /doctor` requires `DOCTOR_SECRET` (Bearer auth, separate from
+`NOTIFY_SECRET`, 30 s cooldown between runs) and runs the deployment
+diagnostics, returning `{"results": [...], "ok": bool}`.
+
+## Diagnostics
+
+```bash
+python -m app.doctor                # human-readable check list
+python -m app.doctor --json         # machine-readable
+python -m app.doctor --attempts 10  # more DNS samples
+```
+
+Connection failures to the Telegram and Devin APIs (DNS blips, dropped
+routes) are retried 5 times with exponential backoff (~15 s total);
+mid-flight failures are retried only for idempotent GETs so mutations are
+never duplicated. Longer outages still drop the reply and are logged as
+`Failed to process Telegram update`.
+
+The doctor verifies `.env` completeness, DNS reliability, `/etc/resolv.conf`
+hijacking, default routes and MTU, Tailscale funnel state, the Telegram and
+Devin APIs, the webhook registration, and local/public `/health`. Exit code is
+1 when any check fails.
+
+## Deployment
+
+See [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md)
+for the Alpine + Tailscale Funnel runbook (OpenRC unit in `deploy/openrc`,
+dnsmasq cache config in `deploy/dnsmasq`), including the network pitfalls hit
+in production (MagicDNS resolv.conf takeover, dead second NIC, jumbo MTU).
+
+Two deployment styles exist — pick one:
+
+- `deploy/openrc/telegram-devin-bridge`: **webhook + Tailscale Funnel** unit —
+  uvicorn as root from `/root/telegram-devin-bridge`, supervise-daemon respawn.
+- `deploy/vm/install.sh`: **polling-mode** installer — `TELEGRAM_MODE=polling`,
+  service account under `/opt`, `python -m app.poll`; needs no public URL.
+
+## Self-update
+
+`deploy/self-update.sh` takes a host-wide lock and records a deploy marker, fetches `origin/<branch>`
+(`SELF_UPDATE_BRANCH`, default `main`), checks out the remote head, reinstalls requirements when
+`requirements.txt` changed, and restarts the OpenRC service detached.
+`--check` reports without touching anything. The host checkout is
+deploy-only: `git checkout -B` discards local changes on purpose. Admins can
+run it from Telegram with `/update` or preview with `/update check`
+(requires `TELEGRAM_ADMIN_USER_IDS`).
+
+On Alpine, install the bundled cron entry to poll every 15 minutes:
+
+```sh
+cp deploy/openrc/telegram-devin-bridge-update /etc/periodic/15min/
+chmod +x /etc/periodic/15min/telegram-devin-bridge-update
+```
+
+## Devin Knowledge
+
+`docs/devin-knowledge.md` is published to the Devin Knowledge API with:
+
+```bash
+python -m app.publish_knowledge            # create or update by name
+python -m app.publish_knowledge --dry-run  # print the payload only
+```
 
 ## Media, topics, and formatting
 

@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     telegram_home_channel: int | None = None
     telegram_notification_mode: str = "important"
     notify_secret: str | None = None
+    doctor_secret: str | None = None
     bot_username: str | None = None
     telegram_admin_user_ids: str = ""
     transcription_api_key: str | None = None
@@ -41,6 +42,7 @@ class Settings(BaseSettings):
     transcription_model: str = "whisper-1"
     telegram_attach_voice: bool = False
     github_token: str | None = None
+    self_update_command: str = "sh deploy/self-update.sh"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 

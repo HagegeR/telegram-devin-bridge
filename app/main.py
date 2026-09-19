@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
+import shlex
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import cast
 
 import httpx
@@ -22,6 +25,7 @@ from app.access import (
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
+from app.doctor import register_doctor_route
 from app.formatting import (
     chunk,
     extract_large_code_blocks,
@@ -37,6 +41,33 @@ from app.watcher import ACTIVE_STATUSES, SessionWatcher
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _sanitize_update_output(text: str) -> str:
+    text = _ANSI_RE.sub("", text).replace("`", "'")
+    return text[-3000:]
+
+
+async def _run_command(argv: list[str], cwd: Path) -> tuple[int, str]:
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), 300)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        return 124, "timed out after 300s"
+    return process.returncode or 0, stdout.decode(errors="replace")
+
 
 Attachment = tuple[str, bytes, str]
 TurnFragment = tuple[Mapping[str, object], str, Attachment | None]
@@ -64,6 +95,7 @@ class Bridge:
         self.lock_refs: dict[str, int] = {}
         self.background_tasks: set[asyncio.Task[None]] = set()
         self.denied_notices: set[tuple[int, int]] = set()
+        self._run_command = _run_command
         self.access_prompted: dict[int, float] = {}
         self.transient_messages: dict[str, list[int]] = {}
         self.pending_turns: dict[str, list[TurnFragment]] = {}
@@ -1306,6 +1338,35 @@ class Bridge:
         ) or "No approved users."
         await self.send_text(message, text)
 
+    async def self_update(self, message: Mapping[str, object], args: str) -> None:
+        sender_id = _int(_mapping(message.get("from")).get("id"))
+        if sender_id not in self.settings.admin_user_ids:
+            return
+        argv = shlex.split(self.settings.self_update_command)
+        script = next(
+            (token for token in argv if (_REPO_ROOT / token).is_file()),
+            None,
+        )
+        if (
+            script is None
+            or not (_REPO_ROOT / ".git").exists()
+            or not (_REPO_ROOT / script).resolve().is_relative_to(_REPO_ROOT.resolve())
+        ):
+            await self.send_text(
+                message,
+                "Self-update is unavailable on this install (not a git checkout).",
+            )
+            return
+        if args.strip() == "check":
+            argv.append("--check")
+        exit_code, output = await self._run_command(argv, _REPO_ROOT)
+        tail = "\n".join(output.strip().splitlines()[-30:]) or "(no output)"
+        if exit_code != 0:
+            tail = f"exit {exit_code}\n{tail}"
+        await self.send_text(
+            message, f"```\n{_sanitize_update_output(tail)}\n```"
+        )
+
     async def revoke_user(
         self,
         message: Mapping[str, object],
@@ -1729,6 +1790,7 @@ def create_app(
         return {"accepted": True}
 
     register_notify_route(application, runtime, actual_settings)
+    register_doctor_route(application, actual_settings)
     application.state.bridge = runtime
     return application
 
