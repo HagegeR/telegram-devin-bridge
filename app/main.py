@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 import time
 from collections import deque
@@ -41,6 +42,14 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _sanitize_update_output(text: str) -> str:
+    text = _ANSI_RE.sub("", text).replace("`", "'")
+    return text[-3000:]
 
 
 async def _run_shell(command: str, cwd: Path) -> tuple[int, str]:
@@ -1332,6 +1341,13 @@ class Bridge:
         sender_id = _int(_mapping(message.get("from")).get("id"))
         if sender_id not in self.settings.admin_user_ids:
             return
+        script = Path(self.settings.self_update_command.split()[-1])
+        if not (_REPO_ROOT / ".git").exists() or not (_REPO_ROOT / script).exists():
+            await self.send_text(
+                message,
+                "Self-update is unavailable on this install (not a git checkout).",
+            )
+            return
         command = self.settings.self_update_command
         if args.strip() == "check":
             command = f"{command} --check"
@@ -1339,7 +1355,9 @@ class Bridge:
         tail = "\n".join(output.strip().splitlines()[-30:]) or "(no output)"
         if exit_code != 0:
             tail = f"exit {exit_code}\n{tail}"
-        await self.send_text(message, f"```\n{tail}\n```")
+        await self.send_text(
+            message, f"```\n{_sanitize_update_output(tail)}\n```"
+        )
 
     async def revoke_user(
         self,

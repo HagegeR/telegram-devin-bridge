@@ -22,6 +22,7 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
         "database_path": str(tmp_path / "bridge.sqlite3"),
         "telegram_allowed_users": "111",
         "notify_secret": "notify-secret-abcdef",
+        "doctor_secret": "doctor-secret-abcdef",
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -369,7 +370,7 @@ async def test_doctor_route_auth(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(doctor, "run_all", fake_run_all)
 
-    app_no_secret = create_app(settings=settings(tmp_path, notify_secret=None))
+    app_no_secret = create_app(settings=settings(tmp_path, doctor_secret=None))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app_no_secret), base_url="http://test"
     ) as client:
@@ -386,12 +387,16 @@ async def test_doctor_route_auth(tmp_path: Path, monkeypatch) -> None:
             )
         ).status_code == 403
         response = await client.get(
-            "/doctor", headers={"Authorization": "Bearer notify-secret-abcdef"}
+            "/doctor", headers={"Authorization": "Bearer doctor-secret-abcdef"}
         )
         assert response.status_code == 200
         payload = response.json()
         assert payload["ok"] is True
         assert payload["results"][0]["name"] == "env"
+        again = await client.get(
+            "/doctor", headers={"Authorization": "Bearer doctor-secret-abcdef"}
+        )
+        assert again.status_code == 429
 
 
 def test_parse_front_matter() -> None:
@@ -599,3 +604,152 @@ async def test_timeout_exception_names_type() -> None:
         )
     assert local.status == "fail" and "ConnectTimeout" in local.detail
     assert public.status == "fail" and "ConnectTimeout" in public.detail
+
+
+@pytest.mark.asyncio
+async def test_retry_idempotent_gating() -> None:
+    import app.clients as clients_mod
+    from app.clients import DevinClient
+
+    async def no_sleep(seconds: float) -> None:
+        return None
+
+    # ReadError propagates immediately when not idempotent
+    calls = 0
+
+    def always_read_err(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadError("mid-flight")
+
+    client = DevinClient(
+        "apk_key", "https://api.devin.ai", 1,
+        transport=httpx.MockTransport(always_read_err),
+    )
+    with pytest.raises(httpx.ReadError):
+        await client._call("POST", "/v1/sessions")  # non-idempotent
+    assert calls == 1
+
+    calls = 0
+    with pytest.raises(httpx.ReadError):
+        await client._call("GET", "/v1/sessions")  # idempotent
+    assert calls == clients_mod.RETRY_ATTEMPTS
+
+    # ConnectError retries in both modes
+    calls = 0
+
+    def always_conn_err(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("dns")
+
+    client2 = DevinClient(
+        "apk_key", "https://api.devin.ai", 1,
+        transport=httpx.MockTransport(always_conn_err),
+    )
+    with pytest.raises(httpx.ConnectError):
+        await client2._call("POST", "/v1/sessions")
+    assert calls == clients_mod.RETRY_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_getme_non_json_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>oops</html>")
+
+    async with _telegram_client(handler) as client:
+        result = await doctor.check_telegram_api(client, "token")
+    assert result.status == "fail"
+    assert "non-JSON" in result.detail
+
+
+def test_env_no_warn_when_chat_allowlist(tmp_path: Path) -> None:
+    result = doctor.check_env(
+        settings(
+            tmp_path,
+            telegram_allowed_users="",
+            telegram_allow_all_users=False,
+            telegram_allowed_chat_ids="555",
+        )
+    )
+    assert result.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_run_all_uses_custom_devin_dns_host(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, list[str]] = {}
+
+    async def fake_dns(hosts, attempts=5, **kwargs):
+        captured["hosts"] = list(hosts)
+        return CheckResult("dns", "ok", "stub")
+
+    monkeypatch.setattr(doctor, "check_dns", fake_dns)
+    cfg = settings(tmp_path, devin_api_base_url="https://devin.internal.corp")
+    async with _telegram_client(lambda r: httpx.Response(401, json={})) as client:
+        await doctor.run_all(cfg, client=client, port=1, attempts=1)
+    assert "devin.internal.corp" in captured["hosts"]
+    assert "api.devin.ai" not in captured["hosts"]
+
+
+def test_publish_dry_run_no_env(tmp_path: Path, monkeypatch, capsys) -> None:
+    import sys
+
+    from app import publish_knowledge
+
+    for var in ("TELEGRAM_BOT_TOKEN", "DEVIN_API_KEY", "PUBLIC_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    doc = tmp_path / "k.md"
+    doc.write_text("---\nname: kb\ntrigger_description: d\n---\n\nBody\n")
+    monkeypatch.setattr(
+        sys, "argv", ["publish_knowledge", "--file", str(doc), "--dry-run"]
+    )
+    assert publish_knowledge.main() == 0
+    out = capsys.readouterr().out
+    assert '"name": "kb"' in out
+
+
+@pytest.mark.asyncio
+async def test_self_update_unavailable_without_git(tmp_path: Path) -> None:
+    from app.main import create_app
+
+    app = create_app(
+        settings=settings(
+            tmp_path,
+            telegram_admin_user_ids="42",
+            self_update_command="sh /nonexistent/self-update.sh",
+        )
+    )
+    runtime = app.state.bridge
+    sent: list[str] = []
+
+    async def fake_send(message, text, **kwargs):
+        sent.append(text)
+        return 1
+
+    runtime.send_text = fake_send  # type: ignore[assignment]
+    await runtime.self_update({"from": {"id": 42}, "chat": {"id": 5}}, "")
+    assert "unavailable" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_self_update_sanitizes_output(tmp_path: Path) -> None:
+    from app.main import create_app
+
+    app = create_app(settings=settings(tmp_path, telegram_admin_user_ids="42"))
+    runtime = app.state.bridge
+    sent: list[str] = []
+
+    async def fake_send(message, text, **kwargs):
+        sent.append(text)
+        return 1
+
+    runtime.send_text = fake_send  # type: ignore[assignment]
+
+    async def fake_run(command, cwd):
+        return 0, "evil ` injection " + chr(0x1B) + "[31mred" + chr(10)
+
+    runtime._run_shell = fake_run
+    await runtime.self_update({"from": {"id": 42}, "chat": {"id": 5}}, "")
+    body = sent[-1].strip("`").strip()
+    assert "`" not in body
+    assert chr(0x1B) not in body

@@ -3,8 +3,10 @@
 # service if anything changed.
 # Usage: self-update.sh [--check] [branch]
 #   branch default: $SELF_UPDATE_BRANCH or main
-# NOTE: `git checkout -B` discards local commits/changes on purpose — the
-# host checkout is deploy-only and must track the remote exactly.
+# NOTE: `git reset --hard` + `git checkout -f -B` discards local
+# commits/changes on purpose — the host checkout is deploy-only and must
+# track the remote exactly. `git clean` is deliberately NOT run: it could
+# delete .env/.venv/bridge.sqlite3 if they are ever un-ignored.
 set -eu
 cd "$(dirname "$0")/.."
 CHECK=0; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
@@ -16,7 +18,9 @@ if [ "$LOCAL" = "$REMOTE" ]; then echo "up to date at $(git rev-parse --short HE
 echo "update available: $(git rev-parse --short "$LOCAL") -> $(git rev-parse --short "$REMOTE") ($BRANCH)"
 git log --oneline "$LOCAL..$REMOTE" | head -20
 [ "$CHECK" = 1 ] && exit 0
-git checkout -q -B "$BRANCH" "origin/$BRANCH"
+git reset -q --hard
+git checkout -q -f -B "$BRANCH" "origin/$BRANCH"
+[ "$(git rev-parse HEAD)" = "$REMOTE" ] || { echo "checkout failed"; exit 1; }
 if ! git diff --quiet "$LOCAL" "$REMOTE" -- requirements.txt; then
   .venv/bin/pip install -q -r requirements.txt
 fi

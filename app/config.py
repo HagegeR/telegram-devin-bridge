@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     telegram_home_channel: int | None = None
     telegram_notification_mode: str = "important"
     notify_secret: str | None = None
+    doctor_secret: str | None = None
     bot_username: str | None = None
     telegram_admin_user_ids: str = ""
     transcription_api_key: str | None = None

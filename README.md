@@ -60,6 +60,7 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `GITHUB_TOKEN` | no | unset |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
 | `NOTIFY_SECRET` | no | unset (`/notify` disabled) |
+| `DOCTOR_SECRET` | no | unset (`/doctor` disabled) |
 | `BOT_USERNAME` | no | fetched from Telegram at startup |
 
 With allow-all disabled, an empty user/chat allowlist denies access and sends
@@ -99,8 +100,9 @@ curl -X POST http://localhost:8000/notify \
 The target is `chat_id`/`thread_id` in the request, the `/sethome` target, or
 `TELEGRAM_HOME_CHANNEL`. Notifications can set `markdown` to `false`.
 
-`GET /doctor` uses the same Bearer `NOTIFY_SECRET` auth and runs the
-deployment diagnostics, returning `{"results": [...], "ok": bool}`.
+`GET /doctor` requires `DOCTOR_SECRET` (Bearer auth, separate from
+`NOTIFY_SECRET`, 30 s cooldown between runs) and runs the deployment
+diagnostics, returning `{"results": [...], "ok": bool}`.
 
 ## Diagnostics
 
@@ -110,9 +112,11 @@ python -m app.doctor --json         # machine-readable
 python -m app.doctor --attempts 10  # more DNS samples
 ```
 
-Transport errors to the Telegram and Devin APIs (DNS blips, dropped routes)
-are retried 5 times with exponential backoff (~15 s total); longer outages
-still drop the reply and are logged as `Failed to process Telegram update`.
+Connection failures to the Telegram and Devin APIs (DNS blips, dropped
+routes) are retried 5 times with exponential backoff (~15 s total);
+mid-flight failures are retried only for idempotent GETs so mutations are
+never duplicated. Longer outages still drop the reply and are logged as
+`Failed to process Telegram update`.
 
 The doctor verifies `.env` completeness, DNS reliability, `/etc/resolv.conf`
 hijacking, default routes and MTU, Tailscale funnel state, the Telegram and

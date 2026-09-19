@@ -124,7 +124,6 @@ def main() -> int:
     if not name:
         parser.error(f"{args.file} has no `name` in front matter")
 
-    settings = get_settings()
     payload = {
         "name": name,
         "body": body,
@@ -133,6 +132,8 @@ def main() -> int:
     if args.dry_run:
         print(json.dumps(payload, indent=2))
         return 0
+
+    settings = get_settings()
 
     async def run() -> tuple[str, str]:
         async with httpx.AsyncClient() as client:

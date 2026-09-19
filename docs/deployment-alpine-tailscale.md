@@ -176,9 +176,9 @@ cp deploy/openrc/telegram-devin-bridge-update /etc/periodic/15min/
 chmod +x /etc/periodic/15min/telegram-devin-bridge-update
 ```
 
-Set `SELF_UPDATE_BRANCH` in `/etc/conf.d/telegram-devin-bridge` (sourced by
-the init script pattern used by hermes-gateway) if the host should track a
-branch other than `main`.
+The branch is configured once in `/etc/conf.d/telegram-devin-bridge`
+(`SELF_UPDATE_BRANCH="main"`) and read by both the service environment and
+the cron wrapper — set it there, not in the cron file.
 
 ## 9. Alternative: polling mode
 

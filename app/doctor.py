@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import platform
 import re
 import shutil
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -110,8 +112,14 @@ def check_env(settings: Settings) -> CheckResult:
             "only works for DEVIN_SERVICE_USER_API_KEY / v3 usage"
         )
         hints.append("check DEVIN_API_KEY in .env")
-    if not settings.telegram_allow_all_users and not settings.allowed_users:
-        warnings.append("TELEGRAM_ALLOWED_USERS empty — nobody can use the bot")
+    if (
+        not settings.telegram_allow_all_users
+        and not settings.allowed_users
+        and not settings.allowed_chat_ids
+    ):
+        warnings.append(
+            "no allowed users or chats configured — nobody can use the bot"
+        )
         hints.append("set TELEGRAM_ALLOWED_USERS or TELEGRAM_ALLOW_ALL_USERS=true")
     if warnings:
         return CheckResult(
@@ -199,7 +207,12 @@ async def check_telegram_api(
             _redact(f"transport error: {_describe(exc)}", token),
         )
     if response.status_code == 200:
-        username = response.json().get("result", {}).get("username", "?")
+        try:
+            username = response.json().get("result", {}).get("username", "?")
+        except ValueError:
+            return CheckResult(
+                "telegram api", "fail", "getMe returned non-JSON body"
+            )
         return CheckResult("telegram api", "ok", f"getMe ok, bot @{username}")
     if response.status_code == 401:
         return CheckResult(
@@ -485,7 +498,8 @@ async def run_all(
 ) -> list[CheckResult]:
     results: list[CheckResult] = []
     results.append(check_env(settings))
-    hosts = ["api.telegram.org", "api.devin.ai"]
+    devin_host = urlparse(settings.devin_api_base_url).hostname or "api.devin.ai"
+    hosts = ["api.telegram.org", devin_host]
     if settings.public_base_url:
         public_host = urlparse(settings.public_base_url).hostname
         if public_host:
@@ -535,17 +549,25 @@ async def run_all(
 def register_doctor_route(
     application: FastAPI, settings: Settings, *, port: int = 8000
 ) -> None:
+    last_run: list[float] = []
+
     @application.get("/doctor")
     async def doctor(request: Request) -> dict[str, object]:
-        if settings.notify_secret is None:
+        if settings.doctor_secret is None:
             raise HTTPException(status_code=404, detail="Not found")
         authorization = request.headers.get("authorization", "")
-        if authorization != f"Bearer {settings.notify_secret}":
+        if authorization != f"Bearer {settings.doctor_secret}":
             raise HTTPException(status_code=403, detail="Invalid bearer token")
-        async with httpx.AsyncClient() as client:
-            results = await run_all(
-                settings, client=client, port=port, attempts=1
-            )
+        now = time.monotonic()
+        if last_run and now - last_run[0] < 30:
+            raise HTTPException(status_code=429, detail="doctor cooldown")
+        try:
+            async with httpx.AsyncClient() as client:
+                results = await run_all(
+                    settings, client=client, port=port, attempts=1
+                )
+        finally:
+            last_run[:] = [time.monotonic()]
         return {
             "results": [asdict(result) for result in results],
             "ok": all(result.status != "fail" for result in results),
@@ -578,7 +600,11 @@ def main() -> int:
         async with httpx.AsyncClient() as client:
             if isinstance(loaded, CheckResult):
                 collected = [loaded]
-                hosts = ["api.telegram.org", "api.devin.ai"]
+                devin_host = (
+                    urlparse(os.environ.get("DEVIN_API_BASE_URL", "")).hostname
+                    or "api.devin.ai"
+                )
+                hosts = ["api.telegram.org", devin_host]
                 public_host = (
                     urlparse(args.public_url).hostname if args.public_url else None
                 )
