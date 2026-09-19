@@ -1438,11 +1438,13 @@ class Bridge:
                     )
                 return
             request = self.store.get_access_request(user_id)
-            if request is not None and request.status == "requested":
+            if request is not None and request.status in {"requested", "approved"}:
                 if callback_id:
                     await self.telegram.answer_callback_query(
                         callback_id,
-                        "Request already pending",
+                        "Request already pending"
+                        if request.status == "requested"
+                        else "Already approved",
                     )
                 return
             self.store.save_access_request(
