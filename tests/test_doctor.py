@@ -539,13 +539,13 @@ async def test_transport_retry_helper_uses_sleep() -> None:
     async def send() -> httpx.Response:
         nonlocal attempts
         attempts += 1
-        if attempts < 3:
+        if attempts < 5:
             raise httpx.ConnectError("flaky")
         return httpx.Response(200)
 
     response = await clients_mod._with_transport_retry(send, sleep=fake_sleep)
     assert response.status_code == 200
-    assert attempts == 3
+    assert attempts == 5
     assert slept == list(clients_mod.RETRY_BACKOFF)
 
 

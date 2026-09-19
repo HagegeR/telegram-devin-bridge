@@ -110,6 +110,10 @@ python -m app.doctor --json         # machine-readable
 python -m app.doctor --attempts 10  # more DNS samples
 ```
 
+Transport errors to the Telegram and Devin APIs (DNS blips, dropped routes)
+are retried 5 times with exponential backoff (~15 s total); longer outages
+still drop the reply and are logged as `Failed to process Telegram update`.
+
 The doctor verifies `.env` completeness, DNS reliability, `/etc/resolv.conf`
 hijacking, default routes and MTU, Tailscale funnel state, the Telegram and
 Devin APIs, the webhook registration, and local/public `/health`. Exit code is

@@ -17,8 +17,8 @@ from app.formatting import (
 )
 from app.telegram_updates import ALLOWED_UPDATES
 
-RETRY_ATTEMPTS = 3
-RETRY_BACKOFF = (1.0, 2.0)  # sleep before attempt 2 and 3
+RETRY_ATTEMPTS = 5
+RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
 
 
 async def _with_transport_retry(
