@@ -94,6 +94,8 @@ class Bridge:
             task.cancel()
         if self.debounce_tasks:
             await asyncio.gather(*self.debounce_tasks.values(), return_exceptions=True)
+        for conv_key in list(self.pending_turns):
+            await self._flush_pending(conv_key)
         for task in self.watchers.values():
             task.cancel()
         if self.watchers:
@@ -374,7 +376,9 @@ class Bridge:
             task.cancel()
 
     def queued_count(self, conv_key: str) -> int:
-        return len(self.queued_turns.get(conv_key, []))
+        return len(self.queued_turns.get(conv_key, [])) + len(
+            self.pending_turns.get(conv_key, [])
+        )
 
     def _rate_limited(self, user_id: int) -> bool:
         limit = self.settings.telegram_rate_limit_per_minute
@@ -727,8 +731,7 @@ class Bridge:
             self.store.delete_choices(conv_key)
             plain_option = not option.startswith("__cmd:")
             if option.startswith("__cmd:terminate:"):
-                await self.devin.terminate(option.removeprefix("__cmd:terminate:"))
-                self.store.clear_conversation(conv_key, session_id)
+                await self.stop_conversation(active)
                 updated = "Session terminated."
                 active = None
             elif option == "__cmd:cancel":
@@ -985,9 +988,9 @@ class Bridge:
                 )
             except (RuntimeError, httpx.HTTPError):
                 logger.debug("Failed to clear long-text keyboard", exc_info=True)
-                return
-            await self.telegram.answer_callback_query(callback_id)
-            self.store.delete_long_text(token)
+            finally:
+                await self.telegram.answer_callback_query(callback_id)
+                self.store.delete_long_text(token)
             return
         body, documents = extract_large_code_blocks(remaining)
         for filename, content in documents:
@@ -1026,9 +1029,9 @@ class Bridge:
             )
         except (RuntimeError, httpx.HTTPError):
             logger.debug("Failed to clear long-text keyboard", exc_info=True)
-            return
-        await self.telegram.answer_callback_query(callback_id)
-        self.store.delete_long_text(token)
+        finally:
+            await self.telegram.answer_callback_query(callback_id)
+            self.store.delete_long_text(token)
 
     async def send_text(
         self,
