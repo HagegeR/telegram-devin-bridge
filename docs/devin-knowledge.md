@@ -68,7 +68,8 @@ the session is already forwarded.
   checks env, DNS, Telegram/Devin API reachability, local and public health,
   webhook registration, funnel, and known host pitfalls (MTU, extra default
   routes, MagicDNS overriding resolv.conf). Same report via
-  `GET /doctor` with `Authorization: Bearer <NOTIFY_SECRET>`.
+  `GET /doctor` with `Authorization: Bearer <DOCTOR_SECRET>`, a secret
+  separate from `NOTIFY_SECRET`.
 - Runbook for re-deploying from scratch: `docs/deployment-alpine-tailscale.md`
   in the repo (DNS cache with dnsmasq, udhcpc `NO_GATEWAY`, Funnel prerequisites
   in the Tailscale admin console, OpenRC unit, `.env` pitfalls).

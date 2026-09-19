@@ -5,7 +5,7 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import cast
+from typing import TypeVar, cast
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -19,14 +19,15 @@ from app.telegram_updates import ALLOWED_UPDATES
 
 RETRY_ATTEMPTS = 5
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
+T = TypeVar("T")
 
 
 async def _with_transport_retry(
-    send: Callable[[], Awaitable[httpx.Response]],
+    send: Callable[[], Awaitable[T]],
     *,
     idempotent: bool = False,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-) -> httpx.Response:
+) -> T:
     for attempt in range(RETRY_ATTEMPTS):
         try:
             return await send()
@@ -194,7 +195,12 @@ class DevinClient:
             if urlparse(current_url).hostname != "app.devin.ai":
                 return None
             client = self.client if hop == 0 else self.public_client
-            try:
+
+            async def _hop(
+                client: httpx.AsyncClient = client,
+                current_url: str = current_url,
+                hop: int = hop,
+            ) -> tuple[bytes, str] | str | None:
                 async with client.stream(
                     "GET",
                     current_url,
@@ -206,12 +212,8 @@ class DevinClient:
                         location = response.headers.get("location")
                         if not location:
                             return None
-                        current_url = urljoin(current_url, location)
-                        continue
-                    try:
-                        response.raise_for_status()
-                    except httpx.HTTPError:
-                        return None
+                        return urljoin(current_url, location)
+                    response.raise_for_status()
                     content_length = response.headers.get("content-length")
                     if content_length is not None:
                         try:
@@ -230,8 +232,15 @@ class DevinClient:
                         "content-type",
                         "application/octet-stream",
                     ).split(";", 1)[0]
+
+            try:
+                result = await _with_transport_retry(_hop, idempotent=True)
             except httpx.HTTPError:
                 return None
+            if isinstance(result, str):
+                current_url = result
+                continue
+            return result
         return None
 
     async def session_consumption(
@@ -631,10 +640,13 @@ class TelegramClient:
                 f'{{"message_id": {reply_to}, '
                 '"allow_sending_without_reply": true}'
             )
-        response = await self.client.post(
-            "/sendDocument",
-            data=data,
-            files={"document": (filename, content, content_type)},
+        response = await _with_transport_retry(
+            lambda: self.client.post(
+                "/sendDocument",
+                data=data,
+                files={"document": (filename, content, content_type)},
+            ),
+            idempotent=False,
         )
         response.raise_for_status()
         payload = self._json_object(response)
@@ -669,10 +681,13 @@ class TelegramClient:
                 f'{{"message_id": {reply_to}, '
                 '"allow_sending_without_reply": true}'
             )
-        response = await self.client.post(
-            "/sendPhoto",
-            data=data,
-            files={"photo": (filename, content, content_type)},
+        response = await _with_transport_retry(
+            lambda: self.client.post(
+                "/sendPhoto",
+                data=data,
+                files={"photo": (filename, content, content_type)},
+            ),
+            idempotent=False,
         )
         response.raise_for_status()
         payload = self._json_object(response)

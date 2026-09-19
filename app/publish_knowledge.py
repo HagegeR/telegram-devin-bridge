@@ -89,14 +89,10 @@ async def publish(
             timeout=HTTP_TIMEOUT,
         )
         if response.status_code in {404, 405}:
-            response = await client.post(
-                f"{root}/v1/knowledge",
-                headers=headers,
-                json=payload,
-                timeout=HTTP_TIMEOUT,
+            raise RuntimeError(
+                f"knowledge entry {existing_id!r} exists but PUT returned "
+                f"{response.status_code}; update it manually"
             )
-            response.raise_for_status()
-            return "created", _entry_id(response.json()) or "<unknown>"
         response.raise_for_status()
         return "updated", existing_id
 

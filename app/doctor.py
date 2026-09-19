@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import json
 import os
 import platform
@@ -137,6 +138,9 @@ async def check_dns(
     *,
     resolve: Resolver | None = None,
 ) -> CheckResult:
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+
     async def _resolve(host: str) -> object:
         if resolve is not None:
             return await resolve(host)
@@ -500,15 +504,20 @@ async def run_all(
     results.append(check_env(settings))
     devin_host = urlparse(settings.devin_api_base_url).hostname or "api.devin.ai"
     hosts = ["api.telegram.org", devin_host]
-    if settings.public_base_url:
+    if settings.telegram_mode != "polling" and settings.public_base_url:
         public_host = urlparse(settings.public_base_url).hostname
         if public_host:
             hosts.append(public_host)
     results.append(await check_dns(hosts, attempts=attempts))
     results.append(check_resolv_conf())
     results.append(await check_network_routes())
-    results.append(await check_tailscale_funnel(settings.public_base_url))
-    if _is_placeholder(settings.telegram_bot_token):
+    if settings.telegram_mode == "polling":
+        results.append(CheckResult("tailscale funnel", "skip", "polling mode"))
+    else:
+        results.append(await check_tailscale_funnel(settings.public_base_url))
+    if settings.telegram_mode == "polling":
+        results.append(CheckResult("webhook", "skip", "polling mode"))
+    elif _is_placeholder(settings.telegram_bot_token):
         results.append(
             CheckResult("telegram api", "skip", "TELEGRAM_BOT_TOKEN placeholder")
         )
@@ -539,7 +548,9 @@ async def run_all(
             )
         )
     results.append(await check_local_health(client, port))
-    if settings.public_base_url:
+    if settings.telegram_mode == "polling":
+        results.append(CheckResult("public health", "skip", "polling mode"))
+    elif settings.public_base_url:
         results.append(await check_public_health(client, settings.public_base_url))
     else:
         results.append(CheckResult("public health", "skip", "no public base url"))
@@ -550,24 +561,25 @@ def register_doctor_route(
     application: FastAPI, settings: Settings, *, port: int = 8000
 ) -> None:
     last_run: list[float] = []
+    lock = asyncio.Lock()
 
     @application.get("/doctor")
     async def doctor(request: Request) -> dict[str, object]:
         if settings.doctor_secret is None:
             raise HTTPException(status_code=404, detail="Not found")
         authorization = request.headers.get("authorization", "")
-        if authorization != f"Bearer {settings.doctor_secret}":
+        if not hmac.compare_digest(
+            authorization.encode(),
+            f"Bearer {settings.doctor_secret}".encode(),
+        ):
             raise HTTPException(status_code=403, detail="Invalid bearer token")
-        now = time.monotonic()
-        if last_run and now - last_run[0] < 30:
-            raise HTTPException(status_code=429, detail="doctor cooldown")
-        try:
-            async with httpx.AsyncClient() as client:
-                results = await run_all(
-                    settings, client=client, port=port, attempts=1
-                )
-        finally:
-            last_run[:] = [time.monotonic()]
+        async with lock:
+            now = time.monotonic()
+            if last_run and now - last_run[0] < 30:
+                raise HTTPException(status_code=429, detail="doctor cooldown")
+            last_run[:] = [now]
+        async with httpx.AsyncClient() as client:
+            results = await run_all(settings, client=client, port=port, attempts=1)
         return {
             "results": [asdict(result) for result in results],
             "ok": all(result.status != "fail" for result in results),
@@ -582,6 +594,13 @@ def _format(result: CheckResult) -> str:
     return line
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return parsed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.doctor",
@@ -589,7 +608,7 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true", help="emit JSON")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--attempts", type=int, default=5)
+    parser.add_argument("--attempts", type=_positive_int, default=5)
     parser.add_argument("--public-url", default=None, help="override PUBLIC_BASE_URL")
     args = parser.parse_args()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -109,6 +110,12 @@ async def test_dns_ok() -> None:
 
     result = await doctor.check_dns(["good.example"], 2, resolve=fine)
     assert result.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_dns_rejects_non_positive_attempts() -> None:
+    with pytest.raises(ValueError, match="attempts must be >= 1"):
+        await doctor.check_dns(["good.example"], attempts=0)
 
 
 def test_resolv_conf_magic_dns_warn(tmp_path: Path) -> None:
@@ -399,6 +406,32 @@ async def test_doctor_route_auth(tmp_path: Path, monkeypatch) -> None:
         assert again.status_code == 429
 
 
+@pytest.mark.asyncio
+async def test_doctor_route_cooldown_admits_only_one_concurrent_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = 0
+
+    async def fake_run_all(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return [CheckResult("env", "ok", "fine")]
+
+    monkeypatch.setattr(doctor, "run_all", fake_run_all)
+    app = create_app(settings=settings(tmp_path))
+    headers = {"Authorization": "Bearer doctor-secret-abcdef"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        responses = await asyncio.gather(
+            client.get("/doctor", headers=headers),
+            client.get("/doctor", headers=headers),
+        )
+    assert sorted(response.status_code for response in responses) == [200, 429]
+    assert calls == 1
+
+
 def test_parse_front_matter() -> None:
     fields, body = parse_front_matter(
         "---\nname: bridge-runbook\ntrigger_description: use when deploying\n---\n\nBody here.\n"
@@ -461,8 +494,11 @@ async def test_publish_updates_existing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_publish_put_fallback_to_post() -> None:
+async def test_publish_put_unsupported_raises() -> None:
+    calls: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
         if request.method == "GET":
             return httpx.Response(
                 200, json={"items": [{"id": "kn-9", "name": "bridge-runbook"}]}
@@ -472,15 +508,19 @@ async def test_publish_put_fallback_to_post() -> None:
         return httpx.Response(200, json={"id": "kn-9"})
 
     async with _telegram_client(handler) as client:
-        action, _ = await publish(
-            client,
-            "https://api.devin.ai",
-            "key",
-            name="bridge-runbook",
-            body="b",
-            trigger_description="d",
-        )
-    assert action == "created"
+        with pytest.raises(
+            RuntimeError,
+            match="knowledge entry 'kn-9' exists but PUT returned 405; update it manually",
+        ):
+            await publish(
+                client,
+                "https://api.devin.ai",
+                "key",
+                name="bridge-runbook",
+                body="b",
+                trigger_description="d",
+            )
+    assert calls == ["GET", "PUT"]
 
 
 @pytest.mark.asyncio
@@ -555,6 +595,87 @@ async def test_transport_retry_helper_uses_sleep() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_photo_retries_connect_error(monkeypatch) -> None:
+    import app.clients as clients_mod
+    from app.clients import TelegramClient
+
+    monkeypatch.setattr(clients_mod, "RETRY_BACKOFF", (0, 0, 0, 0))
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("connection reset")
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = TelegramClient(
+        "token",
+        base_url="https://api.telegram.org/bottoken",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.send_photo(1, "photo.jpg", b"jpg")
+    finally:
+        await client.client.aclose()
+    assert result == {"message_id": 1}
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_send_document_does_not_retry_read_error() -> None:
+    from app.clients import TelegramClient
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadError("mid-flight")
+
+    client = TelegramClient(
+        "token",
+        base_url="https://api.telegram.org/bottoken",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(httpx.ReadError):
+            await client.send_document(1, "document.txt", b"text")
+    finally:
+        await client.client.aclose()
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_download_attachment_retries_read_error(monkeypatch) -> None:
+    import app.clients as clients_mod
+    from app.clients import DevinClient
+
+    monkeypatch.setattr(clients_mod, "RETRY_BACKOFF", (0, 0, 0, 0))
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadError("mid-flight")
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=b"png")
+
+    client = DevinClient(
+        "apk_key",
+        "https://api.devin.ai",
+        1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await client.download_attachment("https://app.devin.ai/files/1")
+    finally:
+        await client.close()
+    assert result == (b"png", "image/png")
+    assert calls == 2
+
+
+@pytest.mark.asyncio
 async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     from app.main import create_app
 
@@ -569,22 +690,22 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
 
     runtime.send_text = fake_send  # type: ignore[assignment]
 
-    commands: list[str] = []
+    commands: list[list[str]] = []
 
-    async def fake_run(command: str, cwd) -> tuple[int, str]:
+    async def fake_run(command: list[str], cwd) -> tuple[int, str]:
         commands.append(command)
         return 0, "up to date at abc1234 (main)" + chr(10)
 
-    runtime._run_shell = fake_run
+    runtime._run_command = fake_run
 
     admin_msg = {"from": {"id": 42}, "chat": {"id": 5}}
     await runtime.self_update(admin_msg, "")
-    assert commands[-1] == "sh deploy/self-update.sh"
+    assert commands[-1] == ["sh", "deploy/self-update.sh"]
     assert "abc1234" in sent[-1]
     assert sent[-1].startswith("```")
 
     await runtime.self_update(admin_msg, "check")
-    assert commands[-1] == "sh deploy/self-update.sh --check"
+    assert commands[-1] == ["sh", "deploy/self-update.sh", "--check"]
 
     sent.clear()
     stranger_msg = {"from": {"id": 7}, "chat": {"id": 5}}
@@ -691,6 +812,56 @@ async def test_run_all_uses_custom_devin_dns_host(tmp_path: Path, monkeypatch) -
     assert "api.devin.ai" not in captured["hosts"]
 
 
+@pytest.mark.asyncio
+async def test_run_all_polling_skips_public_checks_and_host(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict[str, list[str]] = {"dns": [], "requests": []}
+
+    async def fake_dns(hosts, attempts=5, **kwargs):
+        captured["dns"] = list(hosts)
+        return CheckResult("dns", "ok", "stub")
+
+    async def fake_routes(*args, **kwargs):
+        return CheckResult("network routes", "ok", "stub")
+
+    monkeypatch.setattr(doctor, "check_dns", fake_dns)
+    monkeypatch.setattr(doctor, "check_network_routes", fake_routes)
+    monkeypatch.setattr(
+        doctor,
+        "check_resolv_conf",
+        lambda: CheckResult("resolv.conf", "ok", "stub"),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["requests"].append(request.url.host or "")
+        if request.url.host == "api.telegram.org":
+            return httpx.Response(200, json={"ok": True, "result": {"username": "bot"}})
+        if request.url.host == "api.devin.ai":
+            return httpx.Response(200, json={"sessions": []})
+        if request.url.host == "127.0.0.1":
+            return httpx.Response(200, json={"status": "ok"})
+        raise AssertionError(request.url)
+
+    cfg = settings(
+        tmp_path,
+        telegram_mode="polling",
+        public_base_url="https://public-placeholder.example",
+    )
+    async with _telegram_client(handler) as client:
+        results = await doctor.run_all(cfg, client=client, port=8000, attempts=1)
+    assert "public-placeholder.example" not in captured["dns"]
+    assert "public-placeholder.example" not in captured["requests"]
+    assert [(result.name, result.status, result.detail) for result in results if result.name in {
+        "tailscale funnel", "webhook", "public health"
+    }] == [
+        ("tailscale funnel", "skip", "polling mode"),
+        ("webhook", "skip", "polling mode"),
+        ("public health", "skip", "polling mode"),
+    ]
+    assert not any(result.status == "fail" for result in results)
+
+
 def test_publish_dry_run_no_env(tmp_path: Path, monkeypatch, capsys) -> None:
     import sys
 
@@ -748,8 +919,48 @@ async def test_self_update_sanitizes_output(tmp_path: Path) -> None:
     async def fake_run(command, cwd):
         return 0, "evil ` injection " + chr(0x1B) + "[31mred" + chr(10)
 
-    runtime._run_shell = fake_run
+    runtime._run_command = fake_run
     await runtime.self_update({"from": {"id": 42}, "chat": {"id": 5}}, "")
     body = sent[-1].strip("`").strip()
     assert "`" not in body
     assert chr(0x1B) not in body
+
+
+@pytest.mark.asyncio
+async def test_self_update_rejects_script_outside_repo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app import main as main_module
+    from app.main import create_app
+
+    evil = tmp_path / "evil.sh"
+    evil.write_text("#!/bin/sh\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    monkeypatch.setattr(main_module, "_REPO_ROOT", repo)
+    app = create_app(
+        settings=settings(
+            tmp_path,
+            telegram_admin_user_ids="42",
+            self_update_command=f"sh {evil}",
+        )
+    )
+    runtime = app.state.bridge
+    sent: list[str] = []
+    calls = 0
+
+    async def fake_send(message, text, **kwargs):
+        sent.append(text)
+        return 1
+
+    async def fake_run(command, cwd):
+        nonlocal calls
+        calls += 1
+        return 0, ""
+
+    runtime.send_text = fake_send  # type: ignore[assignment]
+    runtime._run_command = fake_run
+    await runtime.self_update({"from": {"id": 42}, "chat": {"id": 5}}, "")
+    assert "unavailable" in sent[-1]
+    assert calls == 0

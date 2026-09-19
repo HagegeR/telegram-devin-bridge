@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import secrets
+import shlex
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
@@ -52,9 +53,9 @@ def _sanitize_update_output(text: str) -> str:
     return text[-3000:]
 
 
-async def _run_shell(command: str, cwd: Path) -> tuple[int, str]:
-    process = await asyncio.create_subprocess_shell(
-        command,
+async def _run_command(argv: list[str], cwd: Path) -> tuple[int, str]:
+    process = await asyncio.create_subprocess_exec(
+        *argv,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -94,7 +95,7 @@ class Bridge:
         self.lock_refs: dict[str, int] = {}
         self.background_tasks: set[asyncio.Task[None]] = set()
         self.denied_notices: set[tuple[int, int]] = set()
-        self._run_shell = _run_shell
+        self._run_command = _run_command
         self.access_prompted: dict[int, float] = {}
         self.transient_messages: dict[str, list[int]] = {}
         self.pending_turns: dict[str, list[TurnFragment]] = {}
@@ -1341,17 +1342,24 @@ class Bridge:
         sender_id = _int(_mapping(message.get("from")).get("id"))
         if sender_id not in self.settings.admin_user_ids:
             return
-        script = Path(self.settings.self_update_command.split()[-1])
-        if not (_REPO_ROOT / ".git").exists() or not (_REPO_ROOT / script).exists():
+        argv = shlex.split(self.settings.self_update_command)
+        script = next(
+            (token for token in argv if (_REPO_ROOT / token).is_file()),
+            None,
+        )
+        if (
+            script is None
+            or not (_REPO_ROOT / ".git").exists()
+            or not (_REPO_ROOT / script).resolve().is_relative_to(_REPO_ROOT.resolve())
+        ):
             await self.send_text(
                 message,
                 "Self-update is unavailable on this install (not a git checkout).",
             )
             return
-        command = self.settings.self_update_command
         if args.strip() == "check":
-            command = f"{command} --check"
-        exit_code, output = await self._run_shell(command, _REPO_ROOT)
+            argv.append("--check")
+        exit_code, output = await self._run_command(argv, _REPO_ROOT)
         tail = "\n".join(output.strip().splitlines()[-30:]) or "(no output)"
         if exit_code != 0:
             tail = f"exit {exit_code}\n{tail}"

@@ -14,9 +14,13 @@ BRANCH="${1:-${SELF_UPDATE_BRANCH:-main}}"
 SERVICE="${SELF_UPDATE_SERVICE:-telegram-devin-bridge}"
 git fetch -q origin "$BRANCH"
 LOCAL=$(git rev-parse HEAD); REMOTE=$(git rev-parse "origin/$BRANCH")
-if [ "$LOCAL" = "$REMOTE" ]; then echo "up to date at $(git rev-parse --short HEAD) ($BRANCH)"; exit 0; fi
-echo "update available: $(git rev-parse --short "$LOCAL") -> $(git rev-parse --short "$REMOTE") ($BRANCH)"
-git log --oneline "$LOCAL..$REMOTE" | head -20
+if [ "$LOCAL" = "$REMOTE" ] && git diff --quiet && git diff --cached --quiet; then echo "up to date at $(git rev-parse --short HEAD) ($BRANCH)"; exit 0; fi
+if [ "$LOCAL" = "$REMOTE" ]; then
+  echo "local changes detected; resetting to origin/$BRANCH"
+else
+  echo "update available: $(git rev-parse --short "$LOCAL") -> $(git rev-parse --short "$REMOTE") ($BRANCH)"
+  git log --oneline "$LOCAL..$REMOTE" | head -20
+fi
 [ "$CHECK" = 1 ] && exit 0
 git reset -q --hard
 git checkout -q -f -B "$BRANCH" "origin/$BRANCH"

@@ -32,7 +32,7 @@ Pitfalls (all hit in practice):
   `BOT_USERNAME=`, `DEVIN_SESSION_INSTRUCTIONS=`; an empty string fails
   `int | None` parsing and pydantic refuses to start. Remove the lines entirely.
 - Generate secrets: `openssl rand -hex 32` for `TELEGRAM_WEBHOOK_SECRET` and
-  `NOTIFY_SECRET`.
+  `DOCTOR_SECRET` (a separate secret from `NOTIFY_SECRET`).
 - Use an **absolute** `DATABASE_PATH` (e.g. `/root/telegram-devin-bridge/bridge.sqlite3`).
 - Set `TELEGRAM_ALLOWED_USERS` (your Telegram user ID) or the bot will deny everyone.
 - Use a **dedicated bot token** — a token already used by another poller or
@@ -149,7 +149,7 @@ curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"
 ```sh
 .venv/bin/python -m app.doctor              # human-readable checks
 .venv/bin/python -m app.doctor --json
-curl -H "Authorization: Bearer $NOTIFY_SECRET" http://127.0.0.1:8000/doctor
+curl -H "Authorization: Bearer $DOCTOR_SECRET" http://127.0.0.1:8000/doctor
 ```
 
 Useful commands:
