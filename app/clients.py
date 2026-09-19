@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import cast
+from urllib.parse import urlparse
 
 import httpx
 
@@ -56,6 +57,10 @@ class DevinClient:
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+            transport=transport,
+        )
+        self.public_client = httpx.AsyncClient(
             timeout=timeout,
             transport=transport,
         )
@@ -152,6 +157,8 @@ class DevinClient:
         self,
         url: str,
     ) -> tuple[bytes, str] | None:
+        if urlparse(url).hostname != "app.devin.ai":
+            return None
         try:
             response = await self.client.get(url, follow_redirects=True)
             response.raise_for_status()
@@ -202,7 +209,7 @@ class DevinClient:
             "https://api.github.com/repos/",
         ).replace("/pull/", "/pulls/")
         try:
-            response = await self.client.get(api_url, headers=headers, timeout=10)
+            response = await self.public_client.get(api_url, headers=headers, timeout=10)
             response.raise_for_status()
         except httpx.HTTPError:
             return None
@@ -235,6 +242,7 @@ class DevinClient:
 
     async def close(self) -> None:
         await self.client.aclose()
+        await self.public_client.aclose()
 
     @staticmethod
     def _optional_str(value: object) -> str | None:

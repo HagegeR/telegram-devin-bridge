@@ -1529,6 +1529,26 @@ async def test_devin_send_message_accepts_non_object_body() -> None:
 
 
 @pytest.mark.asyncio
+async def test_github_pr_fetch_does_not_send_devin_token() -> None:
+    observed: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["authorization"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"number": 1, "title": "Example"})
+
+    devin = DevinClient(
+        "devin-secret",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    result = await devin.fetch_github_pr("https://github.com/org/repo/pull/1")
+    assert result == {"number": 1, "title": "Example"}
+    assert observed["authorization"] == ""
+    await devin.close()
+
+
+@pytest.mark.asyncio
 async def test_devin_session_consumption_uses_unix_time_params() -> None:
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
     end = datetime(2025, 1, 2, tzinfo=timezone.utc)
