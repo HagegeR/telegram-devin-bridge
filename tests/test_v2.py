@@ -1231,8 +1231,8 @@ async def test_option_callback_rebuilds_disabled_markup(tmp_path: Path) -> None:
     )
     buttons = telegram.markup_edits[-1]["inline_keyboard"]
     assert buttons == [
-        [{"text": "✅ Yes", "callback_data": "yes-id", "disabled": {}}],
-        [{"text": "No", "callback_data": "no-id", "disabled": {}}],
+        [{"text": "✅ Yes", "disabled": {}}],
+        [{"text": "No", "disabled": {}}],
     ]
     assert telegram.edits == []
     await runtime.shutdown()
