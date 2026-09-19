@@ -515,9 +515,7 @@ async def run_all(
         results.append(CheckResult("tailscale funnel", "skip", "polling mode"))
     else:
         results.append(await check_tailscale_funnel(settings.public_base_url))
-    if settings.telegram_mode == "polling":
-        results.append(CheckResult("webhook", "skip", "polling mode"))
-    elif _is_placeholder(settings.telegram_bot_token):
+    if _is_placeholder(settings.telegram_bot_token):
         results.append(
             CheckResult("telegram api", "skip", "TELEGRAM_BOT_TOKEN placeholder")
         )
@@ -526,7 +524,9 @@ async def run_all(
         results.append(
             await check_telegram_api(client, settings.telegram_bot_token)
         )
-        if settings.public_base_url:
+        if settings.telegram_mode == "polling":
+            results.append(CheckResult("webhook", "skip", "polling mode"))
+        elif settings.public_base_url:
             results.append(
                 await check_webhook(
                     client,
