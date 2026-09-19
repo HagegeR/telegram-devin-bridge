@@ -188,11 +188,14 @@ class DevinClient:
         self,
         url: str,
     ) -> tuple[bytes, str] | None:
-        if urlparse(url).hostname != "app.devin.ai":
+        parsed_url = urlparse(url)
+        match = re.fullmatch(r"/attachments/([^/]+)/([^/]+)", parsed_url.path)
+        if parsed_url.hostname != "app.devin.ai" or match is None:
             return None
-        current_url = url
+        request_path = f"/v1/attachments/{match.group(1)}/{match.group(2)}"
+        current_url = urljoin(self.base_url, request_path)
         for hop in range(4):
-            if urlparse(current_url).hostname != "app.devin.ai":
+            if hop > 0 and urlparse(current_url).scheme != "https":
                 return None
             client = self.client if hop == 0 else self.public_client
 
@@ -203,7 +206,7 @@ class DevinClient:
             ) -> tuple[bytes, str] | str | None:
                 async with client.stream(
                     "GET",
-                    current_url,
+                    request_path if hop == 0 else current_url,
                     follow_redirects=False,
                 ) as response:
                     if 300 <= response.status_code < 400:
@@ -212,7 +215,10 @@ class DevinClient:
                         location = response.headers.get("location")
                         if not location:
                             return None
-                        return urljoin(current_url, location)
+                        redirect_url = urljoin(current_url, location)
+                        if urlparse(redirect_url).scheme != "https":
+                            return None
+                        return redirect_url
                     response.raise_for_status()
                     content_length = response.headers.get("content-length")
                     if content_length is not None:
