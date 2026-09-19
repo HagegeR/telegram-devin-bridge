@@ -35,7 +35,7 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   - `settings(key TEXT PK, value TEXT)` – `home_chat_id`, `home_thread_id` set by `/sethome`.
   - conv_key = `f"{chat_id}"` for DMs/plain groups, `f"{chat_id}:{message_thread_id}"` for forum topics (only when `chat.is_forum` and `message_thread_id` present).
 - `devin.py` – `DevinClient` (v1 only): `create_session(prompt, title, playbook_id=None) -> (session_id, url)`, `send_message`, `get_session -> SessionState(status_enum, title, pr_url, messages)`, `list_playbooks`, `terminate`, `upload_attachment(filename, bytes, content_type) -> url`.
-- `telegram.py` – `TelegramClient`: `send_message(chat_id, text, *, thread_id=None, reply_to=None, parse_mode=None, reply_markup=None, disable_notification=False, disable_web_page_preview=True)`, `edit_message_text`, `edit_message_reply_markup`, `send_chat_action(typing)`, `set_message_reaction(chat_id, message_id, emoji|None)`, `answer_callback_query`, `get_file`+`download_file(file_path) -> bytes`, `set_my_commands`, `set_webhook`. Handles 429 by reading `parameters.retry_after`, sleeping, retrying once. On 400 with parse_mode set, retry as plain text.
+- `telegram.py` – `TelegramClient`: rich Markdown (`send_rich_message`/`send_markdown`), private-chat drafts, forum-topic creation/renaming, `send_message`, `edit_message_text`, `edit_message_reply_markup`, `send_chat_action(typing)`, `set_message_reaction(chat_id, message_id, emoji|None)`, `answer_callback_query`, `get_file`+`download_file(file_path) -> bytes`, `set_my_commands`, `set_webhook`. Handles 429 by reading `parameters.retry_after`, sleeping, retrying once. Rich-message 4xx responses fall back to MarkdownV2; unknown-method errors latch rich mode off, while transport and 5xx errors propagate.
 - `formatting.py` – `markdown_to_telegram_markdown_v2(text) -> str` and `chunk(text, limit=4096) -> list[str]` (never split inside a fenced code block; if a block itself exceeds the limit, close and reopen the fence; append ` (i/N)` suffix when N>1). Escape all MarkdownV2 reserved chars outside entities: `_ * [ ] ( ) ~ \` > # + - = | { } . !`. Support: `**bold**`/`__bold__`->`*bold*`, `*em*`/`_em_`->`_em_`, `~~s~~`->`~s~`, inline code, fenced code (```lang), `[text](url)`, headings `#..` -> bold line, `> quote` -> `>quote`, bullet `- ` -> `• `. Also `extract_options(text) -> (text_without_line, list[str])`: if the last non-empty line matches `^OPTIONS:\s*(.+)$` split on `|`, strip; max 8 options, each <= 60 chars.
 - `access.py` – `is_allowed(update_message) -> bool` and `should_respond_in_group(message, bot_username) -> bool`.
 - `commands.py` – slash command handlers (below).
@@ -90,7 +90,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 `POST /notify` with `Authorization: Bearer <NOTIFY_SECRET>` (403 otherwise; if `NOTIFY_SECRET` unset, route returns 404). JSON `{text: str, chat_id?: int, thread_id?: int, silent?: bool, markdown?: bool=true}`. Target = provided chat or `settings.home_*` or `TELEGRAM_HOME_CHANNEL` env; 400 if none. Chunk + format like normal messages. Returns `{sent: N}`.
 
 ### Env (config.py) – add:
-`TELEGRAM_ALLOWED_USERS` (csv ints), `TELEGRAM_ALLOW_ALL_USERS` (bool, default false), `TELEGRAM_FREE_RESPONSE_CHATS` (csv), `TELEGRAM_HOME_CHANNEL` (int|None), `TELEGRAM_NOTIFICATION_MODE` (`all|important`, default `important`), `NOTIFY_SECRET` (str|None), `DEVIN_WATCH_TIMEOUT_SECONDS` (1800), `DEVIN_POLL_SECONDS` (3), `BOT_USERNAME` (optional; if unset call `getMe` at startup). Keep existing ones; `DEVIN_REPLY_TIMEOUT_SECONDS` is removed.
+`TELEGRAM_ALLOWED_USERS` (csv ints), `TELEGRAM_ALLOW_ALL_USERS` (bool, default false), `TELEGRAM_FREE_RESPONSE_CHATS` (csv), `TELEGRAM_HOME_CHANNEL` (int|None), `TELEGRAM_NOTIFICATION_MODE` (`all|important`, default `important`), `TELEGRAM_RICH_MESSAGES` (bool, default true), `TELEGRAM_DRAFTS` (bool, default false), `NOTIFY_SECRET` (str|None), `DEVIN_WATCH_TIMEOUT_SECONDS` (1800), `DEVIN_POLL_SECONDS` (3), `BOT_USERNAME` (optional; if unset call `getMe` at startup). Keep existing ones; `DEVIN_REPLY_TIMEOUT_SECONDS` is removed.
 Existing deploy has `TELEGRAM_ALLOWED_CHAT_IDS` unset; keep supporting it.
 
 ### Tests (pytest, httpx.MockTransport – no new runtime deps; add `requirements-dev.txt` with pytest + pytest-asyncio + anyio)
@@ -102,3 +102,13 @@ Existing deploy has `TELEGRAM_ALLOWED_CHAT_IDS` unset; keep supporting it.
 
 ### Non-goals (explicitly skipped)
 Network IP failover, stickers/vision, TTS, /model, /memory, /goal, kanban, streaming edits of partial text (Devin API has no partial-message stream).
+
+### Bot API 10.3 behavior
+Rich Markdown is the primary Devin response path when `TELEGRAM_RICH_MESSAGES`
+is enabled; 4xx errors fall back to MarkdownV2 and unknown-method errors
+disable rich delivery for the process. `TELEGRAM_DRAFTS` sends empty private
+chat drafts while Devin works and falls back to typing on rejection. Implicit
+topics are renamed from the first user message. Option buttons include
+`disabled: {}` after selection, while `/stop` uses `danger` and `primary`
+button styles. Group command replies support ephemeral delivery and retry
+normally when Telegram rejects the ephemeral parameters.

@@ -43,6 +43,8 @@ class Bridge:
         self.devin = devin
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
+        self.bot_topics_enabled = False
+        self.implicit_topics: set[tuple[int, int]] = set()
         self.watchers: dict[str, asyncio.Task[None]] = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self.lock_refs: dict[str, int] = {}
@@ -50,8 +52,11 @@ class Bridge:
         self.denied_notices: set[tuple[int, int]] = set()
 
     async def startup(self) -> None:
-        if not self.bot_username:
-            self.bot_username = await self.telegram.get_me()
+        profile = await self.telegram.get_me()
+        username = _text(profile.get("username"))
+        if not self.bot_username and username is not None:
+            self.bot_username = username
+        self.bot_topics_enabled = bool(profile.get("has_topics_enabled"))
 
     async def shutdown(self) -> None:
         for task in self.watchers.values():
@@ -94,6 +99,15 @@ class Bridge:
         chat = _mapping(message.get("chat"))
         user_id = _int(sender.get("id"))
         chat_id = _int(chat.get("id"))
+        topic_created = _mapping(message.get("forum_topic_created"))
+        if topic_created:
+            thread_id = _thread_id(message)
+            if thread_id is not None:
+                key = (chat_id, thread_id)
+                if bool(topic_created.get("is_name_implicit")):
+                    self.implicit_topics.add(key)
+                else:
+                    self.implicit_topics.discard(key)
         if any(
             message.get(field) is not None
             for field in (
@@ -189,6 +203,22 @@ class Bridge:
                 last_user_text=text,
                 start_watcher=False,
             )
+            if thread_id is not None and (chat_id, thread_id) in self.implicit_topics:
+                topic_name = text[:60].splitlines()[0] or "Devin"
+                try:
+                    await self.telegram.edit_forum_topic(
+                        chat_id,
+                        thread_id,
+                        topic_name,
+                    )
+                except RuntimeError:
+                    logger.warning(
+                        "Failed to rename implicit topic chat=%s thread=%s",
+                        chat_id,
+                        thread_id,
+                    )
+                finally:
+                    self.implicit_topics.discard((chat_id, thread_id))
         else:
             self.store.update_conversation(
                 conv_key,
@@ -334,7 +364,9 @@ class Bridge:
             ):
                 await self.telegram.answer_callback_query(callback_id, "This choice expired")
                 return
+            choices = self.store.list_choices(conv_key)
             self.store.delete_choices(conv_key)
+            plain_option = not option.startswith("__cmd:")
             if option.startswith("__cmd:terminate:"):
                 await self.devin.terminate(option.removeprefix("__cmd:terminate:"))
                 self.store.clear_conversation(conv_key, session_id)
@@ -352,11 +384,34 @@ class Bridge:
                 updated = f"✅ {option}"
             if callback_message_id:
                 try:
-                    await self.telegram.edit_message_text(
-                        chat_id,
-                        callback_message_id,
-                        updated,
-                    )
+                    if plain_option:
+                        markup = {
+                            "inline_keyboard": [
+                                [
+                                    {
+                                        "text": (
+                                            f"✅ {choice_option}"
+                                            if choice_id == data
+                                            else choice_option
+                                        ),
+                                        "callback_data": choice_id,
+                                        "disabled": {},
+                                    }
+                                ]
+                                for choice_id, choice_option in choices
+                            ]
+                        }
+                        await self.telegram.edit_message_reply_markup(
+                            chat_id,
+                            callback_message_id,
+                            markup,
+                        )
+                    else:
+                        await self.telegram.edit_message_text(
+                            chat_id,
+                            callback_message_id,
+                            updated,
+                        )
                 except (httpx.HTTPError, RuntimeError):
                     await self.telegram.edit_message_reply_markup(
                         chat_id,
@@ -372,15 +427,31 @@ class Bridge:
         text: str,
         *,
         silent: bool = False,
+        ephemeral: bool = False,
     ) -> None:
         chat = _mapping(message.get("chat"))
-        rendered = markdown_to_telegram_markdown_v2(text)
-        for part in chunk(rendered):
-            await self.telegram.send_message(
-                _int(chat.get("id")),
-                part,
+        chat_id = _int(chat.get("id"))
+        sender = _mapping(message.get("from"))
+        receiver_user_id = (
+            _int(sender.get("id"))
+            if ephemeral and chat.get("type") in {"group", "supergroup"}
+            else None
+        )
+        try:
+            await self.telegram.send_markdown(
+                chat_id,
+                text,
                 thread_id=_thread_id(message),
-                parse_mode="MarkdownV2",
+                disable_notification=silent,
+                receiver_user_id=receiver_user_id,
+            )
+        except RuntimeError as exc:
+            if receiver_user_id is None or "ephemeral" not in str(exc).casefold():
+                raise
+            await self.telegram.send_markdown(
+                chat_id,
+                text,
+                thread_id=_thread_id(message),
                 disable_notification=silent,
             )
 
@@ -389,15 +460,33 @@ class Bridge:
         message: Mapping[str, object],
         text: str,
         markup: dict[str, object],
+        *,
+        ephemeral: bool = False,
     ) -> None:
         chat = _mapping(message.get("chat"))
-        await self.telegram.send_message(
-            _int(chat.get("id")),
-            text,
-            thread_id=_thread_id(message),
-            parse_mode="MarkdownV2",
-            reply_markup=markup,
+        sender = _mapping(message.get("from"))
+        receiver_user_id = (
+            _int(sender.get("id"))
+            if ephemeral and chat.get("type") in {"group", "supergroup"}
+            else None
         )
+        try:
+            await self.telegram.send_markdown(
+                _int(chat.get("id")),
+                text,
+                thread_id=_thread_id(message),
+                reply_markup=markup,
+                receiver_user_id=receiver_user_id,
+            )
+        except RuntimeError as exc:
+            if receiver_user_id is None or "ephemeral" not in str(exc).casefold():
+                raise
+            await self.telegram.send_markdown(
+                _int(chat.get("id")),
+                text,
+                thread_id=_thread_id(message),
+                reply_markup=markup,
+            )
 
     async def get_session_status(self, session_id: str) -> str:
         return (await self.devin.get_session(session_id)).status_enum
@@ -572,7 +661,11 @@ def create_app(
             actual_settings.devin_api_base_url,
             actual_settings.devin_max_acu_limit,
         ),
-        telegram or TelegramClient(actual_settings.telegram_bot_token),
+        telegram
+        or TelegramClient(
+            actual_settings.telegram_bot_token,
+            rich_enabled=actual_settings.telegram_rich_messages,
+        ),
     )
 
     @asynccontextmanager

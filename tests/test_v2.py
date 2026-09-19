@@ -17,6 +17,7 @@ from app.formatting import (
     chunk,
     extract_options,
     markdown_to_telegram_markdown_v2,
+    normalize_rich_linebreaks,
 )
 from app.main import Bridge, create_app
 from app.store import Store
@@ -340,6 +341,12 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
         async def send_message(self, chat_id: int, text: str, **kwargs: object) -> None:
             self.sent.append({"chat_id": chat_id, "text": text, **kwargs})
 
+        async def send_markdown(
+            self, chat_id: int, text: str, **kwargs: object
+        ) -> list[dict[str, object]]:
+            await self.send_message(chat_id, text, **kwargs)
+            return [self.sent[-1]]
+
         async def send_chat_action(self, *_: object, **__: object) -> None:
             return None
 
@@ -386,8 +393,8 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
         sleep=sleep,
         trigger_message_id=7,
     ).run()
-    assert [item["text"] for item in telegram.sent] == ["*Done*"]
-    assert telegram.sent[0]["parse_mode"] == "MarkdownV2"
+    assert [item["text"] for item in telegram.sent] == ["**Done**"]
+    assert "parse_mode" not in telegram.sent[0]
     markup = cast(dict[str, object], telegram.sent[0]["reply_markup"])
     keyboard = cast(list[list[dict[str, str]]], markup["inline_keyboard"])
     assert [row[0]["text"] for row in keyboard] == ["Yes", "No."]
@@ -474,9 +481,20 @@ async def test_webhook_new_message_watcher_and_duplicate(
         assert duplicate.status_code == 200
         await asyncio.sleep(0.05)
     send_texts = [
-        value["text"]
+        (
+            value["text"]
+            if path.endswith("/sendMessage")
+            else cast(dict[str, object], value["rich_message"])["markdown"]
+        )
         for path, value in telegram_calls
-        if path.endswith("/sendMessage") and isinstance(value.get("text"), str)
+        if (
+            path.endswith("/sendMessage")
+            and isinstance(value.get("text"), str)
+        )
+        or (
+            path.endswith("/sendRichMessage")
+            and isinstance(value.get("rich_message"), dict)
+        )
     ]
     assert any("Started session" in text for text in send_texts)
     assert "first" in send_texts
@@ -589,11 +607,22 @@ class _FakeTelegram:
         self.reactions: list[str] = []
         self.answers: list[str] = []
         self.edits: list[str] = []
+        self.markup_edits: list[dict[str, object]] = []
+        self.drafts: list[dict[str, object]] = []
+        self.actions: list[dict[str, object]] = []
+        self.edited_topics: list[tuple[int, int, str]] = []
         self.created_topics: list[tuple[int, str]] = []
         self.topic_error: Exception | None = None
+        self.draft_error: Exception | None = None
 
     async def send_message(self, chat_id: int, text: str, **kwargs: object) -> None:
         self.sent.append({"chat_id": chat_id, "text": text, **kwargs})
+
+    async def send_markdown(
+        self, chat_id: int, text: str, **kwargs: object
+    ) -> list[dict[str, object]]:
+        await self.send_message(chat_id, text, **kwargs)
+        return [self.sent[-1]]
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int:
         if self.topic_error is not None:
@@ -601,8 +630,19 @@ class _FakeTelegram:
         self.created_topics.append((chat_id, name))
         return 19
 
-    async def send_chat_action(self, *_: object, **__: object) -> None:
-        return None
+    async def send_chat_action(
+        self, chat_id: int, **kwargs: object
+    ) -> None:
+        self.actions.append({"chat_id": chat_id, **kwargs})
+
+    async def send_message_draft(
+        self, chat_id: int, draft_id: int, text: str = "", **kwargs: object
+    ) -> None:
+        if self.draft_error is not None:
+            raise self.draft_error
+        self.drafts.append(
+            {"chat_id": chat_id, "draft_id": draft_id, "text": text, **kwargs}
+        )
 
     async def set_message_reaction(
         self, _chat_id: int, _message_id: int, emoji: str
@@ -621,9 +661,17 @@ class _FakeTelegram:
         self.edits.append(text)
 
     async def edit_message_reply_markup(
-        self, *_: object, **__: object
+        self, _chat_id: int, _message_id: int, markup: dict[str, object] | None = None
     ) -> None:
-        return None
+        self.markup_edits.append(markup or {"inline_keyboard": []})
+
+    async def edit_forum_topic(
+        self, chat_id: int, thread_id: int, name: str
+    ) -> None:
+        self.edited_topics.append((chat_id, thread_id, name))
+
+    async def get_me(self) -> dict[str, object]:
+        return {}
 
     async def close(self) -> None:
         return None
@@ -983,7 +1031,7 @@ async def test_commands_handle_unknown_status_and_pr_url(tmp_path: Path) -> None
     await handle_command(runtime, command_message, "/sessions")
     assert "unknown" in str(telegram.sent[-1]["text"])
     await handle_command(runtime, command_message, "/status")
-    assert "PR: https://github\\.test/pr/2" in str(telegram.sent[-1]["text"])
+    assert "PR: https://github.test/pr/2" in str(telegram.sent[-1]["text"])
     await runtime.shutdown()
 
 
@@ -1016,4 +1064,208 @@ async def test_replacing_conversation_cancels_old_watcher(tmp_path: Path) -> Non
     )
     assert old_task.cancelled()
     assert "old" not in runtime.watchers
+    await runtime.shutdown()
+
+
+def test_normalize_rich_linebreaks_preserves_fences_and_tables() -> None:
+    text = "one\ntwo\n\n```python\nx\ny\n```\n| a | b |\n| c | d |\nlast"
+    assert normalize_rich_linebreaks(text) == (
+        "one  \ntwo\n\n```python\nx\ny\n```\n| a | b |\n| c | d |\nlast"
+    )
+
+
+@pytest.mark.asyncio
+async def test_rich_message_primary_path_uses_raw_markdown() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append((request.url.path, payload))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = TelegramClient(
+        "token-placeholder",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.send_markdown(222, "**raw**\nnext")
+    assert calls[0][0].endswith("/sendRichMessage")
+    assert calls[0][1]["rich_message"] == {"markdown": "**raw**  \nnext"}
+    assert "parse_mode" not in calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_rich_message_400_falls_back_and_unknown_method_latches() -> None:
+    paths: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/sendRichMessage"):
+            return httpx.Response(400, json={"ok": False, "description": "bad markdown"})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = TelegramClient(
+        "token-placeholder",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.send_markdown(222, "**raw**")
+    assert paths == ["/botfake/sendRichMessage", "/botfake/sendMessage"]
+
+    async def unknown_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"ok": False, "description": "Method not found"},
+        )
+
+    unknown = TelegramClient(
+        "token-placeholder",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(unknown_handler),
+    )
+    with pytest.raises(RuntimeError):
+        await unknown.send_markdown(222, "raw")
+    assert unknown.rich_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_private_watcher_draft_falls_back_to_typing(tmp_path: Path) -> None:
+    class DraftDevin:
+        calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            return SessionState("working" if self.calls == 1 else "finished", "title", None, [])
+
+    store = Store(str(tmp_path / "drafts.sqlite3"))
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    telegram.draft_error = RuntimeError("draft unavailable")
+    await SessionWatcher(
+        conversation,
+        store,
+        DraftDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, telegram_drafts=True),
+    ).run()
+    assert telegram.drafts == []
+    assert telegram.actions
+
+
+@pytest.mark.asyncio
+async def test_implicit_topic_is_renamed_but_explicit_topic_is_not(
+    tmp_path: Path,
+) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    service = {
+        **message(""),
+        "message_thread_id": 7,
+        "is_topic_message": True,
+        "forum_topic_created": {"is_name_implicit": True},
+    }
+    service.pop("text")
+    await runtime.handle_message(service)
+    await runtime.handle_message(
+        {
+            **message("First line\nsecond", message_id=9),
+            "message_thread_id": 7,
+            "is_topic_message": True,
+        }
+    )
+    assert telegram.edited_topics == [(222, 7, "First line")]
+    await runtime.shutdown()
+
+    explicit_telegram = _FakeTelegram()
+    explicit = Bridge(
+        settings(tmp_path),
+        Store(":memory:"),
+        _FakeDevin(),
+        explicit_telegram,
+    )  # type: ignore[arg-type]
+    await explicit.handle_message(
+        {
+            **message("First line", message_id=10),
+            "message_thread_id": 8,
+            "is_topic_message": True,
+        }
+    )
+    assert explicit_telegram.edited_topics == []
+    await explicit.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_option_callback_rebuilds_disabled_markup(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    store.add_choice("yes-id", "222", "s1", 222, "Yes")
+    store.add_choice("no-id", "222", "s1", 222, "No")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await runtime.handle_callback(
+        {
+            "id": "callback",
+            "data": "yes-id",
+            "from": {"id": 111},
+            "message": {
+                "message_id": 4,
+                "chat": {"id": 222, "type": "private"},
+            },
+        }
+    )
+    buttons = telegram.markup_edits[-1]["inline_keyboard"]
+    assert buttons == [
+        [{"text": "✅ Yes", "callback_data": "yes-id", "disabled": {}}],
+        [{"text": "No", "callback_data": "no-id", "disabled": {}}],
+    ]
+    assert telegram.edits == []
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stop_keyboard_uses_bot_api_button_styles(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/stop"), "/stop")
+    markup = telegram.sent[-1]["reply_markup"]
+    assert markup["inline_keyboard"][0][0]["style"] == "danger"  # type: ignore[index]
+    assert markup["inline_keyboard"][0][1]["style"] == "primary"  # type: ignore[index]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_whoami_group_send_includes_ephemeral_receiver(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(
+        runtime,
+        {**message("/whoami"), "chat": {"id": -222, "type": "supergroup"}},
+        "/whoami",
+    )
+    assert telegram.sent[-1]["receiver_user_id"] == 111
     await runtime.shutdown()

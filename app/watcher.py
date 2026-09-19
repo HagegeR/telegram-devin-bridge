@@ -10,7 +10,7 @@ from dataclasses import replace
 
 from app.config import Settings
 from app.devin import DevinClient, DevinMessage, SessionState
-from app.formatting import chunk, extract_options, markdown_to_telegram_markdown_v2
+from app.formatting import extract_options
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
 
@@ -44,6 +44,8 @@ class SessionWatcher:
         self.clock = clock
         self.sleep = sleep
         self.trigger_message_id = trigger_message_id
+        self.drafts_ok = settings.telegram_drafts
+        self.draft_id = secrets.randbelow(2**31 - 1) + 1
 
     async def run(self) -> None:
         started_at = self.clock()
@@ -101,10 +103,27 @@ class SessionWatcher:
                         await self._finish_reaction(expired=False)
                         return
                 else:
-                    await self.telegram.send_chat_action(
-                        self.conversation.chat_id,
-                        thread_id=self.conversation.thread_id,
-                    )
+                    if (
+                        self.drafts_ok
+                        and self.conversation.chat_id > 0
+                    ):
+                        try:
+                            await self.telegram.send_message_draft(
+                                self.conversation.chat_id,
+                                self.draft_id,
+                                thread_id=self.conversation.thread_id,
+                            )
+                        except RuntimeError:
+                            self.drafts_ok = False
+                            await self.telegram.send_chat_action(
+                                self.conversation.chat_id,
+                                thread_id=self.conversation.thread_id,
+                            )
+                    else:
+                        await self.telegram.send_chat_action(
+                            self.conversation.chat_id,
+                            thread_id=self.conversation.thread_id,
+                        )
                 await self.sleep(self.poll_seconds)
             if not delivered:
                 await self.telegram.send_message(
@@ -129,11 +148,9 @@ class SessionWatcher:
         body, options = extract_options(message.message)
         if not body and options:
             body = "Choose an option:"
-        rendered = markdown_to_telegram_markdown_v2(body)
-        parts = chunk(rendered)
         markup: dict[str, object] | None = None
         if options:
-            buttons: list[list[dict[str, str]]] = []
+            buttons: list[list[dict[str, object]]] = []
             for option in options:
                 choice_id = secrets.token_urlsafe(8)
                 self.store.add_choice(
@@ -145,18 +162,16 @@ class SessionWatcher:
                 )
                 buttons.append([{"text": option, "callback_data": choice_id}])
             markup = {"inline_keyboard": buttons}
-        for index, part in enumerate(parts):
-            await self.telegram.send_message(
-                self.conversation.chat_id,
-                part,
-                thread_id=self.conversation.thread_id,
-                parse_mode="MarkdownV2",
-                reply_markup=markup if index == len(parts) - 1 else None,
-                disable_notification=(
-                    self.settings.telegram_notification_mode == "important"
-                    and state.status_enum == "working"
-                ),
-            )
+        await self.telegram.send_markdown(
+            self.conversation.chat_id,
+            body,
+            thread_id=self.conversation.thread_id,
+            reply_markup=markup,
+            disable_notification=(
+                self.settings.telegram_notification_mode == "important"
+                and state.status_enum == "working"
+            ),
+        )
 
     def _new_messages(
         self,

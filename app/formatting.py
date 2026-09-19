@@ -3,6 +3,47 @@ from __future__ import annotations
 import re
 
 
+def normalize_rich_linebreaks(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    result: list[str] = []
+    in_fence = False
+    for index, value in enumerate(lines):
+        line = value.rstrip("\r\n")
+        newline = value[len(line) :]
+        if not newline:
+            result.append(value)
+            continue
+        if not line:
+            result.append(value)
+            continue
+        next_line = (
+            lines[index + 1].rstrip("\r\n")
+            if index + 1 < len(lines)
+            else ""
+        )
+        is_table = _is_pipe_table_line(line) or _is_pipe_table_line(next_line)
+        is_fence = line.lstrip().startswith("```")
+        if (
+            newline == "\n"
+            and not in_fence
+            and not is_fence
+            and not is_table
+            and bool(next_line)
+            and index + 1 < len(lines)
+        ):
+            result.append(line + "  \n")
+        else:
+            result.append(value)
+        if is_fence:
+            in_fence = not in_fence
+    return "".join(result)
+
+
+def _is_pipe_table_line(line: str) -> bool:
+    stripped = line.strip()
+    return len(stripped) >= 2 and stripped.startswith("|") and stripped.endswith("|")
+
+
 def _escape(text: str) -> str:
     return re.sub(r"([_*\[\]()~`>#+\-=|{}.!\\])", r"\\\1", text)
 

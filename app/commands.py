@@ -22,6 +22,7 @@ SYSTEM_PREAMBLE = (
 class CommandRuntime(Protocol):
     settings: Settings
     store: Store
+    bot_topics_enabled: bool
 
     async def send_text(
         self,
@@ -29,6 +30,7 @@ class CommandRuntime(Protocol):
         text: str,
         *,
         silent: bool = False,
+        ephemeral: bool = False,
     ) -> None: ...
 
     async def create_session_for_message(
@@ -69,6 +71,8 @@ class CommandRuntime(Protocol):
         message: Mapping[str, object],
         text: str,
         markup: dict[str, object],
+        *,
+        ephemeral: bool = False,
     ) -> None: ...
 
     def new_choice_id(self) -> str: ...
@@ -91,7 +95,16 @@ async def handle_command(
     )
     conversation = runtime.store.get_conversation(conv_key)
     if command in {"start", "help"}:
-        await runtime.send_text(message, _help_text())
+        help_text = _help_text()
+        if (
+            _mapping(message.get("chat")).get("type") == "private"
+            and not runtime.bot_topics_enabled
+        ):
+            help_text += (
+                "\nTip: enable Topics for this bot to run several Devin sessions "
+                "side by side."
+            )
+        await runtime.send_text(message, help_text, ephemeral=True)
     elif command == "new":
         title = args.strip() or "Telegram conversation"
         prompt = (
@@ -119,8 +132,9 @@ async def handle_command(
             ):
                 await runtime.send_text(
                     message,
-                    "Topics aren't enabled here. Private chat: open this chat, "
-                    "tap the bot name → enable Topics. Group: group settings → Topics.",
+                    "Topics aren't enabled here. Private chat: enable Topics for "
+                    "the bot in @BotFather (Bot Settings → Topics) and in this "
+                    "chat (tap the bot name → Topics). Group: group settings → Topics.",
                 )
             else:
                 raise
@@ -138,7 +152,7 @@ async def handle_command(
         await _resume(runtime, message, conv_key, args)
     elif command == "status":
         if conversation is None:
-            await runtime.send_text(message, "No active session.")
+            await runtime.send_text(message, "No active session.", ephemeral=True)
         else:
             state = await runtime.get_state(conversation.session_id)
             status = state.status_enum
@@ -151,6 +165,7 @@ async def handle_command(
                     f"Session: {conversation.session_url}"
                     f"{pr_line}"
                 ),
+                ephemeral=True,
             )
     elif command == "stop":
         await _stop(runtime, message, conversation)
@@ -188,7 +203,7 @@ async def _sessions(
 ) -> None:
     history = runtime.store.list_history(conv_key)
     if not history:
-        await runtime.send_text(message, "No saved sessions.")
+        await runtime.send_text(message, "No saved sessions.", ephemeral=True)
         return
     rows: list[str] = []
     for index, entry in enumerate(history, start=1):
@@ -198,7 +213,7 @@ async def _sessions(
             status = "unknown"
         marker = "*" if conversation is not None and entry.session_id == conversation.session_id else " "
         rows.append(f"{marker}{index}. {entry.title} — {status}")
-    await runtime.send_text(message, "\n".join(rows))
+    await runtime.send_text(message, "\n".join(rows), ephemeral=True)
 
 
 async def _resume(
@@ -265,8 +280,12 @@ async def _stop(
         message,
         "Terminate the active Devin session?",
         {"inline_keyboard": [[
-            {"text": "Terminate", "callback_data": choice_id},
-            {"text": "Cancel", "callback_data": f"{choice_id}:cancel"},
+            {"text": "Terminate", "callback_data": choice_id, "style": "danger"},
+            {
+                "text": "Cancel",
+                "callback_data": f"{choice_id}:cancel",
+                "style": "primary",
+            },
         ]]},
     )
 
@@ -326,6 +345,7 @@ async def _whoami(runtime: CommandRuntime, message: Mapping[str, object]) -> Non
             f"Allowed: {'yes' if allowed else 'no'}\n"
             f"Home: {'yes' if home else 'no'}"
         ),
+        ephemeral=True,
     )
 
 

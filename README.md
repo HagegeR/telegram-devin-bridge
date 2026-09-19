@@ -32,6 +32,8 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `DEVIN_POLL_SECONDS` | no | `3` |
 | `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` |
 | `DEVIN_SETTLE_SECONDS` | no | `30` |
+| `TELEGRAM_RICH_MESSAGES` | no | `true` |
+| `TELEGRAM_DRAFTS` | no | `false` |
 | `TELEGRAM_ALLOWED_USERS` | no | empty |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | no | empty |
 | `TELEGRAM_ALLOW_ALL_USERS` | no | `false` |
@@ -77,10 +79,23 @@ Photos, documents, voice messages, audio, video, and video notes up to
 Telegram's 20 MB download limit are uploaded to Devin and referenced in the
 user prompt. Telegram hidden `text_link` entities are expanded to
 `visible text (URL)` before the prompt is sent, including links following
-emoji. Devin replies are formatted as
-Telegram MarkdownV2, split at 4096 characters, and preserve fenced code
-blocks. A final `OPTIONS: one | two` line becomes inline buttons (up to eight
-options, each at most 60 characters).
+emoji. Devin replies use Telegram 10.3 rich Markdown messages when enabled, with
+MarkdownV2 formatting and 4096-character chunking as a fallback. Rich delivery
+normalizes hard line breaks while preserving fenced code and pipe tables. A
+final `OPTIONS: one | two` line becomes inline buttons (up to eight options,
+each at most 60 characters); selected choices are marked with a disabled
+button. Stop confirmations use the Bot API 10.3 danger and primary button
+styles. Unknown rich-message methods disable rich delivery for the process and
+continue with MarkdownV2.
+
+When `TELEGRAM_DRAFTS=true`, private chats receive a Telegram draft while Devin
+is working. Groups continue to receive typing actions. If drafts are rejected,
+the watcher falls back to typing for that session.
+
+Bot API 10.3 topic creation and implicit-topic renaming are supported. The
+first message in an implicitly named topic renames it from its first line.
+`/help`, `/sessions`, `/status`, and `/whoami` use ephemeral group replies
+when Telegram accepts them, and retry as normal messages if it does not.
 
 `DEVIN_SETTLE_SECONDS` keeps a newly started watcher alive while Devin's API
 still reports a stale non-active status after the message is submitted.

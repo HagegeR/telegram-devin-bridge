@@ -378,6 +378,19 @@ class Store:
             str(row["option_text"]),
         )
 
+    def list_choices(self, conv_key: str) -> list[tuple[str, str]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT choice_id, option_text
+                FROM pending_choices
+                WHERE conv_key = ?
+                ORDER BY created_at, choice_id
+                """,
+                (conv_key,),
+            ).fetchall()
+        return [(str(row["choice_id"]), str(row["option_text"])) for row in rows]
+
     def delete_choices(self, conv_key: str) -> None:
         with self.lock, self.connection:
             self.connection.execute(
