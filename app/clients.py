@@ -75,7 +75,7 @@ class DevinClient:
         )
 
     async def send_message(self, session_id: str, message: str) -> None:
-        await self._json(
+        await self._call(
             "POST",
             f"/v1/sessions/{session_id}/message",
             json={"message": message},
@@ -124,7 +124,7 @@ class DevinClient:
         return result
 
     async def terminate(self, session_id: str) -> None:
-        await self._json("DELETE", f"/v1/sessions/{session_id}")
+        await self._call("DELETE", f"/v1/sessions/{session_id}")
 
     async def upload_attachment(
         self,
@@ -141,6 +141,16 @@ class DevinClient:
         if not isinstance(value, str):
             raise TypeError("Devin attachment response was not a URL")
         return value
+
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Mapping[str, object] | None = None,
+    ) -> None:
+        response = await self.client.request(method, path, json=json)
+        response.raise_for_status()
 
     async def _json(
         self,
