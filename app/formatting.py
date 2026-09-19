@@ -213,3 +213,38 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     ):
         return text, []
     return "\n".join(lines[:index]).rstrip(), options
+
+
+def extract_large_code_blocks(
+    text: str,
+    *,
+    minimum_chars: int = 1500,
+) -> tuple[str, list[tuple[str, bytes]]]:
+    pattern = re.compile(r"```([A-Za-z0-9]*)\n(.*?)```", re.DOTALL)
+    documents: list[tuple[str, bytes]] = []
+    counter = 0
+
+    def replacement(match: re.Match[str]) -> str:
+        nonlocal counter
+        code = match.group(2)
+        if len(code) <= minimum_chars:
+            return match.group(0)
+        counter += 1
+        language = match.group(1)
+        extension = language if language.isalnum() else "txt"
+        filename = f"snippet-{counter}.{extension or 'txt'}"
+        documents.append((filename, code.encode()))
+        return f"📎 {filename}"
+
+    return pattern.sub(replacement, text), documents
+
+
+def split_long_text(text: str, limit: int) -> tuple[str, str]:
+    if len(text) <= limit:
+        return text, ""
+    boundary = text.rfind("\n\n", 0, limit + 1)
+    if boundary <= 0:
+        boundary = text.rfind("\n", 0, limit + 1)
+    if boundary <= 0:
+        boundary = limit
+    return text[:boundary].rstrip(), text[boundary:].lstrip()
