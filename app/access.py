@@ -19,7 +19,11 @@ def is_allowed(
     chat_id = _int(chat.get("id"))
     if settings.telegram_allow_all_users:
         return True
-    approved = approved_users is not None and user_id in approved_users
+    approved = (
+        approved_users is not None
+        and user_id in approved_users
+        and chat_id == user_id
+    )
     if settings.allowed_users and user_id not in settings.allowed_users and not approved:
         return False
     if settings.allowed_chat_ids and chat_id not in settings.allowed_chat_ids:

@@ -73,7 +73,6 @@ class Bridge:
         self.rate_warnings: dict[int, float] = {}
         self.shutting_down = False
         self.approved_users: set[int] = set()
-        self.pr_cache: dict[str, tuple[float, str]] = {}
 
     async def startup(self) -> None:
         profile = await self.telegram.get_me()
@@ -322,6 +321,11 @@ class Bridge:
         fragments = self.pending_turns.pop(conv_key, [])
         if not fragments:
             return
+        for fragment_message, _, _ in fragments:
+            chat_id = _int(_mapping(fragment_message.get("chat")).get("id"))
+            message_id = _int(fragment_message.get("message_id"))
+            if message_id:
+                self.store.index_message(chat_id, message_id, conv_key)
         message = fragments[-1][0]
         try:
             text = "\n\n".join(value for _, value, _ in fragments if value)

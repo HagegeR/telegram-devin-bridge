@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Self, cast
@@ -90,6 +90,19 @@ def test_access_rules() -> None:
     assert is_allowed(message("hi"), config)
     assert not is_allowed(message("hi", user_id=333), config)
     assert is_allowed(message("hi", user_id=222), config, {222})
+    group_config = settings(
+        Path("/tmp"),
+        telegram_allowed_users="",
+        telegram_allowed_chat_ids="-777",
+    )
+    assert not is_allowed(
+        {
+            **message("hi", chat_id=-888, user_id=222),
+            "chat": {"id": -888, "type": "supergroup"},
+        },
+        group_config,
+        {222},
+    )
     assert not is_allowed(message("hi", user_id=111), settings(Path("/tmp"), telegram_allowed_users=""))
     assert is_allowed(
         message("hi", user_id=333),
@@ -1510,6 +1523,38 @@ async def test_whoami_group_send_includes_ephemeral_receiver(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_whoami_reports_approved_user_allowed(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_allowed_users="111"),
+        Store(":memory:"),
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    runtime.approved_users.add(222)
+    await handle_command(runtime, message("/whoami", user_id=222), "/whoami")
+    assert "Allowed: yes" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_flush_pending_indexes_every_fragment(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    runtime = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=10),
+        store,
+        _FakeDevin(),
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    await runtime._queue_turn(message("one", message_id=1), "one", None)
+    await runtime._queue_turn(message("two", message_id=2), "two", None)
+    await runtime._flush_pending("222")
+    assert store.conv_key_for_message(222, 1) == "222"
+    assert store.conv_key_for_message(222, 2) == "222"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_devin_send_message_accepts_non_object_body() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/message"):
@@ -1550,6 +1595,91 @@ async def test_download_attachment_rejects_cross_host_redirect() -> None:
         )
         is None
     )
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_download_attachment_stream_limits_body() -> None:
+    limit = 20 * 1024 * 1024
+
+    class Chunks(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.reads = 0
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            self.reads += 1
+            yield b"x" * (limit + 1)
+            self.reads += 1
+            yield b"should not be read"
+
+        async def aclose(self) -> None:
+            return None
+
+    chunks = Chunks()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=chunks)
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert (
+        await devin.download_attachment(
+            "https://app.devin.ai/attachments/1/file.txt"
+        )
+        is None
+    )
+    assert chunks.reads == 1
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_download_attachment_redirect_uses_public_client() -> None:
+    authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorizations.append(request.headers.get("authorization", ""))
+        if len(authorizations) == 1:
+            return httpx.Response(
+                302,
+                headers={"Location": "https://app.devin.ai/attachments/1/file.txt"},
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            content=b"ok",
+        )
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.download_attachment(
+        "https://app.devin.ai/attachments/1/start"
+    ) == (b"ok", "text/plain")
+    assert authorizations == ["Bearer fake-key", ""]
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_github_pr_fetch_rejects_invalid_json() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json")
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.fetch_github_pr(
+        "https://github.com/org/repo/pull/1"
+    ) is None
     await devin.close()
 
 
@@ -1653,6 +1783,112 @@ async def test_watcher_adaptive_polling_resets_after_delivery(tmp_path: Path) ->
         sleep=sleep,
     ).run()
     assert sleeps[:3] == [1, 1.5, 1]
+
+
+@pytest.mark.asyncio
+async def test_watcher_status_callback_runs_after_delivery_and_persist(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    events: list[object] = []
+
+    async def on_status_change(status: str) -> None:
+        current = store.get_conversation("222")
+        assert current is not None
+        events.append(("status", status, current.last_event_id))
+
+    class FinishedDevin(_FakeDevin):
+        calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            if self.calls == 1:
+                return SessionState("working", "title", None, [])
+            return SessionState(
+                "finished",
+                "title",
+                None,
+                [DevinMessage("devin_message", "e1", "done", None)],
+            )
+
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        FinishedDevin(),  # type: ignore[arg-type]
+        _FakeTelegram(),  # type: ignore[arg-type]
+        settings(tmp_path),
+        on_status_change=on_status_change,
+    )
+    original_deliver = watcher._deliver
+
+    async def deliver(*args: object, **kwargs: object) -> None:
+        events.append("deliver")
+        await original_deliver(*args, **kwargs)
+
+    watcher._deliver = deliver  # type: ignore[method-assign]
+    await watcher.run()
+    assert events == ["deliver", ("status", "finished", "e1")]
+
+
+@pytest.mark.asyncio
+async def test_watcher_generation_change_uses_new_reply_anchor(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    watcher: SessionWatcher
+
+    class TriggerDuringPollDevin(_FakeDevin):
+        calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            if self.calls == 1:
+                watcher.set_trigger(22)
+                return SessionState(
+                    "working",
+                    "title",
+                    None,
+                    [DevinMessage("devin_message", "e1", "old", None)],
+                )
+            return SessionState(
+                "finished",
+                "title",
+                None,
+                [DevinMessage("devin_message", "e1", "old", None)],
+            )
+
+    telegram = _FakeTelegram()
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        TriggerDuringPollDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        trigger_message_id=11,
+    )
+    await watcher.run()
+    assert telegram.sent[0]["reply_to_message_id"] == 22
+    assert watcher.delivered is True
 
 
 @pytest.mark.asyncio

@@ -82,11 +82,13 @@ class SessionWatcher:
         self.draft_used = False
         self.last_status: str | None = None
         self.started_at = self.clock()
+        self.generation = 0
 
     def set_trigger(self, message_id: int) -> None:
         self.trigger_message_id = message_id
         self.delivered = False
         self.started_at = self.clock()
+        self.generation += 1
 
     async def run(self) -> None:
         self.started_at = self.clock()
@@ -105,7 +107,11 @@ class SessionWatcher:
             ):
                 turn_trigger = self.trigger_message_id
                 turn_delivered = self.delivered
+                gen = self.generation
                 state = await self.devin.get_session(self.conversation.session_id)
+                if self.generation != gen:
+                    await self.sleep(interval)
+                    continue
                 new_messages = self._new_messages(
                     state,
                     wall_started_at,
@@ -116,8 +122,6 @@ class SessionWatcher:
                     previous_status is not None
                     and state.status_enum != previous_status
                 )
-                if status_changed and self.on_status_change is not None:
-                    await self.on_status_change(state.status_enum)
                 previous_status = state.status_enum
                 self.last_status = state.status_enum
                 if first_poll or new_messages or status_changed:
@@ -155,6 +159,8 @@ class SessionWatcher:
                         )
                     self.delivered = True
                     self.delivered_count += 1
+                if status_changed and self.on_status_change is not None:
+                    await self.on_status_change(state.status_enum)
                 if state.pr_url is not None and state.pr_url != last_pr_url:
                     await self.telegram.send_message(
                         self.conversation.chat_id,

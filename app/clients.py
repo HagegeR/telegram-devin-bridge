@@ -163,31 +163,45 @@ class DevinClient:
         for hop in range(4):
             if urlparse(current_url).hostname != "app.devin.ai":
                 return None
+            client = self.client if hop == 0 else self.public_client
             try:
-                response = await self.client.get(
+                async with client.stream(
+                    "GET",
                     current_url,
                     follow_redirects=False,
-                )
+                ) as response:
+                    if 300 <= response.status_code < 400:
+                        if hop == 3:
+                            return None
+                        location = response.headers.get("location")
+                        if not location:
+                            return None
+                        current_url = urljoin(current_url, location)
+                        continue
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPError:
+                        return None
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            if int(content_length) > 20 * 1024 * 1024:
+                                return None
+                        except ValueError:
+                            pass
+                    chunks: list[bytes] = []
+                    content_size = 0
+                    async for chunk in response.aiter_bytes():
+                        content_size += len(chunk)
+                        if content_size > 20 * 1024 * 1024:
+                            return None
+                        chunks.append(chunk)
+                    return b"".join(chunks), response.headers.get(
+                        "content-type",
+                        "application/octet-stream",
+                    ).split(";", 1)[0]
             except httpx.HTTPError:
                 return None
-            if 300 <= response.status_code < 400:
-                if hop == 3:
-                    return None
-                location = response.headers.get("location")
-                if not location:
-                    return None
-                current_url = urljoin(current_url, location)
-                continue
-            try:
-                response.raise_for_status()
-            except httpx.HTTPError:
-                return None
-            if len(response.content) > 20 * 1024 * 1024:
-                return None
-            return response.content, response.headers.get(
-                "content-type",
-                "application/octet-stream",
-            ).split(";", 1)[0]
         return None
 
     async def session_consumption(
@@ -232,7 +246,10 @@ class DevinClient:
             response.raise_for_status()
         except httpx.HTTPError:
             return None
-        value = response.json()
+        try:
+            value = response.json()
+        except ValueError:
+            return None
         return cast(dict[str, object], value) if isinstance(value, dict) else None
 
     async def _call(

@@ -4,7 +4,7 @@ import re
 from collections.abc import Mapping
 from typing import Protocol
 
-from app.access import is_topic_chat
+from app.access import is_allowed, is_topic_chat
 from app.config import Settings
 from app.devin import Playbook, SessionState
 from app.store import Conversation, Store
@@ -23,6 +23,7 @@ class CommandRuntime(Protocol):
     settings: Settings
     store: Store
     bot_topics_enabled: bool
+    approved_users: set[int]
 
     async def send_text(
         self,
@@ -416,10 +417,7 @@ async def _whoami(runtime: CommandRuntime, message: Mapping[str, object]) -> Non
     chat = _mapping(message.get("chat"))
     user_id = _int(sender.get("id"))
     chat_id = _int(chat.get("id"))
-    allowed = runtime.settings.telegram_allow_all_users or (
-        user_id in runtime.settings.allowed_users
-        or chat_id in runtime.settings.allowed_chat_ids
-    )
+    allowed = is_allowed(message, runtime.settings, runtime.approved_users)
     home = runtime.store.get_setting("home_chat_id") == str(chat_id)
     await runtime.send_text(
         message,
