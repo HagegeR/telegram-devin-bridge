@@ -342,9 +342,10 @@ class SessionWatcher:
         if not body and options:
             body = "Choose an option:"
         attachment_urls = re.findall(
-            r"https://app\.devin\.ai/attachments/[^/\s]+/[^\s]+",
+            r"https://app\.devin\.ai/attachments/[^/\s)\]]+/[^\s)\]]+",
             body,
         )
+        attachment_urls = [url.rstrip(".,;:!?") for url in attachment_urls]
         for url in attachment_urls:
             downloaded = await self.devin.download_attachment(url)
             if downloaded is None:

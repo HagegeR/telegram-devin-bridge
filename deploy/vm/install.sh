@@ -97,13 +97,17 @@ else
 fi
 
 mkdir -p "$BRIDGE_HOME" "$DATA_DIR"
-rm -rf "$BRIDGE_HOME/app" "$BRIDGE_HOME/deploy" "$BRIDGE_HOME/tests"
-tar -C "$SOURCE_DIR" \
-    --exclude='.git' \
-    --exclude='.venv' \
-    --exclude='*.sqlite3' \
-    --exclude='.env' \
-    -cf - . | tar -C "$BRIDGE_HOME" -xf -
+if [ "$SOURCE_DIR" = "$BRIDGE_HOME" ]; then
+    printf '%s\n' 'installing in place'
+else
+    rm -rf "$BRIDGE_HOME/app" "$BRIDGE_HOME/deploy" "$BRIDGE_HOME/tests"
+    tar -C "$SOURCE_DIR" \
+        --exclude='.git' \
+        --exclude='.venv' \
+        --exclude='*.sqlite3' \
+        --exclude='.env' \
+        -cf - . | tar -C "$BRIDGE_HOME" -xf -
+fi
 
 cd "$BRIDGE_HOME"
 if [ ! -x .venv/bin/python ]; then
@@ -117,8 +121,9 @@ fi
 set_env_value() {
     key=$1
     value=$2
+    escaped=$(printf '%s' "$value" | sed 's/[|&\\]/\\&/g')
     if grep -q "^${key}=" .env; then
-        sed "s|^${key}=.*|${key}=${value}|" .env > .env.tmp
+        sed "s|^${key}=.*|${key}=${escaped}|" .env > .env.tmp
         mv .env.tmp .env
     else
         printf '%s=%s\n' "$key" "$value" >> .env

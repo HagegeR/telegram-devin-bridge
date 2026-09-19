@@ -873,7 +873,14 @@ class Bridge:
         added = new_emojis - old_emojis
         conv_key = self.store.conv_key_for_message(chat_id, message_id)
         if conv_key is None:
-            if chat.get("is_forum"):
+            if (
+                chat.get("is_forum")
+                or (
+                    chat.get("type") == "private"
+                    and self.bot_topics_enabled
+                )
+                or self.store.count_conversations_for_chat(chat_id) > 1
+            ):
                 return
             conversation = self.store.get_conversation_for_chat(chat_id)
         else:

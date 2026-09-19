@@ -392,6 +392,14 @@ class Store:
             ).fetchone()
         return self._conversation(row)
 
+    def count_conversations_for_chat(self, chat_id: int) -> int:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT COUNT(*) AS count FROM conversations WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
     def get_settings(self, conv_key: str) -> ConversationSettings:
         with self.lock:
             row = self.connection.execute(

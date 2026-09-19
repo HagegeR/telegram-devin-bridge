@@ -233,6 +233,7 @@ async def handle_command(
             return
         if conversation is not None:
             await runtime.stop_conversation(conversation)
+        runtime.clear_queued_turns(conv_key)
         try:
             await runtime.delete_forum_topic(chat_id, thread_id)
         except RuntimeError as exc:

@@ -2471,6 +2471,34 @@ async def test_topic_close_and_rename_commands(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_clears_pending_turn_without_creating_session(
+    tmp_path: Path,
+) -> None:
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=10),
+        Store(":memory:"),
+        devin,
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    topic_message = {
+        **message("hello", message_id=1),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
+    await runtime.handle_message(topic_message)
+    assert runtime.queued_count("222:9") == 1
+    await runtime.handle_message({
+        **message("/close", message_id=2),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    })
+    assert runtime.queued_count("222:9") == 0
+    assert devin.created == []
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_watcher_anchors_only_first_reply_and_cleans_transient(
     tmp_path: Path,
 ) -> None:
@@ -3085,6 +3113,46 @@ async def test_attachment_photo_document_and_download_fallback(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_attachment_url_matching_strips_markdown_punctuation(
+    tmp_path: Path,
+) -> None:
+    class URLDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.urls: list[str] = []
+
+        async def download_attachment(self, url: str) -> tuple[bytes, str] | None:
+            self.urls.append(url)
+            return None
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    devin = URLDevin()
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        devin,
+        _FakeTelegram(),
+        settings(tmp_path),
+    )
+    clean = "https://app.devin.ai/attachments/1/report.pdf"
+    await watcher._deliver(
+        DevinMessage("devin_message", "1", f"[report]({clean})", None),
+        SessionState("finished", "title", None, []),
+    )
+    await watcher._deliver(
+        DevinMessage("devin_message", "2", f"{clean}.", None),
+        SessionState("finished", "title", None, []),
+    )
+    assert devin.urls == [clean, clean]
+
+
+@pytest.mark.asyncio
 async def test_pr_card_rendering_and_failure_fallback(tmp_path: Path) -> None:
     class PRDevin(_FakeDevin):
         async def fetch_github_pr(self, _url: str, _token: str | None = None) -> dict[str, object] | None:
@@ -3462,6 +3530,34 @@ async def test_forum_reaction_resolves_document_message_index(tmp_path: Path) ->
         "new_reaction": [{"type": "emoji", "emoji": "🔁"}],
     })
     assert store.conv_key_for_message(222, 1) == "222:9"
+
+
+@pytest.mark.asyncio
+async def test_unindexed_private_topic_reaction_does_not_use_chat_fallback(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    for thread_id in (1, 2):
+        store.save_conversation(
+            conv_key=f"222:{thread_id}",
+            chat_id=222,
+            thread_id=thread_id,
+            session_id=f"s{thread_id}",
+            session_url=f"https://devin.test/s{thread_id}",
+            title="title",
+            last_user_text="work",
+        )
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
+    await runtime.handle_reaction({
+        "user": {"id": 111},
+        "chat": {"id": 222, "type": "private"},
+        "message_id": 99,
+        "old_reaction": [],
+        "new_reaction": [{"type": "emoji", "emoji": "🛑"}],
+    })
+    assert devin.terminated == []
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio
