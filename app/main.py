@@ -8,6 +8,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import cast
 
 import httpx
@@ -39,6 +40,25 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+async def _run_shell(command: str, cwd: Path) -> tuple[int, str]:
+    process = await asyncio.create_subprocess_shell(
+        command,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), 300)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        return 124, "timed out after 300s"
+    return process.returncode or 0, stdout.decode(errors="replace")
+
+
 Attachment = tuple[str, bytes, str]
 TurnFragment = tuple[Mapping[str, object], str, Attachment | None]
 QueuedTurn = tuple[Mapping[str, object], str, Attachment | None]
@@ -65,6 +85,7 @@ class Bridge:
         self.lock_refs: dict[str, int] = {}
         self.background_tasks: set[asyncio.Task[None]] = set()
         self.denied_notices: set[tuple[int, int]] = set()
+        self._run_shell = _run_shell
         self.access_prompted: dict[int, float] = {}
         self.transient_messages: dict[str, list[int]] = {}
         self.pending_turns: dict[str, list[TurnFragment]] = {}
@@ -1306,6 +1327,19 @@ class Bridge:
             for request in users
         ) or "No approved users."
         await self.send_text(message, text)
+
+    async def self_update(self, message: Mapping[str, object], args: str) -> None:
+        sender_id = _int(_mapping(message.get("from")).get("id"))
+        if sender_id not in self.settings.admin_user_ids:
+            return
+        command = self.settings.self_update_command
+        if args.strip() == "check":
+            command = f"{command} --check"
+        exit_code, output = await self._run_shell(command, _REPO_ROOT)
+        tail = "\n".join(output.strip().splitlines()[-30:]) or "(no output)"
+        if exit_code != 0:
+            tail = f"exit {exit_code}\n{tail}"
+        await self.send_text(message, f"```\n{tail}\n```")
 
     async def revoke_user(
         self,

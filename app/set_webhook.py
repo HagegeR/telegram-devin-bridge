@@ -30,6 +30,7 @@ COMMANDS = [
     ("sethome", "Set this chat as notification home"),
     ("users", "List approved users"),
     ("revoke", "Revoke user access"),
+    ("update", "Pull latest code and restart"),
 ]
 
 GROUP_COMMANDS = {

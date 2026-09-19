@@ -476,3 +476,112 @@ async def test_publish_put_fallback_to_post() -> None:
             trigger_description="d",
         )
     assert action == "created"
+
+
+@pytest.mark.asyncio
+async def test_transport_retry_succeeds_after_flaky() -> None:
+    from app.clients import DevinClient
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise httpx.ConnectError("dns blip")
+        return httpx.Response(200, json={"items": []})
+
+    client = DevinClient(
+        "apk_key",
+        "https://api.devin.ai",
+        1,
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.list_playbooks()
+    assert result == []
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_transport_retry_exhausts() -> None:
+    import app.clients as clients_mod
+    from app.clients import DevinClient
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("always down")
+
+    client = DevinClient(
+        "apk_key",
+        "https://api.devin.ai",
+        1,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(httpx.ConnectError):
+        await client._call("GET", "/v1/sessions")
+    assert calls == clients_mod.RETRY_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_transport_retry_helper_uses_sleep() -> None:
+    import app.clients as clients_mod
+
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    attempts = 0
+
+    async def send() -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.ConnectError("flaky")
+        return httpx.Response(200)
+
+    response = await clients_mod._with_transport_retry(send, sleep=fake_sleep)
+    assert response.status_code == 200
+    assert attempts == 3
+    assert slept == list(clients_mod.RETRY_BACKOFF)
+
+
+@pytest.mark.asyncio
+async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
+    from app.main import create_app
+
+    app = create_app(settings=settings(tmp_path, telegram_admin_user_ids="42"))
+    runtime = app.state.bridge
+
+    sent: list[str] = []
+
+    async def fake_send(message, text, **kwargs):
+        sent.append(text)
+        return 1
+
+    runtime.send_text = fake_send  # type: ignore[assignment]
+
+    commands: list[str] = []
+
+    async def fake_run(command: str, cwd) -> tuple[int, str]:
+        commands.append(command)
+        return 0, "up to date at abc1234 (main)" + chr(10)
+
+    runtime._run_shell = fake_run
+
+    admin_msg = {"from": {"id": 42}, "chat": {"id": 5}}
+    await runtime.self_update(admin_msg, "")
+    assert commands[-1] == "sh deploy/self-update.sh"
+    assert "abc1234" in sent[-1]
+    assert sent[-1].startswith("```")
+
+    await runtime.self_update(admin_msg, "check")
+    assert commands[-1] == "sh deploy/self-update.sh --check"
+
+    sent.clear()
+    stranger_msg = {"from": {"id": 7}, "chat": {"id": 5}}
+    await runtime.self_update(stranger_msg, "")
+    assert sent == []

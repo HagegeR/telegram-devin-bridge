@@ -98,6 +98,13 @@ curl -s https://<hostname>.<tailnet>.ts.net/health
 
 Logs go to `/var/log/telegram-devin-bridge.log`.
 
+Boot persistence is: `rc-update add` for `tailscale`, `dnsmasq`, and
+`telegram-devin-bridge`; the funnel config stored in tailscaled state;
+`RESOLV_CONF="no"` / `NO_GATEWAY` in `/etc/udhcpc/udhcpc.conf`; and the MTU
+`post-up` line in `/etc/network/interfaces`. The unit's `start_pre` waits up
+to 60s for DNS before starting (never fails the boot), and `depend()` orders
+after `tailscale`/`dnsmasq`/`dns`.
+
 ## 6. Register the webhook
 
 ```sh
@@ -152,6 +159,26 @@ rc-service telegram-devin-bridge status|restart
 tail -f /var/log/telegram-devin-bridge.log
 tailscale funnel status
 ```
+
+## Self-update
+
+`deploy/self-update.sh` pulls `origin/main` (or `SELF_UPDATE_BRANCH`), checks
+out the remote head — the host checkout is deploy-only and local changes are
+discarded on purpose — reinstalls requirements if `requirements.txt` changed,
+and restarts the service detached. Admins can trigger it from Telegram with
+`/update` (or `/update check` for a dry run; requires
+`TELEGRAM_ADMIN_USER_IDS`).
+
+Cron install (busybox run-parts requires NO file extension):
+
+```sh
+cp deploy/openrc/telegram-devin-bridge-update /etc/periodic/15min/
+chmod +x /etc/periodic/15min/telegram-devin-bridge-update
+```
+
+Set `SELF_UPDATE_BRANCH` in `/etc/conf.d/telegram-devin-bridge` (sourced by
+the init script pattern used by hermes-gateway) if the host should track a
+branch other than `main`.
 
 ## 9. Alternative: polling mode
 

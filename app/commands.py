@@ -115,6 +115,10 @@ class CommandRuntime(Protocol):
 
     async def revoke_user(self, message: Mapping[str, object], user_id: int) -> None: ...
 
+    async def self_update(
+        self, message: Mapping[str, object], args: str
+    ) -> None: ...
+
 
 async def handle_command(
     runtime: CommandRuntime,
@@ -268,6 +272,8 @@ async def handle_command(
         runtime.store.set_setting("home_chat_id", str(chat_id))
         runtime.store.set_setting("home_thread_id", str(thread_id or ""))
         await runtime.send_text(message, "This chat is now the notification home.")
+    elif command == "update":
+        await runtime.self_update(message, args)
     else:
         await runtime.send_text(message, "Unknown command; /help")
 

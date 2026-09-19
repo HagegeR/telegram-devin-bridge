@@ -58,6 +58,7 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TRANSCRIPTION_MODEL` | no | `whisper-1` |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
 | `GITHUB_TOKEN` | no | unset |
+| `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
 | `NOTIFY_SECRET` | no | unset (`/notify` disabled) |
 | `BOT_USERNAME` | no | fetched from Telegram at startup |
 
@@ -127,6 +128,23 @@ Two deployment styles exist — pick one:
   uvicorn as root from `/root/telegram-devin-bridge`, supervise-daemon respawn.
 - `deploy/vm/install.sh`: **polling-mode** installer — `TELEGRAM_MODE=polling`,
   service account under `/opt`, `python -m app.poll`; needs no public URL.
+
+## Self-update
+
+`deploy/self-update.sh` fetches `origin/<branch>` (`SELF_UPDATE_BRANCH`,
+default `main`), checks out the remote head, reinstalls requirements when
+`requirements.txt` changed, and restarts the OpenRC service detached.
+`--check` reports without touching anything. The host checkout is
+deploy-only: `git checkout -B` discards local changes on purpose. Admins can
+run it from Telegram with `/update` or preview with `/update check`
+(requires `TELEGRAM_ADMIN_USER_IDS`).
+
+On Alpine, install the bundled cron entry to poll every 15 minutes:
+
+```sh
+cp deploy/openrc/telegram-devin-bridge-update /etc/periodic/15min/
+chmod +x /etc/periodic/15min/telegram-devin-bridge-update
+```
 
 ## Devin Knowledge
 

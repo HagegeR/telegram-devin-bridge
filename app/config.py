@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     transcription_model: str = "whisper-1"
     telegram_attach_voice: bool = False
     github_token: str | None = None
+    self_update_command: str = "sh deploy/self-update.sh"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 
