@@ -14,8 +14,16 @@ if command -v flock >/dev/null 2>&1; then
   exec 9>"$LOCK"
   flock -n 9 || { echo "another update is running"; exit 0; }
 else
-  mkdir "$LOCK.d" 2>/dev/null || { echo "another update is running"; exit 0; }
-  trap 'rmdir "$LOCK.d"' EXIT INT TERM
+  LOCKDIR="$LOCK.d"
+  if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    OWNER=$(cat "$LOCKDIR/pid" 2>/dev/null || true)
+    if [ -n "$OWNER" ] && kill -0 "$OWNER" 2>/dev/null; then echo "another update is running"; exit 0; fi
+    rm -rf "$LOCKDIR"
+    mkdir "$LOCKDIR" 2>/dev/null || { echo "another update is running"; exit 0; }
+  fi
+  echo $$ > "$LOCKDIR/pid"
+  trap 'rm -rf "$LOCKDIR"' EXIT
+  trap 'exit 1' INT TERM
 fi
 CHECK=0; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 BRANCH="${1:-${SELF_UPDATE_BRANCH:-main}}"
