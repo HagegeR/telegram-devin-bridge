@@ -91,6 +91,13 @@ class Store:
                     created_at REAL NOT NULL,
                     message_id INTEGER
                 );
+                CREATE TABLE IF NOT EXISTS long_texts (
+                    token TEXT PRIMARY KEY,
+                    conv_key TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -530,6 +537,50 @@ class Store:
             self.connection.execute(
                 "DELETE FROM pending_choices WHERE conv_key = ?",
                 (conv_key,),
+            )
+
+    def add_long_text(
+        self,
+        token: str,
+        conv_key: str,
+        chat_id: int,
+        text: str,
+    ) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT OR REPLACE INTO long_texts(
+                    token, conv_key, chat_id, text, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (token, conv_key, chat_id, text, time.time()),
+            )
+
+    def get_long_text(self, token: str) -> tuple[str, int, str, str] | None:
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT conv_key, chat_id, text, token
+                FROM long_texts WHERE token = ?
+                """,
+                (token,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["conv_key"]), int(row["chat_id"]), str(row["text"]), str(row["token"])
+
+    def delete_long_text(self, token: str) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM long_texts WHERE token = ?",
+                (token,),
+            )
+
+    def cleanup_long_texts(self, max_age_seconds: float = 7 * 86400) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM long_texts WHERE created_at < ?",
+                (time.time() - max_age_seconds,),
             )
 
     def get_setting(self, key: str) -> str | None:

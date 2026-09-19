@@ -12,6 +12,7 @@ from app.formatting import (
     markdown_to_telegram_markdown_v2,
     normalize_rich_linebreaks,
 )
+from app.telegram_updates import ALLOWED_UPDATES
 
 
 @dataclass(frozen=True)
@@ -460,6 +461,80 @@ class TelegramClient:
             None,
         )
 
+    async def send_document(
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        *,
+        thread_id: int | None = None,
+        caption: str | None = None,
+        reply_to: int | None = None,
+    ) -> dict[str, object]:
+        data: dict[str, str] = {"chat_id": str(chat_id)}
+        if thread_id is not None:
+            data["message_thread_id"] = str(thread_id)
+        if caption is not None:
+            data["caption"] = caption
+        if reply_to is not None:
+            data["reply_parameters"] = (
+                f'{{"message_id": {reply_to}, '
+                '"allow_sending_without_reply": true}'
+            )
+        response = await self.client.post(
+            "/sendDocument",
+            data=data,
+            files={"document": (filename, content, "text/markdown")},
+        )
+        response.raise_for_status()
+        payload = self._json_object(response)
+        if payload.get("ok") is False:
+            description = payload.get("description")
+            if isinstance(description, str):
+                raise RuntimeError(description)
+            raise RuntimeError("Telegram API request failed")
+        result = payload.get("result", {})
+        if not isinstance(result, dict):
+            return {}
+        return cast(dict[str, object], result)
+
+    async def get_updates(
+        self,
+        offset: int | None,
+        timeout: int,
+        allowed_updates: list[str],
+    ) -> list[dict[str, object]]:
+        body: dict[str, object] = {
+            "timeout": timeout,
+            "allowed_updates": allowed_updates,
+        }
+        if offset is not None:
+            body["offset"] = offset
+        response = await self.client.post("/getUpdates", json=body)
+        response.raise_for_status()
+        payload = self._json_object(response)
+        if payload.get("ok") is False:
+            description = payload.get("description")
+            if isinstance(description, str):
+                raise RuntimeError(description)
+            raise RuntimeError("Telegram API request failed")
+        result = payload.get("result")
+        if not isinstance(result, list):
+            return []
+        return [
+            cast(dict[str, object], item)
+            for item in result
+            if isinstance(item, dict)
+        ]
+
+    async def delete_webhook(self) -> None:
+        await self._request(
+            "POST",
+            "/deleteWebhook",
+            {"drop_pending_updates": False},
+            None,
+        )
+
     async def download_file(self, file_path: str) -> bytes:
         limit = 20 * 1024 * 1024
         async with self.client.stream(
@@ -514,13 +589,7 @@ class TelegramClient:
             {
                 "url": f"{public_base_url.rstrip('/')}/telegram/webhook",
                 "secret_token": webhook_secret,
-                "allowed_updates": [
-                    "message",
-                    "edited_message",
-                    "channel_post",
-                    "callback_query",
-                    "message_reaction",
-                ],
+                "allowed_updates": ALLOWED_UPDATES,
             },
             None,
         )

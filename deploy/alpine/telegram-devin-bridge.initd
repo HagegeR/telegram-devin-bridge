@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+
+name="telegram-devin-bridge"
+command="/opt/telegram-devin-bridge/.venv/bin/python"
+command_args="-m app.poll"
+command_user="telegram-devin:telegram-devin"
+directory="/opt/telegram-devin-bridge"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.err"
+
+depend() {
+    need net
+}

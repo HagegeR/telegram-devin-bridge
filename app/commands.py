@@ -58,6 +58,10 @@ class CommandRuntime(Protocol):
 
     async def stop_conversation(self, conversation: Conversation) -> None: ...
 
+    def clear_queued_turns(self, conv_key: str) -> None: ...
+
+    def queued_count(self, conv_key: str) -> int: ...
+
     async def retry_conversation(
         self,
         conversation: Conversation,
@@ -124,6 +128,7 @@ async def handle_command(
             )
         await runtime.send_text(message, help_text, ephemeral=True)
     elif command == "new":
+        runtime.clear_queued_turns(conv_key)
         title = args.strip() or "Telegram conversation"
         prompt = (
             f"The user started a new conversation titled '{title}'. "
@@ -175,12 +180,18 @@ async def handle_command(
             state = await runtime.get_state(conversation.session_id)
             status = state.status_enum
             pr_line = f"\nPR: {state.pr_url}" if state.pr_url else ""
+            queued_line = (
+                f" · {runtime.queued_count(conv_key)} queued"
+                if runtime.queued_count(conv_key)
+                else ""
+            )
             await runtime.send_text(
                 message,
                 (
                     f"{conversation.title}\n"
                     f"Status: {status}\n"
                     f"Session: {conversation.session_url}"
+                    f"{queued_line}"
                     f"{pr_line}"
                 ),
                 ephemeral=True,
@@ -213,7 +224,7 @@ async def handle_command(
             await runtime.send_text(message, "Usage: /rename <name>")
             return
         await runtime.edit_forum_topic(chat_id, thread_id, args)
-    elif command == "stop":
+    elif command in {"stop", "cancel"}:
         await _stop(runtime, message, conversation)
     elif command == "playbook":
         await _playbook(runtime, message, args)
@@ -296,8 +307,16 @@ async def _stop(
     conversation: Conversation | None,
 ) -> None:
     if conversation is None:
+        runtime.clear_queued_turns(
+            Store.conv_key(
+                _int(_mapping(message.get("chat")).get("id")),
+                _thread_id(message),
+                is_forum=is_topic_chat(message),
+            )
+        )
         await runtime.send_text(message, "No active session.")
         return
+    runtime.clear_queued_turns(conversation.conv_key)
     choice_id = runtime.new_choice_id()
     message_id = await runtime.send_markup(
         message,
@@ -398,7 +417,7 @@ def _parse(text: str) -> tuple[str, str]:
 def _help_text() -> str:
     return (
         "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
-        "/resume <n>\n/status\n/stop\n/playbook [n] [text]\n/retry\n"
+        "/resume <n>\n/status\n/stop (/cancel)\n/playbook [n] [text]\n/retry\n"
         "/whoami\n/sethome\n/help"
     )
 

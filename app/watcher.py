@@ -12,7 +12,7 @@ import httpx
 
 from app.config import Settings
 from app.devin import DevinClient, DevinMessage, SessionState
-from app.formatting import extract_options
+from app.formatting import extract_large_code_blocks, extract_options, split_long_text
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
 
@@ -31,6 +31,7 @@ class SessionWatcher:
         poll_seconds: float | None = None,
         trigger_message_id: int | None = None,
         transient_message_ids: list[int] | None = None,
+        on_status_change: Callable[[str], Awaitable[None]] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -47,6 +48,7 @@ class SessionWatcher:
         self.sleep = sleep
         self.trigger_message_id = trigger_message_id
         self.transient_message_ids = transient_message_ids or []
+        self.on_status_change = on_status_change
         self.drafts_ok = settings.telegram_drafts
         self.draft_id = secrets.randbelow(2**31 - 1) + 1
         self.status_message_id: int | None = None
@@ -56,6 +58,7 @@ class SessionWatcher:
         self.delivered_count = 0
         self.delivered = False
         self.draft_used = False
+        self.last_status: str | None = None
 
     def set_trigger(self, message_id: int) -> None:
         self.trigger_message_id = message_id
@@ -90,7 +93,10 @@ class SessionWatcher:
                     previous_status is not None
                     and state.status_enum != previous_status
                 )
+                if status_changed and self.on_status_change is not None:
+                    await self.on_status_change(state.status_enum)
                 previous_status = state.status_enum
+                self.last_status = state.status_enum
                 if first_poll or new_messages or status_changed:
                     interval = min(
                         max(self.settings.devin_poll_fast_seconds, 0.5),
@@ -149,7 +155,7 @@ class SessionWatcher:
                         return
                 else:
                     await self._refresh_progress(started_at, state)
-                await self.sleep(interval)
+                await self.sleep(max(interval, 0.001))
             await self._cleanup_transients()
             if not self.delivered:
                 await self.telegram.send_message(
@@ -325,6 +331,53 @@ class SessionWatcher:
                 choice_ids.append((choice_id, option))
                 buttons.append([{"text": option, "callback_data": choice_id}])
             markup = {"inline_keyboard": buttons}
+        body, documents = extract_large_code_blocks(body)
+        for index, (filename, content) in enumerate(documents):
+            await self.telegram.send_document(
+                self.conversation.chat_id,
+                filename,
+                content,
+                thread_id=self.conversation.thread_id,
+                reply_to=reply_to_message_id if index == 0 else None,
+            )
+        limit = max(1, self.settings.telegram_long_reply_chars)
+        if not options and len(body) > 4 * limit:
+            await self.telegram.send_document(
+                self.conversation.chat_id,
+                "reply.md",
+                body.encode(),
+                thread_id=self.conversation.thread_id,
+                reply_to=reply_to_message_id,
+            )
+            await self.telegram.send_markdown(
+                self.conversation.chat_id,
+                body[:500],
+                thread_id=self.conversation.thread_id,
+                disable_notification=(
+                    self.settings.telegram_notification_mode == "important"
+                    and state.status_enum == "working"
+                ),
+                reply_to_message_id=reply_to_message_id,
+            )
+            return
+        if not options and len(body) > limit:
+            body, remaining = split_long_text(body, limit)
+            if remaining:
+                token = secrets.token_urlsafe(12)
+                self.store.add_long_text(
+                    token,
+                    self.conversation.conv_key,
+                    self.conversation.chat_id,
+                    remaining,
+                )
+                markup = {
+                    "inline_keyboard": [[
+                        {
+                            "text": "Show more ▾",
+                            "callback_data": f"more:{token}",
+                        }
+                    ]]
+                }
         delivery_kwargs: dict[str, object] = {
             "thread_id": self.conversation.thread_id,
             "reply_markup": markup,
