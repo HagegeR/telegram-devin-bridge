@@ -74,13 +74,15 @@ class SessionWatcher:
         self.delivered = False
         self.draft_used = False
         self.last_status: str | None = None
+        self.started_at = self.clock()
 
     def set_trigger(self, message_id: int) -> None:
         self.trigger_message_id = message_id
         self.delivered = False
+        self.started_at = self.clock()
 
     async def run(self) -> None:
-        started_at = self.clock()
+        self.started_at = self.clock()
         wall_started_at = time.time()
         last_pr_url = self.conversation.last_pr_url
         last_event_id = self.conversation.last_event_id
@@ -96,7 +98,12 @@ class SessionWatcher:
         )
         previous_status: str | None = None
         try:
-            while self.clock() - started_at < self.settings.devin_watch_timeout_seconds:
+            while (
+                self.clock() - self.started_at
+                < self.settings.devin_watch_timeout_seconds
+            ):
+                turn_trigger = self.trigger_message_id
+                turn_delivered = self.delivered
                 state = await self.devin.get_session(self.conversation.session_id)
                 new_messages = self._new_messages(
                     state,
@@ -122,16 +129,18 @@ class SessionWatcher:
                         max(interval * 1.5, self.settings.devin_poll_fast_seconds, 0.5),
                         self.poll_seconds,
                     )
+                delivery_delivered = turn_delivered
                 for message in new_messages:
-                    if not self.delivered:
+                    if not delivery_delivered:
                         await self._cleanup_transients()
                     await self._deliver(
                         message,
                         state,
                         reply_to_message_id=(
-                            self.trigger_message_id if not self.delivered else None
+                            turn_trigger if not delivery_delivered else None
                         ),
                     )
+                    delivery_delivered = True
                     if message.event_id is not None:
                         last_event_id = message.event_id
                         self.conversation = replace(
@@ -163,13 +172,16 @@ class SessionWatcher:
                     await self._finish_reaction(expired=state.status_enum == "expired")
                     return
                 if state.status_enum not in active_statuses:
-                    settled = self.clock() - started_at >= self.settings.devin_settle_seconds
+                    settled = (
+                        self.clock() - self.started_at
+                        >= self.settings.devin_settle_seconds
+                    )
                     if self.delivered or settled:
                         await self._cleanup_transients()
                         await self._finish_reaction(expired=False)
                         return
                 else:
-                    await self._refresh_progress(started_at, state)
+                    await self._refresh_progress(self.started_at, state)
                 await self.sleep(max(interval, 0.001))
             await self._cleanup_transients()
             if not self.delivered:
@@ -524,7 +536,7 @@ class SessionWatcher:
                 if isinstance(key, str)
                 and isinstance(item, (str, int, float, bool))
             ][:3]
-            return " · ".join(pairs)
+            return " · ".join(pairs)[:200]
         if isinstance(value, str):
             return value[:200]
         return ""

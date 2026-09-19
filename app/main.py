@@ -535,7 +535,11 @@ class Bridge:
             session_url=session_url,
             title=title,
             last_user_text=last_user_text or prompt,
-            last_user_message_id=_int(message.get("message_id")),
+            last_user_message_id=(
+                _int(message.get("message_id"))
+                if last_user_text is not None
+                else None
+            ),
         )
         self.store.add_history(
             conv_key=conv_key,
@@ -724,6 +728,7 @@ class Bridge:
                     conv_key,
                     session_id,
                     last_user_text=option,
+                    last_user_message_id=None,
                 )
                 await self.devin.send_message(session_id, option)
                 updated = f"✅ {option}"
@@ -801,16 +806,16 @@ class Bridge:
             return
         async with self._lock(conversation.conv_key):
             if "🔁" in added and conversation.last_user_text:
-                await self.retry_conversation(
-                    conversation,
-                    trigger_message_id=message_id,
-                )
                 if message_id:
                     await self.telegram.set_message_reaction(
                         chat_id,
                         message_id,
                         "👀",
                     )
+                await self.retry_conversation(
+                    conversation,
+                    trigger_message_id=message_id,
+                )
             elif "🛑" in added:
                 await self.stop_conversation(conversation)
                 target = {"chat": chat, "from": user}
@@ -844,7 +849,7 @@ class Bridge:
         if conversation is None:
             return
         message_id = _int(message.get("message_id"))
-        if conversation.last_user_message_id != message_id:
+        if conversation.last_user_message_id != message_id or text.startswith("/"):
             return
         async with self._lock(conv_key):
             conversation = self.store.get_conversation(conv_key)
