@@ -11,8 +11,8 @@ apk add python3 py3-pip git
 python3 -m venv --help   # sanity check
 ```
 
-Alpine's BusyBox provides `flock`; verify with `apk info -L busybox | grep
-flock`, or install `util-linux-misc` if it is missing.
+`deploy/self-update.sh` requires `flock`. Alpine's BusyBox provides it; if
+`command -v flock` fails, run `apk add util-linux-misc`.
 
 ## 2. Install the app
 
