@@ -10,7 +10,12 @@ from typing import cast
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 
-from app.access import is_allowed, should_respond_in_group, strip_bot_mention
+from app.access import (
+    is_allowed,
+    is_topic_chat,
+    should_respond_in_group,
+    strip_bot_mention,
+)
 from app.commands import COMMAND_BUTTON_LABELS, SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
@@ -89,6 +94,16 @@ class Bridge:
         chat = _mapping(message.get("chat"))
         user_id = _int(sender.get("id"))
         chat_id = _int(chat.get("id"))
+        if any(
+            message.get(field) is not None
+            for field in (
+                "forum_topic_created",
+                "forum_topic_edited",
+                "forum_topic_closed",
+                "forum_topic_reopened",
+            )
+        ):
+            return
         if not is_allowed(message, self.settings):
             key = (user_id, chat_id)
             if key not in self.denied_notices:
@@ -204,7 +219,7 @@ class Bridge:
         conv_key = Store.conv_key(
             chat_id,
             thread_id,
-            is_forum=bool(chat.get("is_forum")),
+            is_forum=is_topic_chat(message),
         )
         session_id, session_url = await self.devin.create_session(
             prompt,
@@ -426,6 +441,9 @@ class Bridge:
     async def get_state(self, session_id: str) -> SessionState:
         return await self.devin.get_session(session_id)
 
+    async def create_forum_topic(self, chat_id: int, name: str) -> int:
+        return await self.telegram.create_forum_topic(chat_id, name)
+
     async def list_playbooks(self) -> list[Playbook]:
         return await self.devin.list_playbooks()
 
@@ -497,7 +515,7 @@ class Bridge:
         return Store.conv_key(
             _int(chat.get("id")),
             _thread_id(message),
-            is_forum=bool(chat.get("is_forum")),
+            is_forum=is_topic_chat(message),
         )
 
     async def _report_processing_failure(

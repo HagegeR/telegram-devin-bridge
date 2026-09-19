@@ -294,6 +294,20 @@ class TelegramClient:
             raise TypeError("Telegram getFile response did not include file_path")
         return file_path
 
+    async def create_forum_topic(self, chat_id: int, name: str) -> int:
+        payload = await self._request(
+            "POST",
+            "/createForumTopic",
+            {"chat_id": chat_id, "name": name},
+            None,
+        )
+        thread_id = payload.get("message_thread_id")
+        if not isinstance(thread_id, int):
+            raise TypeError(
+                "Telegram createForumTopic response did not include message_thread_id"
+            )
+        return thread_id
+
     async def download_file(self, file_path: str) -> bytes:
         limit = 20 * 1024 * 1024
         async with self.client.stream(
@@ -363,9 +377,17 @@ class TelegramClient:
             if response.status_code == 400 and "reply_markup" in plain_body:
                 plain_body.pop("reply_markup", None)
                 response = await self.client.request(method, path, json=plain_body)
+        if response.is_error:
+            payload = self._json_object(response)
+            description = payload.get("description")
+            if isinstance(description, str):
+                raise RuntimeError(description)
         response.raise_for_status()
         payload = self._json_object(response)
         if payload.get("ok") is False:
+            description = payload.get("description")
+            if isinstance(description, str):
+                raise RuntimeError(description)
             raise RuntimeError("Telegram API request failed")
         result = payload.get("result", {})
         if not isinstance(result, dict):

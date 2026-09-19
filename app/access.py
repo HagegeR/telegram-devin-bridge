@@ -44,6 +44,11 @@ def should_respond_in_group(
     return f"@{bot_username.lower()}" in text.lower()
 
 
+def is_topic_chat(message: Mapping[str, object]) -> bool:
+    chat = _mapping(message.get("chat"))
+    return bool(chat.get("is_forum")) or bool(message.get("is_topic_message"))
+
+
 def strip_bot_mention(text: str, bot_username: str) -> str:
     if not bot_username:
         return text.strip()
