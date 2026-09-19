@@ -7,6 +7,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import httpx
@@ -71,6 +72,8 @@ class Bridge:
         self.rate_windows: dict[int, deque[float]] = {}
         self.rate_warnings: dict[int, float] = {}
         self.shutting_down = False
+        self.approved_users: set[int] = set()
+        self.pr_cache: dict[str, tuple[float, str]] = {}
 
     async def startup(self) -> None:
         profile = await self.telegram.get_me()
@@ -79,6 +82,11 @@ class Bridge:
             self.bot_username = username
         self.bot_topics_enabled = bool(profile.get("has_topics_enabled"))
         self.store.cleanup_long_texts()
+        self.store.cleanup_message_index()
+        self.approved_users = {
+            request.user_id
+            for request in self.store.list_access_requests("approved")
+        }
 
     async def shutdown(self) -> None:
         self.shutting_down = True
@@ -170,9 +178,36 @@ class Bridge:
             )
         ):
             return
-        if not is_allowed(message, self.settings):
+        if not is_allowed(message, self.settings, self.approved_users):
             key = (user_id, chat_id)
-            if key not in self.denied_notices:
+            if (
+                chat.get("type") == "private"
+                and self.settings.admin_user_ids
+            ):
+                request = self.store.get_access_request(user_id)
+                recent = (
+                    request is not None
+                    and time.time() - request.requested_at < 86400
+                )
+                if not recent:
+                    self.store.save_access_request(
+                        user_id,
+                        _text(sender.get("username")),
+                        _text(sender.get("first_name")),
+                    )
+                    await self.send_markup(
+                        message,
+                        "You're not authorized.",
+                        {
+                            "inline_keyboard": [[
+                                {
+                                    "text": "Request access",
+                                    "callback_data": "acc:req",
+                                }
+                            ]]
+                        },
+                    )
+            elif key not in self.denied_notices:
                 self.denied_notices.add(key)
                 await self._send_to_ids(
                     chat_id,
@@ -204,6 +239,10 @@ class Bridge:
                 "playbook",
                 "close",
                 "rename",
+                "settings",
+                "usage",
+                "users",
+                "revoke",
             }:
                 async with self._lock(self._conversation_key(message)):
                     await handle_command(self, message, text)
@@ -221,6 +260,20 @@ class Bridge:
                 )
             return
         attachment = await self._attachment(message)
+        if attachment is not None and self.settings.transcription_api_key:
+            transcript = await self._transcribe(message, attachment)
+            if transcript is not None:
+                text = (
+                    f"Voice note transcript:\n{transcript}"
+                    + (f"\n\n{text}" if text else "")
+                )
+                await self.telegram.set_message_reaction(
+                    chat_id,
+                    _int(message.get("message_id")),
+                    "🎙",
+                )
+                if not self.settings.telegram_attach_voice:
+                    attachment = None
         if not text and attachment is None:
             await self.telegram.send_message(
                 chat_id,
@@ -447,6 +500,7 @@ class Bridge:
                 message,
                 SYSTEM_PREAMBLE + text,
                 title,
+                playbook_id=self.store.get_settings(conv_key).default_playbook,
                 last_user_text=text,
                 start_watcher=False,
             )
@@ -603,6 +657,11 @@ class Bridge:
                 conversation.conv_key,
                 status,
             ),
+            drafts_enabled=self._conversation_drafts(conversation.conv_key),
+            status_after_seconds=self._conversation_status_after(
+                conversation.conv_key,
+            ),
+            silent=self._conversation_silent(conversation.conv_key),
         )
         task = asyncio.create_task(watcher.run())
         self.watchers[conversation.session_id] = task
@@ -637,7 +696,15 @@ class Bridge:
             "from": sender,
             "chat": callback_message.get("chat", {}),
         }
-        if not is_allowed(authorization_message, self.settings):
+        data = _text(callback.get("data")) or ""
+        if data.startswith("acc:"):
+            await self._handle_access_callback(callback, data)
+            return
+        if not is_allowed(
+            authorization_message,
+            self.settings,
+            self.approved_users,
+        ):
             await self.telegram.answer_callback_query(callback_id, "This bot is private.")
             return
         chat = _mapping(callback_message.get("chat"))
@@ -646,6 +713,14 @@ class Bridge:
         conv_key = self._conversation_key(callback_message)
         async with self._lock(conv_key):
             data = _text(callback.get("data")) or ""
+            if data.startswith("cfg:"):
+                await self._handle_settings_callback(
+                    callback_id,
+                    callback_message,
+                    conv_key,
+                    data,
+                )
+                return
             if data.startswith("more:"):
                 await self._handle_long_text_callback(
                     callback_id,
@@ -1000,7 +1075,9 @@ class Bridge:
                 chat_id,
                 text,
                 thread_id=_thread_id(message),
-                disable_notification=silent,
+                disable_notification=(
+                    silent or self._conversation_silent(self._conversation_key(message))
+                ),
                 receiver_user_id=receiver_user_id,
             )
             conv_key = self._conversation_key(message)
@@ -1016,7 +1093,9 @@ class Bridge:
                 chat_id,
                 text,
                 thread_id=_thread_id(message),
-                disable_notification=silent,
+                disable_notification=(
+                    silent or self._conversation_silent(self._conversation_key(message))
+                ),
             )
             conv_key = self._conversation_key(message)
             for result in results:
@@ -1099,6 +1178,231 @@ class Bridge:
 
     async def list_playbooks(self) -> list[Playbook]:
         return await self.devin.list_playbooks()
+
+    async def usage(self, message: Mapping[str, object]) -> None:
+        if not self.settings.devin_org_id:
+            await self.send_text(message, "DEVIN_ORG_ID is required for usage reporting.")
+            return
+        conversation = self.store.get_conversation(self._conversation_key(message))
+        if conversation is None:
+            await self.send_text(message, "No Devin session is active in this conversation.")
+            return
+        end = datetime.now(timezone.utc)
+        start = max(
+            end - timedelta(days=30),
+            datetime.fromtimestamp(
+                conversation.created_at,
+                timezone.utc,
+            ),
+        )
+        try:
+            payload = await self.devin.session_consumption(
+                self.settings.devin_org_id,
+                conversation.session_id,
+                start,
+                end,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {401, 403}:
+                await self.send_text(
+                    message,
+                    "The configured Devin key can't read consumption "
+                    "(needs org consumption permission).",
+                )
+                return
+            raise
+        total = payload.get("total_acus")
+        total_acus = float(total) if isinstance(total, (int, float)) else 0.0
+        rows = payload.get("consumption_by_date", [])
+        daily: list[tuple[str, float]] = []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                date = row.get("date")
+                amount = row.get("acus")
+                if isinstance(date, str) and isinstance(amount, (int, float)):
+                    daily.append((date, float(amount)))
+        daily = daily[-7:]
+        lines = [f"Session ACUs: {total_acus:.2f} (last 30 days)"]
+        if not daily and total_acus == 0:
+            lines.append(
+                "No consumption data returned — the Devin API reports consumption "
+                "only for Enterprise-plan organizations (service user needs "
+                "ViewOrgConsumption)."
+            )
+        lines.extend(f"{date} · {amount:.2f}" for date, amount in reversed(daily))
+        lines.append(
+            "Usage is aggregated daily and refreshed roughly hourly — not real-time."
+        )
+        await self.send_text(message, "\n".join(lines))
+
+    async def list_users(self, message: Mapping[str, object]) -> None:
+        sender_id = _int(_mapping(message.get("from")).get("id"))
+        if sender_id not in self.settings.admin_user_ids:
+            return
+        users = self.store.list_access_requests("approved")
+        text = "\n".join(
+            f"{request.user_id} · {request.first_name or request.username or 'user'}"
+            for request in users
+        ) or "No approved users."
+        await self.send_text(message, text)
+
+    async def revoke_user(
+        self,
+        message: Mapping[str, object],
+        user_id: int,
+    ) -> None:
+        sender_id = _int(_mapping(message.get("from")).get("id"))
+        if sender_id not in self.settings.admin_user_ids:
+            return
+        self.store.decide_access_request(user_id, "denied", sender_id)
+        self.approved_users.discard(user_id)
+        await self.send_text(message, f"Revoked access for {user_id}.")
+
+    def _conversation_settings(self, conv_key: str):
+        return self.store.get_settings(conv_key)
+
+    def _conversation_silent(self, conv_key: str) -> bool:
+        return self._conversation_settings(conv_key).silent
+
+    def _conversation_drafts(self, conv_key: str) -> bool:
+        value = self._conversation_settings(conv_key).drafts
+        return self.settings.telegram_drafts if value is None else value
+
+    def _conversation_status_after(self, conv_key: str) -> float:
+        value = self._conversation_settings(conv_key).status_timer
+        return self.settings.devin_status_after_seconds if value is not False else float("inf")
+
+    async def settings_menu(
+        self,
+        message: Mapping[str, object],
+        *,
+        edit_message_id: int | None = None,
+    ) -> None:
+        conv_key = self._conversation_key(message)
+        current = self.store.get_settings(conv_key)
+        drafts = "inherit" if current.drafts is None else ("on" if current.drafts else "off")
+        timer = "inherit" if current.status_timer is None else ("on" if current.status_timer else "off")
+        markup = {
+            "inline_keyboard": [
+                [{"text": f"🔔 Notifications: {'silent' if current.silent else 'on'}", "callback_data": f"cfg:silent:{0 if current.silent else 1}"}],
+                [{"text": f"✍️ Drafts: {drafts}", "callback_data": "cfg:drafts:menu"}],
+                [{"text": f"⏱ Status timer: {timer}", "callback_data": "cfg:status_timer:menu"}],
+                [{"text": f"📘 Default playbook: {current.default_playbook or 'none'}", "callback_data": "cfg:playbook:menu"}],
+                [{"text": "Close", "callback_data": "cfg:close:1"}],
+            ]
+        }
+        if edit_message_id is not None:
+            await self.telegram.edit_message_reply_markup(
+                _int(_mapping(message.get("chat")).get("id")),
+                edit_message_id,
+                markup,
+            )
+        else:
+            await self.send_markup(message, "Conversation settings", markup)
+
+    async def _handle_settings_callback(
+        self,
+        callback_id: str,
+        callback_message: Mapping[str, object],
+        conv_key: str,
+        data: str,
+    ) -> None:
+        pieces = data.split(":", 2)
+        chat_id = _int(_mapping(callback_message.get("chat")).get("id"))
+        message_id = _int(callback_message.get("message_id"))
+        if len(pieces) != 3:
+            return
+        field, value = pieces[1], pieces[2]
+        if field == "close":
+            await self.telegram.edit_message_reply_markup(chat_id, message_id)
+        elif value == "menu":
+            if field == "playbook":
+                rows = [[{"text": "None", "callback_data": "cfg:playbook:none"}]]
+                for playbook in await self.devin.list_playbooks():
+                    rows.append([{
+                        "text": playbook.title,
+                        "callback_data": f"cfg:playbook:{playbook.playbook_id}",
+                    }])
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": rows},
+                )
+            else:
+                values = ["inherit", "on", "off"]
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": [[{
+                        "text": value,
+                        "callback_data": f"cfg:{field}:{value}",
+                    }] for value in values]},
+                )
+        else:
+            if field == "silent":
+                self.store.update_settings(conv_key, silent=value == "1")
+            elif field in {"drafts", "status_timer"}:
+                parsed = None if value == "inherit" else value == "on"
+                self.store.update_settings(conv_key, **{field: parsed})
+            elif field == "playbook":
+                self.store.update_settings(
+                    conv_key,
+                    default_playbook=None if value == "none" else value,
+                )
+            await self.settings_menu(callback_message, edit_message_id=message_id)
+        await self.telegram.answer_callback_query(callback_id)
+
+    async def _handle_access_callback(
+        self,
+        callback: Mapping[str, object],
+        data: str,
+    ) -> None:
+        sender = _mapping(callback.get("from"))
+        sender_id = _int(sender.get("id"))
+        if data == "acc:req":
+            user_id = sender_id
+            request = self.store.get_access_request(user_id)
+            if request is None:
+                self.store.save_access_request(
+                    user_id,
+                    _text(sender.get("username")),
+                    _text(sender.get("first_name")),
+                )
+            for admin_id in self.settings.admin_user_ids:
+                await self.telegram.send_message(
+                    admin_id,
+                    f"Access request from {_text(sender.get('first_name')) or 'user'} "
+                    f"(@{_text(sender.get('username')) or 'unknown'}, id {user_id})",
+                    reply_markup={"inline_keyboard": [[
+                        {"text": "Approve", "callback_data": f"acc:ok:{user_id}"},
+                        {"text": "Deny", "callback_data": f"acc:no:{user_id}"},
+                    ]]},
+                )
+            callback_id = _text(callback.get("id"))
+            if callback_id:
+                await self.telegram.answer_callback_query(callback_id, "Request sent")
+            return
+        if sender_id not in self.settings.admin_user_ids:
+            return
+        parts = data.split(":")
+        if len(parts) != 3 or parts[1] not in {"ok", "no"}:
+            return
+        try:
+            user_id = int(parts[2])
+        except ValueError:
+            return
+        approved = parts[1] == "ok"
+        self.store.decide_access_request(user_id, "approved" if approved else "denied", sender_id)
+        if approved:
+            self.approved_users.add(user_id)
+            await self.telegram.send_message(user_id, "Access approved.")
+        else:
+            await self.telegram.send_message(user_id, "Access request denied.")
+        callback_id = _text(callback.get("id"))
+        if callback_id:
+            await self.telegram.answer_callback_query(callback_id)
 
     def new_choice_id(self) -> str:
         return secrets.token_urlsafe(8)
@@ -1236,6 +1540,39 @@ class Bridge:
         file_path = await self.telegram.get_file(file_id)
         return filename, await self.telegram.download_file(file_path), content_type
 
+    async def _transcribe(
+        self,
+        message: Mapping[str, object],
+        attachment: Attachment,
+    ) -> str | None:
+        filename, content, content_type = attachment
+        if not any(message.get(field) is not None for field in (
+            "voice",
+            "audio",
+            "video_note",
+        )):
+            return None
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.settings.transcription_base_url.rstrip("/"),
+                headers={
+                    "Authorization": f"Bearer {self.settings.transcription_api_key}"
+                },
+                timeout=30,
+            ) as client:
+                response = await client.post(
+                    "/audio/transcriptions",
+                    data={"model": self.settings.transcription_model},
+                    files={"file": (filename, content, content_type)},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            logger.warning("Voice transcription failed", exc_info=True)
+            return None
+        value = payload.get("text") if isinstance(payload, dict) else None
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
     async def _send_to_ids(self, chat_id: int, text: str) -> None:
         for part in chunk(text):
             await self.telegram.send_message(chat_id, part)
@@ -1257,6 +1594,7 @@ def create_app(
             actual_settings.devin_api_key,
             actual_settings.devin_api_base_url,
             actual_settings.devin_max_acu_limit,
+            service_user_api_key=actual_settings.devin_service_user_api_key,
         ),
         telegram
         or TelegramClient(

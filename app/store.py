@@ -35,6 +35,25 @@ class HistoryEntry:
     created_at: float
 
 
+@dataclass(frozen=True)
+class ConversationSettings:
+    silent: bool = False
+    drafts: bool | None = None
+    status_timer: bool | None = None
+    default_playbook: str | None = None
+
+
+@dataclass(frozen=True)
+class AccessRequest:
+    user_id: int
+    username: str | None
+    first_name: str | None
+    status: str
+    requested_at: float
+    decided_at: float | None
+    decided_by: int | None
+
+
 class Store:
     def __init__(self, database_path: str) -> None:
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
@@ -110,6 +129,22 @@ class Store:
                     conv_key TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     PRIMARY KEY(chat_id, message_id)
+                );
+                CREATE TABLE IF NOT EXISTS conversation_settings (
+                    conv_key TEXT PRIMARY KEY,
+                    silent INTEGER NOT NULL DEFAULT 0,
+                    drafts INTEGER,
+                    status_timer INTEGER,
+                    default_playbook TEXT
+                );
+                CREATE TABLE IF NOT EXISTS access_requests (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    status TEXT NOT NULL,
+                    requested_at REAL NOT NULL,
+                    decided_at REAL,
+                    decided_by INTEGER
                 );
                 """
             )
@@ -356,6 +391,148 @@ class Store:
                 (chat_id,),
             ).fetchone()
         return self._conversation(row)
+
+    def get_settings(self, conv_key: str) -> ConversationSettings:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT silent, drafts, status_timer, default_playbook "
+                "FROM conversation_settings WHERE conv_key = ?",
+                (conv_key,),
+            ).fetchone()
+        if row is None:
+            return ConversationSettings()
+        return ConversationSettings(
+            silent=bool(row["silent"]),
+            drafts=None if row["drafts"] is None else bool(row["drafts"]),
+            status_timer=(
+                None if row["status_timer"] is None else bool(row["status_timer"])
+            ),
+            default_playbook=(
+                None
+                if row["default_playbook"] is None
+                else str(row["default_playbook"])
+            ),
+        )
+
+    def update_settings(self, conv_key: str, **fields: object) -> None:
+        allowed = {"silent", "drafts", "status_timer", "default_playbook"}
+        if not fields or any(key not in allowed for key in fields):
+            raise ValueError("Unknown conversation setting")
+        current = self.get_settings(conv_key)
+        values = {
+            "silent": int(fields.get("silent", current.silent)),
+            "drafts": fields.get("drafts", current.drafts),
+            "status_timer": fields.get("status_timer", current.status_timer),
+            "default_playbook": fields.get(
+                "default_playbook",
+                current.default_playbook,
+            ),
+        }
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO conversation_settings(
+                    conv_key, silent, drafts, status_timer, default_playbook
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(conv_key) DO UPDATE SET
+                    silent = excluded.silent,
+                    drafts = excluded.drafts,
+                    status_timer = excluded.status_timer,
+                    default_playbook = excluded.default_playbook
+                """,
+                (
+                    conv_key,
+                    values["silent"],
+                    None if values["drafts"] is None else int(bool(values["drafts"])),
+                    (
+                        None
+                        if values["status_timer"] is None
+                        else int(bool(values["status_timer"]))
+                    ),
+                    values["default_playbook"],
+                ),
+            )
+
+    def get_access_request(self, user_id: int) -> AccessRequest | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM access_requests WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return AccessRequest(
+            user_id=int(row["user_id"]),
+            username=None if row["username"] is None else str(row["username"]),
+            first_name=None if row["first_name"] is None else str(row["first_name"]),
+            status=str(row["status"]),
+            requested_at=float(row["requested_at"]),
+            decided_at=None if row["decided_at"] is None else float(row["decided_at"]),
+            decided_by=None if row["decided_by"] is None else int(row["decided_by"]),
+        )
+
+    def save_access_request(
+        self,
+        user_id: int,
+        username: str | None,
+        first_name: str | None,
+    ) -> AccessRequest:
+        timestamp = time.time()
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO access_requests(
+                    user_id, username, first_name, status, requested_at,
+                    decided_at, decided_by
+                ) VALUES (?, ?, ?, 'requested', ?, NULL, NULL)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = excluded.username,
+                    first_name = excluded.first_name
+                """,
+                (user_id, username, first_name, timestamp),
+            )
+        return self.get_access_request(user_id) or AccessRequest(
+            user_id, username, first_name, "requested", timestamp, None, None
+        )
+
+    def decide_access_request(
+        self,
+        user_id: int,
+        status: str,
+        decided_by: int,
+    ) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                UPDATE access_requests
+                SET status = ?, decided_at = ?, decided_by = ?
+                WHERE user_id = ?
+                """,
+                (status, time.time(), decided_by, user_id),
+            )
+
+    def list_access_requests(self, status: str = "approved") -> list[AccessRequest]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM access_requests WHERE status = ? ORDER BY user_id",
+                (status,),
+            ).fetchall()
+        return [
+            AccessRequest(
+                user_id=int(row["user_id"]),
+                username=None if row["username"] is None else str(row["username"]),
+                first_name=None if row["first_name"] is None else str(row["first_name"]),
+                status=str(row["status"]),
+                requested_at=float(row["requested_at"]),
+                decided_at=(
+                    None if row["decided_at"] is None else float(row["decided_at"])
+                ),
+                decided_by=(
+                    None if row["decided_by"] is None else int(row["decided_by"])
+                ),
+            )
+            for row in rows
+        ]
 
     def index_message(self, chat_id: int, message_id: int, conv_key: str) -> None:
         with self.lock, self.connection:

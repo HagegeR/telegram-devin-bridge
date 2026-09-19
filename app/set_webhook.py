@@ -22,10 +22,14 @@ COMMANDS = [
     ("status", "Show active session status"),
     ("stop", "Terminate the active session"),
     ("cancel", "Cancel the active session"),
+    ("settings", "Conversation settings"),
+    ("usage", "Show Devin usage"),
     ("playbook", "List or run a Devin playbook"),
     ("retry", "Retry the last user message"),
     ("whoami", "Show Telegram identity and access"),
     ("sethome", "Set this chat as notification home"),
+    ("users", "List approved users"),
+    ("revoke", "Revoke user access"),
 ]
 
 GROUP_COMMANDS = {
@@ -41,6 +45,8 @@ GROUP_COMMANDS = {
     "rename",
     "whoami",
     "help",
+    "settings",
+    "usage",
 }
 
 DESCRIPTION = (

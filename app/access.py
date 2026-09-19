@@ -6,7 +6,11 @@ from collections.abc import Mapping
 from app.config import Settings
 
 
-def is_allowed(message: Mapping[str, object], settings: Settings) -> bool:
+def is_allowed(
+    message: Mapping[str, object],
+    settings: Settings,
+    approved_users: set[int] | frozenset[int] | None = None,
+) -> bool:
     sender = _mapping(message.get("from"))
     chat = _mapping(message.get("chat"))
     if bool(sender.get("is_bot")):
@@ -19,6 +23,8 @@ def is_allowed(message: Mapping[str, object], settings: Settings) -> bool:
         return False
     if settings.allowed_chat_ids and chat_id not in settings.allowed_chat_ids:
         return False
+    if approved_users is not None and user_id in approved_users:
+        return True
     return bool(settings.allowed_users or settings.allowed_chat_ids) and (
         user_id in settings.allowed_users or chat_id in settings.allowed_chat_ids
     )

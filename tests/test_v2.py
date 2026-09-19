@@ -4,8 +4,9 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Self, cast
 
 import httpx
 import pytest
@@ -619,6 +620,7 @@ class _FakeTelegram:
         self.deleted: list[tuple[int, int]] = []
         self.deleted_topics: list[tuple[int, int]] = []
         self.documents: list[dict[str, object]] = []
+        self.photos: list[dict[str, object]] = []
         self.topic_error: Exception | None = None
         self.draft_error: Exception | None = None
 
@@ -653,6 +655,23 @@ class _FakeTelegram:
             }
         )
         return {"message_id": len(self.sent) + len(self.documents)}
+
+    async def send_photo(
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        self.photos.append(
+            {
+                "chat_id": chat_id,
+                "filename": filename,
+                "content": content,
+                **kwargs,
+            }
+        )
+        return {"message_id": len(self.sent) + len(self.photos)}
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int:
         if self.topic_error is not None:
@@ -712,17 +731,26 @@ class _FakeTelegram:
     async def close(self) -> None:
         return None
 
+    async def get_file(self, file_id: str) -> str:
+        return f"path/{file_id}"
+
+    async def download_file(self, _file_path: str) -> bytes:
+        return b"audio"
+
 
 class _FakeDevin:
     def __init__(self) -> None:
         self.created: list[str] = []
+        self.created_playbooks: list[str | None] = []
         self.sent: list[tuple[str, str]] = []
         self.terminated: list[str] = []
+        self.playbooks: list[tuple[str, str]] = []
 
     async def create_session(
         self, prompt: str, title: str, playbook_id: str | None = None
     ) -> tuple[str, str]:
         self.created.append(prompt)
+        self.created_playbooks.append(playbook_id)
         return "s1", "https://devin.test/s1"
 
     async def send_message(self, session_id: str, text: str) -> None:
@@ -741,6 +769,28 @@ class _FakeDevin:
 
     async def terminate(self, session_id: str) -> None:
         self.terminated.append(session_id)
+
+    async def list_playbooks(self) -> list[object]:
+        return []
+
+    async def download_attachment(self, _url: str) -> tuple[bytes, str] | None:
+        return None
+
+    async def fetch_github_pr(
+        self,
+        _url: str,
+        _token: str | None = None,
+    ) -> dict[str, object] | None:
+        return None
+
+    async def session_consumption(
+        self,
+        _org_id: str,
+        _session_id: str,
+        _start: object,
+        _end: object,
+    ) -> dict[str, object]:
+        return {"data": []}
 
     async def close(self) -> None:
         return None
@@ -1475,6 +1525,50 @@ async def test_devin_send_message_accepts_non_object_body() -> None:
     )
     await devin.send_message("devin-1", "hello")
     await devin.terminate("devin-1")
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_github_pr_fetch_does_not_send_devin_token() -> None:
+    observed: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["authorization"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"number": 1, "title": "Example"})
+
+    devin = DevinClient(
+        "devin-secret",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    result = await devin.fetch_github_pr("https://github.com/org/repo/pull/1")
+    assert result == {"number": 1, "title": "Example"}
+    assert observed["authorization"] == ""
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_devin_session_consumption_uses_unix_time_params() -> None:
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 2, tzinfo=timezone.utc)
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(request.url.params.multi_items())
+        return httpx.Response(200, json={"total_acus": 0, "consumption_by_date": []})
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    await devin.session_consumption("org-1", "session-1", start, end)
+    assert seen["time_after"] == str(int(start.timestamp()))
+    assert seen["time_before"] == str(int(end.timestamp()))
+    assert "start_time" not in seen
+    assert "end_time" not in seen
     await devin.close()
 
 
@@ -2321,10 +2415,271 @@ async def test_polling_mode_disables_webhook_route(tmp_path: Path) -> None:
     assert health.json() == {"status": "ok"}
 
 @pytest.mark.asyncio
-async def test_poll_reuses_fastapi_bridge() -> None:
+async def test_conversation_settings_callbacks_and_watcher_effects(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "conversation-settings.sqlite3"))
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path, telegram_drafts=True), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    callback = {
+        "id": "cfg-1",
+        "data": "cfg:silent:1",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback(callback)
+    assert store.get_settings("222").silent
+    await runtime.handle_callback({**callback, "id": "cfg-2", "data": "cfg:drafts:off"})
+    await runtime.handle_callback({**callback, "id": "cfg-3", "data": "cfg:status_timer:off"})
+    store.update_settings("222", default_playbook="pb-1")
+    assert runtime._conversation_drafts("222") is False
+    assert runtime._conversation_status_after("222") == float("inf")
+    assert runtime._conversation_silent("222")
+    assert store.get_settings("222").default_playbook == "pb-1"
+    await runtime.send_text(message("reply"), "quiet")
+    assert telegram.sent[-1]["disable_notification"] is True
+    await runtime.shutdown()
+
+    fresh_devin = _FakeDevin()
+    fresh_store = Store(":memory:")
+    fresh_store.update_settings("222", default_playbook="pb-1")
+    fresh_runtime = Bridge(settings(tmp_path), fresh_store, fresh_devin, _FakeTelegram())  # type: ignore[arg-type]
+    await fresh_runtime.handle_user_turn(message("first"), "first")
+    assert fresh_devin.created_playbooks == ["pb-1"]
+    await fresh_runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_access_request_admin_approval_denial_and_non_admin(tmp_path: Path) -> None:
+    config = settings(tmp_path, telegram_admin_user_ids="900", telegram_allowed_users="")
+    store = Store(str(tmp_path / "access.sqlite3"))
+    telegram = _FakeTelegram()
+    runtime = Bridge(config, store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    request = {
+        "id": "request",
+        "data": "acc:req",
+        "from": {"id": 222, "username": "alice", "first_name": "Alice"},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback(request)
+    assert store.get_access_request(222) is not None
+    assert telegram.sent[-1]["chat_id"] == 900
+    approve = {
+        "id": "approve",
+        "data": "acc:ok:222",
+        "from": {"id": 900},
+        "message": {"message_id": 2, "chat": {"id": 900, "type": "private"}},
+    }
+    await runtime.handle_callback(approve)
+    assert 222 in runtime.approved_users
+    assert is_allowed(message("hi", user_id=222), config, runtime.approved_users)
+    denied_request = {
+        **request,
+        "id": "request-2",
+        "from": {"id": 333, "username": "bob", "first_name": "Bob"},
+    }
+    await runtime.handle_callback(denied_request)
+    await runtime.handle_callback({
+        **approve, "id": "deny", "data": "acc:no:333",
+    })
+    denied = store.get_access_request(333)
+    assert denied is not None and denied.status == "denied"
+    assert any(item["chat_id"] == 333 for item in telegram.sent)
+    await runtime.handle_callback({
+        **approve, "id": "deny", "data": "acc:no:222", "from": {"id": 223},
+    })
+    assert 222 in runtime.approved_users
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_attachment_photo_document_and_download_fallback(tmp_path: Path) -> None:
+    class ArtifactDevin(_FakeDevin):
+        async def download_attachment(self, url: str) -> tuple[bytes, str] | None:
+            if "image" in url:
+                return b"png", "image/png"
+            if "missing" in url:
+                return None
+            return b"zip", "application/zip"
+
+    store = Store(str(tmp_path / "artifacts.sqlite3"))
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    watcher = SessionWatcher(
+        conversation, store, ArtifactDevin(), telegram, settings(tmp_path),  # type: ignore[arg-type]
+    )
+    image_url = "https://app.devin.ai/attachments/1/image.png"
+    doc_url = "https://app.devin.ai/attachments/2/archive.zip"
+    await watcher._deliver(DevinMessage("devin_message", "1", image_url, None), SessionState("finished", "title", None, []))
+    await watcher._deliver(DevinMessage("devin_message", "2", doc_url, None), SessionState("finished", "title", None, []))
+    assert telegram.photos[0]["filename"] == "image.png"
+    assert telegram.documents[0]["filename"] == "archive.zip"
+    missing = "https://app.devin.ai/attachments/3/missing.txt"
+    await watcher._deliver(DevinMessage("devin_message", "3", missing, None), SessionState("finished", "title", None, []))
+    assert missing in str(telegram.sent[-1]["text"])
+
+
+@pytest.mark.asyncio
+async def test_pr_card_rendering_and_failure_fallback(tmp_path: Path) -> None:
+    class PRDevin(_FakeDevin):
+        async def fetch_github_pr(self, _url: str, _token: str | None = None) -> dict[str, object] | None:
+            return {
+                "number": 7, "title": "Fix bridge", "state": "open", "merged": False,
+                "additions": 4, "deletions": 2,
+                "base": {"ref": "main"}, "head": {"ref": "feature"},
+            }
+
+    store = Store(str(tmp_path / "pr.sqlite3"))
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    watcher = SessionWatcher(conversation, store, PRDevin(), telegram, settings(tmp_path))  # type: ignore[arg-type]
+    url = "https://github.com/acme/repo/pull/7"
+    await watcher._deliver(DevinMessage("devin_message", "1", url, None), SessionState("finished", "title", None, []))
+    assert "PR #7" in str(telegram.sent[-1]["text"])
+    failed = SessionWatcher(conversation, store, _FakeDevin(), telegram, settings(tmp_path))  # type: ignore[arg-type]
+    await failed._deliver(DevinMessage("devin_message", "2", url, None), SessionState("finished", "title", None, []))
+    assert url in str(telegram.sent[-1]["text"])
+
+
+@pytest.mark.asyncio
+async def test_voice_transcription_success_and_failure_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ResponseClient:
+        def __init__(self, response: httpx.Response) -> None:
+            self.response = response
+        async def __aenter__(self) -> Self:
+            return self
+        async def __aexit__(self, *_: object) -> None:
+            return None
+        async def post(self, *_: object, **__: object) -> httpx.Response:
+            return self.response
+
+    voice = {**message("caption"), "text": None, "voice": {"file_id": "voice-1"}}
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path, transcription_api_key="transcribe", telegram_attach_voice=False),
+        Store(":memory:"), devin, telegram,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **_: ResponseClient(
+            httpx.Response(
+                200,
+                json={"text": "hello"},
+                request=httpx.Request("POST", "https://transcribe.test"),
+            )
+        ),
+    )
+    await runtime.handle_message(voice)
+    assert "Voice note transcript:" in devin.created[0]
+    assert "hello" in devin.created[0]
+    assert "🎙" in telegram.reactions
+    await runtime.shutdown()
+
+    failed_devin = _FakeDevin()
+    failed_runtime = Bridge(
+        settings(tmp_path, transcription_api_key="transcribe", database_path=str(tmp_path / "voice-failure.sqlite3")),
+        Store(str(tmp_path / "voice-failure.sqlite3")), failed_devin, _FakeTelegram(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **_: ResponseClient(
+            httpx.Response(
+                500,
+                request=httpx.Request("POST", "https://transcribe.test"),
+            )
+        ),
+    )
+    await failed_runtime.handle_message(voice)
+    assert "Attached file" in failed_devin.created[0]
+    await failed_runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_usage_formatting_missing_org_and_forbidden(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "usage.sqlite3"))
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path, devin_org_id="org"), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    async def consumption(*_: object, **__: object) -> dict[str, object]:
+        return {
+            "total_acus": 12.345,
+            "consumption_by_date": [
+                {"date": "2025-09-18", "acus": 2.5},
+                {"date": "2025-09-19", "acus": 9.845},
+            ],
+        }
+    runtime.devin.session_consumption = consumption  # type: ignore[method-assign]
+    await runtime.usage(message("/usage"))
+    usage_text = str(telegram.sent[-1]["text"])
+    assert "Session ACUs: 12.35" in usage_text
+    assert "2025-09-19 · 9.85" in usage_text
+    assert "Usage is aggregated daily" in usage_text
+    async def empty_consumption(*_: object, **__: object) -> dict[str, object]:
+        return {"total_acus": 0, "consumption_by_date": []}
+    runtime.devin.session_consumption = empty_consumption  # type: ignore[method-assign]
+    await runtime.usage(message("/usage"))
+    assert "No consumption data returned" in str(telegram.sent[-1]["text"])
+    runtime.settings.devin_org_id = None  # type: ignore[misc]
+    await runtime.usage(message("/usage"))
+    assert "DEVIN_ORG_ID is required" in str(telegram.sent[-1]["text"])
+
+    runtime.settings.devin_org_id = "org"  # type: ignore[misc]
+    async def forbidden(*_: object, **__: object) -> dict[str, object]:
+        request = httpx.Request("GET", "https://devin.test")
+        raise httpx.HTTPStatusError("forbidden", request=request, response=httpx.Response(403, request=request))
+    runtime.devin.session_consumption = forbidden  # type: ignore[method-assign]
+    await runtime.usage(message("/usage"))
+    assert "can't read consumption" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()
+
+@pytest.mark.asyncio
+async def test_poll_reuses_fastapi_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.poll as poll_module
 
     assert poll_module.bridge is main_module.bridge
+    store_calls = 0
+    original_store = main_module.Store
+
+    def counted_store(*args: object, **kwargs: object) -> Store:
+        nonlocal store_calls
+        store_calls += 1
+        return original_store(*args, **kwargs)
+
+    async def startup() -> None:
+        return None
+
+    async def shutdown() -> None:
+        return None
+
+    async def run_polling(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(main_module, "Store", counted_store)
+    monkeypatch.setattr(poll_module.bridge, "startup", startup)
+    monkeypatch.setattr(poll_module.bridge, "shutdown", shutdown)
+    monkeypatch.setattr(poll_module, "run_polling", run_polling)
+    await poll_module.main()
+    assert store_calls == 0
 
 
 @pytest.mark.asyncio
