@@ -90,6 +90,12 @@ def test_access_rules() -> None:
     assert is_allowed(message("hi"), config)
     assert not is_allowed(message("hi", user_id=333), config)
     assert is_allowed(message("hi", user_id=222), config, {222})
+    restricted_chat = settings(
+        Path("/tmp"),
+        telegram_allowed_users="",
+        telegram_allowed_chat_ids="-100",
+    )
+    assert is_allowed(message("hi", user_id=222), restricted_chat, {222})
     group_config = settings(
         Path("/tmp"),
         telegram_allowed_users="",
@@ -2111,6 +2117,36 @@ async def test_reaction_retry_stop_and_edited_message(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_retry_send_failure_restarts_watcher(tmp_path: Path) -> None:
+    class FailingDevin(_FakeDevin):
+        async def send_message(self, _session_id: str, _text: str) -> None:
+            raise RuntimeError("send failed")
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="retry me",
+    )
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        FailingDevin(),
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    with pytest.raises(RuntimeError, match="send failed"):
+        await runtime.retry_conversation(conversation, trigger_message_id=8)
+    assert "s1" in runtime.watchers
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_edited_message_rechecks_target_after_lock(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
@@ -2815,6 +2851,31 @@ async def test_access_request_callback_requires_requester_chat(
 
 
 @pytest.mark.asyncio
+async def test_access_request_duplicate_does_not_notify_admin(
+    tmp_path: Path,
+) -> None:
+    config = settings(
+        tmp_path,
+        telegram_admin_user_ids="900",
+        telegram_allowed_users="",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(config, Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    callback = {
+        "id": "request-1",
+        "data": "acc:req",
+        "from": {"id": 222, "username": "alice"},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback(callback)
+    sent_count = len(telegram.sent)
+    await runtime.handle_callback({**callback, "id": "request-2"})
+    assert len(telegram.sent) == sent_count
+    assert telegram.answers[-1] == "Request already pending"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_attachment_photo_document_and_download_fallback(tmp_path: Path) -> None:
     class ArtifactDevin(_FakeDevin):
         async def download_attachment(self, url: str) -> tuple[bytes, str] | None:
@@ -3044,6 +3105,65 @@ async def test_concurrent_queue_drains_serialize(tmp_path: Path) -> None:
     await asyncio.gather(first, second)
     assert calls == ["one"]
     assert runtime.queued_count("222") == 1
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_drain_failure_keeps_turn_for_retry(tmp_path: Path) -> None:
+    runtime = Bridge(
+        settings(tmp_path),
+        Store(":memory:"),
+        _FakeDevin(),
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    turn = (message("queued", message_id=8), "queued", None)
+    runtime.queued_turns["222"] = [turn]
+
+    async def fail(
+        _message: Mapping[str, object],
+        _text: str,
+        *,
+        attachment: object = None,
+    ) -> None:
+        raise RuntimeError("send failed")
+
+    runtime.handle_user_turn = fail  # type: ignore[method-assign]
+    await runtime._drain_queue("222")
+    assert runtime.queued_turns["222"] == [turn]
+    assert "retried with the next message or status change" in str(
+        runtime.telegram.sent[-1]["text"]
+    )
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_flush_failure_retries_before_next_pending_turn(tmp_path: Path) -> None:
+    runtime = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=10),
+        Store(":memory:"),
+        _FakeDevin(),
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    calls: list[str] = []
+
+    async def handle(
+        _message: Mapping[str, object],
+        text: str,
+        *,
+        attachment: object = None,
+    ) -> None:
+        calls.append(text)
+        if text == "first" and calls.count("first") == 1:
+            raise RuntimeError("send failed")
+
+    runtime.handle_user_turn = handle  # type: ignore[method-assign]
+    await runtime._queue_turn(message("first", message_id=1), "first", None)
+    await runtime._flush_pending("222")
+    assert runtime.queued_turns["222"][0][1] == "first"
+    await runtime._queue_turn(message("second", message_id=2), "second", None)
+    await runtime._flush_pending("222")
+    assert calls == ["first", "first", "second"]
+    assert not runtime.queued_turns
     await runtime.shutdown()
 
 

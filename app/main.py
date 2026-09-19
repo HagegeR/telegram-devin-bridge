@@ -346,10 +346,43 @@ class Bridge:
                     "⏳",
                 )
                 return
-            await self.handle_user_turn(message, text, attachment=attachment)
+            queued = self.queued_turns.pop(conv_key, [])
+            for index, queued_turn in enumerate(queued):
+                queued_message, queued_text, queued_attachment = queued_turn
+                try:
+                    await self.handle_user_turn(
+                        queued_message,
+                        queued_text,
+                        attachment=queued_attachment,
+                    )
+                except Exception as exc:
+                    self.queued_turns[conv_key] = [
+                        queued_turn,
+                        *queued[index + 1:],
+                        turn,
+                    ]
+                    logger.exception(
+                        "Failed to flush queued Telegram turn for %s",
+                        conv_key,
+                    )
+                    await self._report_processing_failure(
+                        {"message": queued_message},
+                        exc,
+                        retryable=True,
+                    )
+                    return
+            try:
+                await self.handle_user_turn(message, text, attachment=attachment)
+            except Exception:
+                self.queued_turns[conv_key] = [turn]
+                raise
         except Exception as exc:
             logger.exception("Failed to flush Telegram turn for %s", conv_key)
-            await self._report_processing_failure({"message": message}, exc)
+            await self._report_processing_failure(
+                {"message": message},
+                exc,
+                retryable=True,
+            )
 
     def _conversation_busy(self, conv_key: str) -> bool:
         conversation = self.store.get_conversation(conv_key)
@@ -386,8 +419,16 @@ class Bridge:
             try:
                 await self.handle_user_turn(message, text, attachment=attachment)
             except Exception as exc:
+                self.queued_turns.setdefault(conv_key, []).insert(
+                    0,
+                    (message, text, attachment),
+                )
                 logger.exception("Failed to drain Telegram turn for %s", conv_key)
-                await self._report_processing_failure({"message": message}, exc)
+                await self._report_processing_failure(
+                    {"message": message},
+                    exc,
+                    retryable=True,
+                )
         finally:
             self.draining.discard(conv_key)
 
@@ -945,6 +986,7 @@ class Bridge:
         if not conversation.last_user_text:
             return
         existing = self.watchers.pop(conversation.session_id, None)
+        self.active_watchers.pop(conversation.session_id, None)
         if existing is not None and not existing.done():
             existing.cancel()
             await asyncio.gather(existing, return_exceptions=True)
@@ -953,10 +995,15 @@ class Bridge:
             conversation.session_id,
             last_user_text=conversation.last_user_text,
         )
-        await self.devin.send_message(
-            conversation.session_id,
-            conversation.last_user_text,
-        )
+        try:
+            await self.devin.send_message(
+                conversation.session_id,
+                conversation.last_user_text,
+            )
+        except Exception:
+            current = self.store.get_conversation(conversation.conv_key) or conversation
+            await self.start_watcher(current)
+            raise
         await self.start_watcher(
             conversation,
             trigger_message_id=trigger_message_id,
@@ -1383,13 +1430,27 @@ class Bridge:
                     )
                 return
             user_id = sender_id
+            callback_id = _text(callback.get("id"))
+            if self._rate_limited(sender_id):
+                if callback_id:
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Slow down",
+                    )
+                return
             request = self.store.get_access_request(user_id)
-            if request is None:
-                self.store.save_access_request(
-                    user_id,
-                    _text(sender.get("username")),
-                    _text(sender.get("first_name")),
-                )
+            if request is not None:
+                if callback_id:
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Request already pending",
+                    )
+                return
+            self.store.save_access_request(
+                user_id,
+                _text(sender.get("username")),
+                _text(sender.get("first_name")),
+            )
             for admin_id in self.settings.admin_user_ids:
                 await self.telegram.send_message(
                     admin_id,
@@ -1400,7 +1461,6 @@ class Bridge:
                         {"text": "Deny", "callback_data": f"acc:no:{user_id}"},
                     ]]},
                 )
-            callback_id = _text(callback.get("id"))
             if callback_id:
                 await self.telegram.answer_callback_query(callback_id, "Request sent")
             return
@@ -1499,6 +1559,8 @@ class Bridge:
         self,
         update: Mapping[str, object],
         exc: Exception,
+        *,
+        retryable: bool = False,
     ) -> None:
         callback = _mapping(update.get("callback_query"))
         message = _mapping(update.get("message")) or _mapping(
@@ -1511,10 +1573,15 @@ class Bridge:
         if not chat_id:
             return
         reason = _short_reason(exc)
+        suffix = (
+            "The turn will be retried with the next message or status change."
+            if retryable
+            else "Use /retry."
+        )
         try:
             await self.telegram.send_message(
                 chat_id,
-                f"Couldn't process that message: {reason}. Use /retry.",
+                f"Couldn't process that message: {reason}. {suffix}",
                 thread_id=_thread_id(message),
             )
             message_id = _int(message.get("message_id"))

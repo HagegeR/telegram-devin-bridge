@@ -24,12 +24,12 @@ def is_allowed(
         and user_id in approved_users
         and chat_id == user_id
     )
-    if settings.allowed_users and user_id not in settings.allowed_users and not approved:
+    if approved:
+        return True
+    if settings.allowed_users and user_id not in settings.allowed_users:
         return False
     if settings.allowed_chat_ids and chat_id not in settings.allowed_chat_ids:
         return False
-    if approved:
-        return True
     return bool(settings.allowed_users or settings.allowed_chat_ids) and (
         user_id in settings.allowed_users or chat_id in settings.allowed_chat_ids
     )
