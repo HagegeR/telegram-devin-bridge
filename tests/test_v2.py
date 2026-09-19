@@ -2205,6 +2205,38 @@ async def test_shutdown_flushes_pending_turns(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_shutdown_delivers_pending_turn_for_busy_conversation(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    devin = _FakeDevin()
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    )
+    watcher.last_status = "working"
+    runtime.active_watchers["s1"] = watcher
+    runtime.watchers["s1"] = asyncio.create_task(asyncio.sleep(10))
+    runtime.pending_turns["222"] = [(message("pending"), "pending", None)]
+    runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
+    await runtime.shutdown()
+    assert ("s1", "pending") in devin.sent
+    assert ("s1", "queued") in devin.sent
+    assert not runtime.queued_turns
+
+
+@pytest.mark.asyncio
 async def test_second_attachment_flushes_previous_turn(tmp_path: Path) -> None:
     devin = _FakeDevin()
     runtime = Bridge(
@@ -2740,6 +2772,47 @@ async def test_confirmed_stop_clears_queued_turns(tmp_path: Path) -> None:
     assert runtime.queued_count("222") == 0
     assert store.get_conversation("222") is None
     assert not devin.created
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stop_terminate_failure_preserves_local_state(tmp_path: Path) -> None:
+    class FailingDevin(_FakeDevin):
+        async def terminate(self, _session_id: str) -> None:
+            raise RuntimeError("terminate failed")
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        FailingDevin(),
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        runtime.devin,  # type: ignore[arg-type]
+        runtime.telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    )
+    task = asyncio.create_task(asyncio.sleep(10))
+    runtime.watchers["s1"] = task
+    runtime.active_watchers["s1"] = watcher
+    runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
+    with pytest.raises(RuntimeError, match="terminate failed"):
+        await runtime.stop_conversation(conversation)
+    assert runtime.queued_turns["222"]
+    assert runtime.watchers["s1"] is task
+    assert runtime.active_watchers["s1"] is watcher
+    assert store.get_conversation("222") is not None
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
     await runtime.shutdown()
 
 
