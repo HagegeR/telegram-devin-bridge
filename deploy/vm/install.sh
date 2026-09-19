@@ -97,6 +97,8 @@ else
 fi
 
 mkdir -p "$BRIDGE_HOME" "$DATA_DIR"
+BRIDGE_HOME=$(CDPATH= cd -P -- "$BRIDGE_HOME" && pwd -P)
+SOURCE_DIR=$(CDPATH= cd -P -- "$SOURCE_DIR" && pwd -P)
 if [ "$SOURCE_DIR" = "$BRIDGE_HOME" ]; then
     printf '%s\n' 'installing in place'
 else
