@@ -64,6 +64,7 @@ class Bridge:
         self.lock_refs: dict[str, int] = {}
         self.background_tasks: set[asyncio.Task[None]] = set()
         self.denied_notices: set[tuple[int, int]] = set()
+        self.access_prompted: dict[int, float] = {}
         self.transient_messages: dict[str, list[int]] = {}
         self.pending_turns: dict[str, list[TurnFragment]] = {}
         self.debounce_tasks: dict[str, asyncio.Task[None]] = {}
@@ -183,17 +184,12 @@ class Bridge:
                 chat.get("type") == "private"
                 and self.settings.admin_user_ids
             ):
-                request = self.store.get_access_request(user_id)
-                recent = (
-                    request is not None
-                    and time.time() - request.requested_at < 86400
-                )
-                if not recent:
-                    self.store.save_access_request(
-                        user_id,
-                        _text(sender.get("username")),
-                        _text(sender.get("first_name")),
-                    )
+                prompted_at = self.access_prompted.get(user_id)
+                if (
+                    prompted_at is None
+                    or time.time() - prompted_at >= 86400
+                ):
+                    self.access_prompted[user_id] = time.time()
                     await self.send_markup(
                         message,
                         "You're not authorized.",
@@ -701,10 +697,6 @@ class Bridge:
                 conversation.conv_key,
                 [],
             ),
-            on_status_change=lambda status: self._watcher_status_changed(
-                conversation.conv_key,
-                status,
-            ),
             drafts_enabled=self._conversation_drafts(conversation.conv_key),
             status_after_seconds=self._conversation_status_after(
                 conversation.conv_key,
@@ -729,17 +721,24 @@ class Bridge:
 
         task.add_done_callback(watcher_done)
 
-    async def _watcher_status_changed(self, conv_key: str, status: str) -> None:
-        if status in ACTIVE_STATUSES or self.shutting_down:
-            return
-        drain = asyncio.create_task(self._drain_queue(conv_key))
-        self.background_tasks.add(drain)
-        drain.add_done_callback(self.background_tasks.discard)
-
     async def handle_callback(self, callback: Mapping[str, object]) -> None:
         callback_id = _text(callback.get("id")) or ""
         sender = _mapping(callback.get("from"))
         callback_message = _mapping(callback.get("message"))
+        if any(
+            callback_message.get(field) is not None
+            for field in (
+                "forward_origin",
+                "forward_from",
+                "forward_from_chat",
+                "forward_date",
+            )
+        ):
+            await self.telegram.answer_callback_query(
+                callback_id,
+                "Not available on forwarded messages",
+            )
+            return
         authorization_message = {
             "from": sender,
             "chat": callback_message.get("chat", {}),
@@ -1439,7 +1438,7 @@ class Bridge:
                     )
                 return
             request = self.store.get_access_request(user_id)
-            if request is not None:
+            if request is not None and request.status == "requested":
                 if callback_id:
                     await self.telegram.answer_callback_query(
                         callback_id,

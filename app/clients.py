@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -234,6 +235,11 @@ class DevinClient:
         url: str,
         token: str | None = None,
     ) -> dict[str, object] | None:
+        if re.fullmatch(
+            r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+",
+            url,
+        ) is None:
+            return None
         headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"

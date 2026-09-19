@@ -487,7 +487,11 @@ class Store:
                 ) VALUES (?, ?, ?, 'requested', ?, NULL, NULL)
                 ON CONFLICT(user_id) DO UPDATE SET
                     username = excluded.username,
-                    first_name = excluded.first_name
+                    first_name = excluded.first_name,
+                    status = 'requested',
+                    requested_at = excluded.requested_at,
+                    decided_at = NULL,
+                    decided_by = NULL
                 """,
                 (user_id, username, first_name, timestamp),
             )

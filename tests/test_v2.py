@@ -1710,6 +1710,26 @@ async def test_github_pr_fetch_does_not_send_devin_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_github_pr_fetch_rejects_non_github_url() -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"number": 1})
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.fetch_github_pr("https://example.com/org/repo/pull/1") is None
+    assert calls == 0
+    await devin.close()
+
+
+@pytest.mark.asyncio
 async def test_devin_session_consumption_uses_unix_time_params() -> None:
     start = datetime(2025, 1, 1, tzinfo=timezone.utc)
     end = datetime(2025, 1, 2, tzinfo=timezone.utc)
@@ -1844,6 +1864,83 @@ async def test_watcher_status_callback_runs_after_delivery_and_persist(
     watcher._deliver = deliver  # type: ignore[method-assign]
     await watcher.run()
     assert events == ["deliver", ("status", "finished", "e1")]
+
+
+@pytest.mark.asyncio
+async def test_blocked_status_does_not_drain_until_watcher_finishes(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+
+    class StatusDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            status = (
+                "working"
+                if self.calls == 1
+                else "blocked"
+                if self.calls == 2
+                else "finished"
+                if self.calls == 3
+                else "working"
+            )
+            return SessionState(status, "title", None, [])
+
+    async def sleep(_seconds: float) -> None:
+        if not blocked.is_set():
+            blocked.set()
+            await release.wait()
+
+    devin = StatusDevin()
+    runtime = Bridge(
+        settings(tmp_path, devin_settle_seconds=100),
+        store,
+        devin,
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    runtime.queued_turns["222"] = [
+        (message("queued", message_id=8), "queued", None),
+    ]
+    drained = asyncio.Event()
+    original_handle = runtime.handle_user_turn
+
+    async def handle(
+        queued_message: Mapping[str, object],
+        text: str,
+        *,
+        attachment: object = None,
+    ) -> None:
+        await original_handle(queued_message, text, attachment=attachment)
+        drained.set()
+
+    runtime.handle_user_turn = handle  # type: ignore[method-assign]
+    await runtime.start_watcher(conversation)
+    runtime.active_watchers["s1"].sleep = sleep
+    await blocked.wait()
+    assert runtime.queued_count("222") == 1
+    assert devin.sent == []
+    release.set()
+    await runtime.watchers["s1"]
+    await drained.wait()
+    assert runtime.queued_count("222") == 0
+    assert ("s1", "queued") in devin.sent
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio
@@ -2785,6 +2882,32 @@ async def test_conversation_settings_callbacks_and_watcher_effects(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_forwarded_settings_callback_is_unavailable(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.update_settings("222", silent=False)
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    await runtime.handle_callback({
+        "id": "forwarded",
+        "data": "cfg:silent:1",
+        "from": {"id": 111, "is_bot": False},
+        "message": {
+            "message_id": 44,
+            "chat": {"id": 222, "type": "private"},
+            "forward_origin": {"type": "user"},
+        },
+    })
+    assert not store.get_settings("222").silent
+    assert telegram.answers[-1] == "Not available on forwarded messages"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_access_request_admin_approval_denial_and_non_admin(tmp_path: Path) -> None:
     config = settings(tmp_path, telegram_admin_user_ids="900", telegram_allowed_users="")
     store = Store(str(tmp_path / "access.sqlite3"))
@@ -2828,6 +2951,48 @@ async def test_access_request_admin_approval_denial_and_non_admin(tmp_path: Path
         **approve, "id": "deny", "data": "acc:no:222", "from": {"id": 223},
     })
     assert 222 in runtime.approved_users
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_access_request_prompt_and_retry_after_denial(tmp_path: Path) -> None:
+    config = settings(
+        tmp_path,
+        telegram_admin_user_ids="900",
+        telegram_allowed_users="",
+    )
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(config, store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    unauthorized = message("hello", user_id=222)
+    await runtime.handle_message(unauthorized)
+    assert store.get_access_request(222) is None
+    assert telegram.sent[-1]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+    await runtime.handle_message(unauthorized)
+    assert len(telegram.sent) == 1
+
+    callback = {
+        "id": "request-1",
+        "data": "acc:req",
+        "from": {"id": 222, "username": "alice"},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback(callback)
+    assert len(telegram.sent) == 2
+    assert store.get_access_request(222).status == "requested"  # type: ignore[union-attr]
+    await runtime.handle_callback({**callback, "id": "request-2"})
+    assert len(telegram.sent) == 2
+    await runtime.handle_callback({
+        **callback,
+        "id": "deny",
+        "from": {"id": 900},
+        "data": "acc:no:222",
+        "message": {"message_id": 2, "chat": {"id": 900, "type": "private"}},
+    })
+    assert store.get_access_request(222).status == "denied"  # type: ignore[union-attr]
+    await runtime.handle_callback({**callback, "id": "request-3"})
+    assert len(telegram.sent) == 4
+    assert store.get_access_request(222).status == "requested"  # type: ignore[union-attr]
     await runtime.shutdown()
 
 
