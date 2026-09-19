@@ -31,6 +31,7 @@ class SessionWatcher:
         poll_seconds: float | None = None,
         trigger_message_id: int | None = None,
         transient_message_ids: list[int] | None = None,
+        on_status_change: Callable[[str], Awaitable[None]] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -48,6 +49,7 @@ class SessionWatcher:
         self.sleep = sleep
         self.trigger_message_id = trigger_message_id
         self.transient_message_ids = transient_message_ids or []
+        self.on_status_change = on_status_change
         self.drafts_ok = settings.telegram_drafts
         self.draft_id = secrets.randbelow(2**31 - 1) + 1
         self.status_message_id: int | None = None
@@ -88,6 +90,8 @@ class SessionWatcher:
                     previous_status is not None
                     and state.status_enum != previous_status
                 )
+                if status_changed and self.on_status_change is not None:
+                    await self.on_status_change(state.status_enum)
                 previous_status = state.status_enum
                 self.last_status = state.status_enum
                 if first_poll or new_messages or status_changed:
@@ -309,8 +313,17 @@ class SessionWatcher:
                 choice_ids.append((choice_id, option))
                 buttons.append([{"text": option, "callback_data": choice_id}])
             markup = {"inline_keyboard": buttons}
+        body, documents = extract_large_code_blocks(body)
+        for index, (filename, content) in enumerate(documents):
+            await self.telegram.send_document(
+                self.conversation.chat_id,
+                filename,
+                content,
+                thread_id=self.conversation.thread_id,
+                reply_to=reply_to_message_id if index == 0 else None,
+            )
         limit = max(1, self.settings.telegram_long_reply_chars)
-        if len(body) > 4 * limit:
+        if not options and len(body) > 4 * limit:
             await self.telegram.send_document(
                 self.conversation.chat_id,
                 "reply.md",
@@ -329,16 +342,7 @@ class SessionWatcher:
                 reply_to_message_id=reply_to_message_id,
             )
             return
-        body, documents = extract_large_code_blocks(body)
-        for index, (filename, content) in enumerate(documents):
-            await self.telegram.send_document(
-                self.conversation.chat_id,
-                filename,
-                content,
-                thread_id=self.conversation.thread_id,
-                reply_to=reply_to_message_id if index == 0 else None,
-            )
-        if len(body) > limit:
+        if not options and len(body) > limit:
             body, remaining = split_long_text(body, limit)
             if remaining:
                 token = secrets.token_urlsafe(12)

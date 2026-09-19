@@ -28,6 +28,7 @@ from app.formatting import (
     split_long_text,
 )
 from app.notify import register_notify_route
+from app.polling import run_polling
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
 from app.watcher import SessionWatcher
@@ -251,24 +252,28 @@ class Bridge:
         if not fragments:
             return
         message = fragments[-1][0]
-        text = "\n\n".join(value for _, value, _ in fragments if value)
-        attachment = next(
-            (value for _, _, value in fragments if value is not None),
-            None,
-        )
-        turn = (message, text, attachment)
-        if (
-            self.settings.telegram_queue_while_busy
-            and self._conversation_busy(conv_key)
-        ):
-            self.queued_turns.setdefault(conv_key, []).append(turn)
-            await self.telegram.set_message_reaction(
-                _int(_mapping(message.get("chat")).get("id")),
-                _int(message.get("message_id")),
-                "⏳",
+        try:
+            text = "\n\n".join(value for _, value, _ in fragments if value)
+            attachment = next(
+                (value for _, _, value in fragments if value is not None),
+                None,
             )
-            return
-        await self.handle_user_turn(message, text, attachment=attachment)
+            turn = (message, text, attachment)
+            if (
+                self.settings.telegram_queue_while_busy
+                and self._conversation_busy(conv_key)
+            ):
+                self.queued_turns.setdefault(conv_key, []).append(turn)
+                await self.telegram.set_message_reaction(
+                    _int(_mapping(message.get("chat")).get("id")),
+                    _int(message.get("message_id")),
+                    "⏳",
+                )
+                return
+            await self.handle_user_turn(message, text, attachment=attachment)
+        except Exception as exc:
+            logger.exception("Failed to flush Telegram turn for %s", conv_key)
+            await self._report_processing_failure({"message": message}, exc)
 
     def _conversation_busy(self, conv_key: str) -> bool:
         conversation = self.store.get_conversation(conv_key)
@@ -292,7 +297,11 @@ class Bridge:
         message, text, attachment = queued.pop(0)
         if not queued:
             self.queued_turns.pop(conv_key, None)
-        await self.handle_user_turn(message, text, attachment=attachment)
+        try:
+            await self.handle_user_turn(message, text, attachment=attachment)
+        except Exception as exc:
+            logger.exception("Failed to drain Telegram turn for %s", conv_key)
+            await self._report_processing_failure({"message": message}, exc)
 
     def clear_queued_turns(self, conv_key: str) -> None:
         self.queued_turns.pop(conv_key, None)
@@ -546,6 +555,10 @@ class Bridge:
                 conversation.conv_key,
                 [],
             ),
+            on_status_change=lambda status: self._watcher_status_changed(
+                conversation.conv_key,
+                status,
+            ),
         )
         task = asyncio.create_task(watcher.run())
         self.watchers[conversation.session_id] = task
@@ -564,6 +577,13 @@ class Bridge:
             drain.add_done_callback(self.background_tasks.discard)
 
         task.add_done_callback(watcher_done)
+
+    async def _watcher_status_changed(self, conv_key: str, status: str) -> None:
+        if status == "working" or self.shutting_down:
+            return
+        drain = asyncio.create_task(self._drain_queue(conv_key))
+        self.background_tasks.add(drain)
+        drain.add_done_callback(self.background_tasks.discard)
 
     async def handle_callback(self, callback: Mapping[str, object]) -> None:
         callback_id = _text(callback.get("id")) or ""
@@ -1137,9 +1157,9 @@ def create_app(
         await runtime.startup()
         polling_task: asyncio.Task[None] | None = None
         if actual_settings.telegram_mode == "polling":
-            from app.poll import run_polling
-
-            polling_task = asyncio.create_task(run_polling(runtime))
+            polling_task = asyncio.create_task(
+                run_polling(runtime.telegram, runtime.handle_update)
+            )
         yield
         if polling_task is not None:
             polling_task.cancel()
