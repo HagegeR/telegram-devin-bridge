@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+UNSET = object()
+
 
 @dataclass(frozen=True)
 class Conversation:
@@ -310,18 +312,18 @@ class Store:
         *,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
-        last_user_message_id: int | None = None,
+        last_user_message_id: object = UNSET,
         last_pr_url: str | None = None,
     ) -> None:
         assignments: list[str] = []
-        values: list[str | None] = []
+        values: list[object] = []
         if last_event_id is not None:
             assignments.append("last_event_id = ?")
             values.append(last_event_id)
         if last_user_text is not None:
             assignments.append("last_user_text = ?")
             values.append(last_user_text)
-        if last_user_message_id is not None:
+        if last_user_message_id is not UNSET:
             assignments.append("last_user_message_id = ?")
             values.append(last_user_message_id)
         if last_pr_url is not None:
