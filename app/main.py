@@ -22,6 +22,7 @@ from app.access import (
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
+from app.doctor import register_doctor_route
 from app.formatting import (
     chunk,
     extract_large_code_blocks,
@@ -1729,6 +1730,7 @@ def create_app(
         return {"accepted": True}
 
     register_notify_route(application, runtime, actual_settings)
+    register_doctor_route(application, actual_settings)
     application.state.bridge = runtime
     return application
 

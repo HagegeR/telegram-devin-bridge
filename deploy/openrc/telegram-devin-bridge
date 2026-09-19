@@ -1,0 +1,11 @@
+#!/sbin/openrc-run
+supervisor=supervise-daemon
+description="Telegram Devin Bridge"
+directory="/root/telegram-devin-bridge"
+command="/root/telegram-devin-bridge/.venv/bin/uvicorn"
+command_args="app.main:app --host 127.0.0.1 --port 8000"
+output_log="/var/log/telegram-devin-bridge.log"
+error_log="/var/log/telegram-devin-bridge.log"
+respawn_delay=5
+respawn_max=0
+depend() { need net; after tailscale; }

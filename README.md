@@ -98,6 +98,45 @@ curl -X POST http://localhost:8000/notify \
 The target is `chat_id`/`thread_id` in the request, the `/sethome` target, or
 `TELEGRAM_HOME_CHANNEL`. Notifications can set `markdown` to `false`.
 
+`GET /doctor` uses the same Bearer `NOTIFY_SECRET` auth and runs the
+deployment diagnostics, returning `{"results": [...], "ok": bool}`.
+
+## Diagnostics
+
+```bash
+python -m app.doctor                # human-readable check list
+python -m app.doctor --json         # machine-readable
+python -m app.doctor --attempts 10  # more DNS samples
+```
+
+The doctor verifies `.env` completeness, DNS reliability, `/etc/resolv.conf`
+hijacking, default routes and MTU, Tailscale funnel state, the Telegram and
+Devin APIs, the webhook registration, and local/public `/health`. Exit code is
+1 when any check fails.
+
+## Deployment
+
+See [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md)
+for the Alpine + Tailscale Funnel runbook (OpenRC unit in `deploy/openrc`,
+dnsmasq cache config in `deploy/dnsmasq`), including the network pitfalls hit
+in production (MagicDNS resolv.conf takeover, dead second NIC, jumbo MTU).
+
+Two deployment styles exist — pick one:
+
+- `deploy/openrc/telegram-devin-bridge`: **webhook + Tailscale Funnel** unit —
+  uvicorn as root from `/root/telegram-devin-bridge`, supervise-daemon respawn.
+- `deploy/vm/install.sh`: **polling-mode** installer — `TELEGRAM_MODE=polling`,
+  service account under `/opt`, `python -m app.poll`; needs no public URL.
+
+## Devin Knowledge
+
+`docs/devin-knowledge.md` is published to the Devin Knowledge API with:
+
+```bash
+python -m app.publish_knowledge            # create or update by name
+python -m app.publish_knowledge --dry-run  # print the payload only
+```
+
 ## Media, topics, and formatting
 
 Photos, documents, voice messages, audio, video, and video notes up to
