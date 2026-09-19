@@ -357,7 +357,10 @@ class Bridge:
             task is not None
             and not task.done()
             and watcher is not None
-            and watcher.last_status in ACTIVE_STATUSES
+            and (
+                watcher.last_status is None
+                or watcher.last_status in ACTIVE_STATUSES
+            )
         )
 
     async def _drain_queue(self, conv_key: str) -> None:
@@ -816,7 +819,7 @@ class Bridge:
             "from": user,
             "chat": reaction.get("chat", {}),
         }
-        if not is_allowed(authorization, self.settings):
+        if not is_allowed(authorization, self.settings, self.approved_users):
             return
         chat = _mapping(reaction.get("chat"))
         chat_id = _int(chat.get("id"))
@@ -858,7 +861,7 @@ class Bridge:
                 )
 
     async def handle_edited_message(self, message: Mapping[str, object]) -> None:
-        if not is_allowed(message, self.settings):
+        if not is_allowed(message, self.settings, self.approved_users):
             return
         if not should_respond_in_group(
             message,
@@ -901,6 +904,8 @@ class Bridge:
         async with self._lock(conv_key):
             conversation = self.store.get_conversation(conv_key)
             if conversation is None:
+                return
+            if conversation.last_user_message_id != message_id:
                 return
             if conversation.last_user_text == text:
                 return
@@ -1362,6 +1367,17 @@ class Bridge:
         sender = _mapping(callback.get("from"))
         sender_id = _int(sender.get("id"))
         if data == "acc:req":
+            callback_chat_id = _int(
+                _mapping(_mapping(callback.get("message")).get("chat")).get("id")
+            )
+            if callback_chat_id != sender_id:
+                callback_id = _text(callback.get("id"))
+                if callback_id:
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Not allowed",
+                    )
+                return
             user_id = sender_id
             request = self.store.get_access_request(user_id)
             if request is None:

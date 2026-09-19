@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -159,17 +159,36 @@ class DevinClient:
     ) -> tuple[bytes, str] | None:
         if urlparse(url).hostname != "app.devin.ai":
             return None
-        try:
-            response = await self.client.get(url, follow_redirects=True)
-            response.raise_for_status()
-        except httpx.HTTPError:
-            return None
-        if len(response.content) > 20 * 1024 * 1024:
-            return None
-        return response.content, response.headers.get(
-            "content-type",
-            "application/octet-stream",
-        ).split(";", 1)[0]
+        current_url = url
+        for hop in range(4):
+            if urlparse(current_url).hostname != "app.devin.ai":
+                return None
+            try:
+                response = await self.client.get(
+                    current_url,
+                    follow_redirects=False,
+                )
+            except httpx.HTTPError:
+                return None
+            if 300 <= response.status_code < 400:
+                if hop == 3:
+                    return None
+                location = response.headers.get("location")
+                if not location:
+                    return None
+                current_url = urljoin(current_url, location)
+                continue
+            try:
+                response.raise_for_status()
+            except httpx.HTTPError:
+                return None
+            if len(response.content) > 20 * 1024 * 1024:
+                return None
+            return response.content, response.headers.get(
+                "content-type",
+                "application/octet-stream",
+            ).split(";", 1)[0]
+        return None
 
     async def session_consumption(
         self,

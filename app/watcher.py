@@ -346,7 +346,7 @@ class SessionWatcher:
             content, content_type = downloaded
             filename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
             if content_type.startswith("image/"):
-                await self.telegram.send_photo(
+                result = await self.telegram.send_photo(
                     self.conversation.chat_id,
                     filename,
                     content,
@@ -356,7 +356,7 @@ class SessionWatcher:
                     content_type=content_type,
                 )
             else:
-                await self.telegram.send_document(
+                result = await self.telegram.send_document(
                     self.conversation.chat_id,
                     filename,
                     content,
@@ -364,6 +364,7 @@ class SessionWatcher:
                     thread_id=self.conversation.thread_id,
                     reply_to=reply_to_message_id,
                 )
+            self._index_outbound(result)
             body = body.replace(f"\n{url}\n", "\n")
             if body == url:
                 body = ""
@@ -400,6 +401,8 @@ class SessionWatcher:
                 f"\n\n🔗 PR #{number} · {title} · {status} · "
                 f"+{additions} −{deletions} · {base_name}←{head_name}"
             )
+        if not body.strip() and not options:
+            return
         markup: dict[str, object] | None = None
         choice_ids: list[tuple[str, str]] = []
         if options:

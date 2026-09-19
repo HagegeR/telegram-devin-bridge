@@ -89,6 +89,7 @@ def test_access_rules() -> None:
     config = settings(Path("/tmp"), telegram_allowed_users="111")
     assert is_allowed(message("hi"), config)
     assert not is_allowed(message("hi", user_id=333), config)
+    assert is_allowed(message("hi", user_id=222), config, {222})
     assert not is_allowed(message("hi", user_id=111), settings(Path("/tmp"), telegram_allowed_users=""))
     assert is_allowed(
         message("hi", user_id=333),
@@ -1529,6 +1530,30 @@ async def test_devin_send_message_accepts_non_object_body() -> None:
 
 
 @pytest.mark.asyncio
+async def test_download_attachment_rejects_cross_host_redirect() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "app.devin.ai"
+        return httpx.Response(
+            302,
+            headers={"Location": "https://evil.example/attachment"},
+        )
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert (
+        await devin.download_attachment(
+            "https://app.devin.ai/attachments/1/file.txt"
+        )
+        is None
+    )
+    await devin.close()
+
+
+@pytest.mark.asyncio
 async def test_github_pr_fetch_does_not_send_devin_token() -> None:
     observed: dict[str, str] = {}
 
@@ -1847,6 +1872,43 @@ async def test_reaction_retry_stop_and_edited_message(tmp_path: Path) -> None:
     stopped = [item for item in telegram.sent if item["text"] == "Stopped session."]
     assert stopped
     assert stopped[-1]["thread_id"] == 9
+
+
+@pytest.mark.asyncio
+async def test_edited_message_rechecks_target_after_lock(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="old",
+        last_user_message_id=12,
+    )
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        _FakeDevin(),
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+
+    class ReloadLock:
+        async def __aenter__(self) -> None:
+            store.update_conversation(
+                "222",
+                "s1",
+                last_user_message_id=13,
+            )
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    runtime._lock = lambda _conv_key: ReloadLock()  # type: ignore[method-assign]
+    await runtime.handle_edited_message({**message("new"), "message_id": 12})
+    assert not runtime.devin.sent
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio
@@ -2280,7 +2342,6 @@ async def test_busy_turn_is_queued_and_drained(tmp_path: Path) -> None:
         telegram,  # type: ignore[arg-type]
         settings(tmp_path),
     )
-    watcher.last_status = "working"
     runtime.active_watchers["s1"] = watcher
     task = asyncio.create_task(asyncio.sleep(10))
     runtime.watchers["s1"] = task
@@ -2479,6 +2540,10 @@ async def test_access_request_admin_approval_denial_and_non_admin(tmp_path: Path
         **request,
         "id": "request-2",
         "from": {"id": 333, "username": "bob", "first_name": "Bob"},
+        "message": {
+            "message_id": 3,
+            "chat": {"id": 333, "type": "private"},
+        },
     }
     await runtime.handle_callback(denied_request)
     await runtime.handle_callback({
@@ -2491,6 +2556,25 @@ async def test_access_request_admin_approval_denial_and_non_admin(tmp_path: Path
         **approve, "id": "deny", "data": "acc:no:222", "from": {"id": 223},
     })
     assert 222 in runtime.approved_users
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_access_request_callback_requires_requester_chat(
+    tmp_path: Path,
+) -> None:
+    config = settings(tmp_path, telegram_admin_user_ids="900")
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(config, store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await runtime.handle_callback({
+        "id": "request",
+        "data": "acc:req",
+        "from": {"id": 222, "username": "alice"},
+        "message": {"message_id": 1, "chat": {"id": 999, "type": "private"}},
+    })
+    assert store.get_access_request(222) is None
+    assert telegram.answers[-1] == "Not allowed"
     await runtime.shutdown()
 
 
@@ -2521,6 +2605,18 @@ async def test_attachment_photo_document_and_download_fallback(tmp_path: Path) -
     await watcher._deliver(DevinMessage("devin_message", "2", doc_url, None), SessionState("finished", "title", None, []))
     assert telegram.photos[0]["filename"] == "image.png"
     assert telegram.documents[0]["filename"] == "archive.zip"
+    assert store.conv_key_for_message(222, 1) == "222"
+    sent_before = len(telegram.sent)
+    await watcher._deliver(
+        DevinMessage(
+            "devin_message",
+            "attachment-only",
+            image_url,
+            None,
+        ),
+        SessionState("finished", "title", None, []),
+    )
+    assert len(telegram.sent) == sent_before
     missing = "https://app.devin.ai/attachments/3/missing.txt"
     await watcher._deliver(DevinMessage("devin_message", "3", missing, None), SessionState("finished", "title", None, []))
     assert missing in str(telegram.sent[-1]["text"])
