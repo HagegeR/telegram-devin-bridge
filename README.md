@@ -18,6 +18,13 @@ python -m app.set_webhook
 The deployment must expose HTTPS and route the configured public URL to port
 8000. `GET /health` returns `{"status":"ok"}` without configuration values.
 
+## CI/CD
+
+`.github/workflows/ci.yml` runs `ruff` and `pytest` on every pull request.
+`.github/workflows/deploy.yml` runs the same checks and then `flyctl deploy`
+on every push to `main` (or manually via *Run workflow*). It needs a
+`FLY_API_TOKEN` repository secret: `fly tokens create deploy -a telegram-devin-bridge`.
+
 ## Configuration
 
 | Variable | Required | Default |
