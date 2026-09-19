@@ -6,4 +6,5 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .self-update.lock
+.self-update.lock.d
 .self-update-rev
