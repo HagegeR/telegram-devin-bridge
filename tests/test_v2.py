@@ -2582,10 +2582,33 @@ async def test_usage_formatting_missing_org_and_forbidden(tmp_path: Path) -> Non
     await runtime.shutdown()
 
 @pytest.mark.asyncio
-async def test_poll_reuses_fastapi_bridge() -> None:
+async def test_poll_reuses_fastapi_bridge(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.poll as poll_module
 
     assert poll_module.bridge is main_module.bridge
+    store_calls = 0
+    original_store = main_module.Store
+
+    def counted_store(*args: object, **kwargs: object) -> Store:
+        nonlocal store_calls
+        store_calls += 1
+        return original_store(*args, **kwargs)
+
+    async def startup() -> None:
+        return None
+
+    async def shutdown() -> None:
+        return None
+
+    async def run_polling(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(main_module, "Store", counted_store)
+    monkeypatch.setattr(poll_module.bridge, "startup", startup)
+    monkeypatch.setattr(poll_module.bridge, "shutdown", shutdown)
+    monkeypatch.setattr(poll_module, "run_polling", run_polling)
+    await poll_module.main()
+    assert store_calls == 0
 
 
 @pytest.mark.asyncio
