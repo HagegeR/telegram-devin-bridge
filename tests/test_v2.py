@@ -2231,8 +2231,7 @@ async def test_shutdown_delivers_pending_turn_for_busy_conversation(
     runtime.pending_turns["222"] = [(message("pending"), "pending", None)]
     runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
     await runtime.shutdown()
-    assert ("s1", "pending") in devin.sent
-    assert ("s1", "queued") in devin.sent
+    assert devin.sent[-2:] == [("s1", "queued"), ("s1", "pending")]
     assert not runtime.queued_turns
 
 
@@ -2805,14 +2804,15 @@ async def test_stop_terminate_failure_preserves_local_state(tmp_path: Path) -> N
     runtime.watchers["s1"] = task
     runtime.active_watchers["s1"] = watcher
     runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
+    runtime.pending_turns["222"] = [(message("pending"), "pending", None)]
     with pytest.raises(RuntimeError, match="terminate failed"):
         await runtime.stop_conversation(conversation)
     assert runtime.queued_turns["222"]
-    assert runtime.watchers["s1"] is task
-    assert runtime.active_watchers["s1"] is watcher
+    assert runtime.pending_turns["222"]
+    assert task.cancelled()
+    assert runtime.watchers["s1"] is not task
+    assert runtime.active_watchers["s1"] is not watcher
     assert store.get_conversation("222") is not None
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
     await runtime.shutdown()
 
 
