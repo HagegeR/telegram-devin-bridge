@@ -30,6 +30,7 @@ class SessionWatcher:
         *,
         poll_seconds: float | None = None,
         trigger_message_id: int | None = None,
+        transient_message_ids: list[int] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -46,8 +47,15 @@ class SessionWatcher:
         self.clock = clock
         self.sleep = sleep
         self.trigger_message_id = trigger_message_id
+        self.transient_message_ids = transient_message_ids or []
         self.drafts_ok = settings.telegram_drafts
         self.draft_id = secrets.randbelow(2**31 - 1) + 1
+        self.status_message_id: int | None = None
+        self.last_status_text: str | None = None
+        self.status_sent_at: float | None = None
+        self.last_chat_action_at: float | None = None
+        self.delivered_count = 0
+        self.cleaned_up = False
 
     async def run(self) -> None:
         started_at = self.clock()
@@ -55,6 +63,17 @@ class SessionWatcher:
         delivered = False
         last_pr_url = self.conversation.last_pr_url
         last_event_id = self.conversation.last_event_id
+        active_statuses = {
+            "working",
+            "resumed",
+            "resume_requested",
+            "resume_requested_frontend",
+        }
+        interval = min(
+            max(self.settings.devin_poll_fast_seconds, 0),
+            max(self.poll_seconds, 0),
+        )
+        previous_status: str | None = None
         try:
             while self.clock() - started_at < self.settings.devin_watch_timeout_seconds:
                 state = await self.devin.get_session(self.conversation.session_id)
@@ -63,8 +82,32 @@ class SessionWatcher:
                     wall_started_at,
                     last_event_id,
                 )
+                first_poll = previous_status is None
+                status_changed = (
+                    previous_status is not None
+                    and state.status_enum != previous_status
+                )
+                previous_status = state.status_enum
+                if first_poll or new_messages or status_changed:
+                    interval = min(
+                        max(self.settings.devin_poll_fast_seconds, 0),
+                        max(self.poll_seconds, 0),
+                    )
+                else:
+                    interval = min(
+                        max(interval * 1.5, self.settings.devin_poll_fast_seconds),
+                        max(self.poll_seconds, 0),
+                    )
                 for message in new_messages:
-                    await self._deliver(message, state)
+                    if not delivered:
+                        await self._cleanup_transients()
+                    await self._deliver(
+                        message,
+                        state,
+                        reply_to_message_id=(
+                            self.trigger_message_id if not delivered else None
+                        ),
+                    )
                     if message.event_id is not None:
                         last_event_id = message.event_id
                         self.conversation = replace(
@@ -77,6 +120,7 @@ class SessionWatcher:
                             last_event_id=message.event_id,
                         )
                     delivered = True
+                    self.delivered_count += 1
                 if state.pr_url is not None and state.pr_url != last_pr_url:
                     await self.telegram.send_message(
                         self.conversation.chat_id,
@@ -91,42 +135,19 @@ class SessionWatcher:
                         last_pr_url=state.pr_url,
                     )
                 if state.status_enum in {"expired", "finished"}:
+                    await self._cleanup_transients()
                     await self._finish_reaction(expired=state.status_enum == "expired")
                     return
-                active_statuses = {
-                    "working",
-                    "resumed",
-                    "resume_requested",
-                    "resume_requested_frontend",
-                }
                 if state.status_enum not in active_statuses:
                     settled = self.clock() - started_at >= self.settings.devin_settle_seconds
                     if delivered or settled:
+                        await self._cleanup_transients()
                         await self._finish_reaction(expired=False)
                         return
                 else:
-                    if (
-                        self.drafts_ok
-                        and self.conversation.chat_id > 0
-                    ):
-                        try:
-                            await self.telegram.send_message_draft(
-                                self.conversation.chat_id,
-                                self.draft_id,
-                                thread_id=self.conversation.thread_id,
-                            )
-                        except RuntimeError:
-                            self.drafts_ok = False
-                            await self.telegram.send_chat_action(
-                                self.conversation.chat_id,
-                                thread_id=self.conversation.thread_id,
-                            )
-                    else:
-                        await self.telegram.send_chat_action(
-                            self.conversation.chat_id,
-                            thread_id=self.conversation.thread_id,
-                        )
-                await self.sleep(self.poll_seconds)
+                    await self._refresh_progress(started_at, state)
+                await self.sleep(interval)
+            await self._cleanup_transients()
             if not delivered:
                 await self.telegram.send_message(
                     self.conversation.chat_id,
@@ -136,6 +157,7 @@ class SessionWatcher:
                 )
         except Exception as exc:
             logger.exception("Session watcher failed for conversation %s", self.conversation.conv_key)
+            await self._cleanup_transients()
             try:
                 await self.telegram.send_message(
                     self.conversation.chat_id,
@@ -146,7 +168,115 @@ class SessionWatcher:
             except Exception:
                 logger.exception("Failed to report watcher error")
 
-    async def _deliver(self, message: DevinMessage, state: SessionState) -> None:
+    async def _refresh_progress(
+        self,
+        started_at: float,
+        state: SessionState,
+    ) -> None:
+        elapsed = self.clock() - started_at
+        if elapsed < self.settings.devin_status_after_seconds:
+            if self.drafts_ok and self.conversation.chat_id > 0:
+                await self._send_draft("")
+            else:
+                await self._send_chat_action()
+            return
+        status_text = self._status_text(elapsed, state.structured_output)
+        if self.drafts_ok and self.conversation.chat_id > 0:
+            if (
+                self.last_status_text != status_text
+                or self.status_sent_at is None
+                or elapsed - self.status_sent_at >= 10
+            ):
+                await self._send_draft(status_text)
+                self.last_status_text = status_text
+                self.status_sent_at = elapsed
+            return
+        if (
+            self.status_message_id is None
+            or (
+                self.last_status_text != status_text
+                and (
+                    self.status_sent_at is None
+                    or elapsed - self.status_sent_at >= 10
+                )
+            )
+        ):
+            if self.status_message_id is None:
+                result = await self.telegram.send_message(
+                    self.conversation.chat_id,
+                    status_text,
+                    thread_id=self.conversation.thread_id,
+                    disable_notification=True,
+                )
+                if isinstance(result, dict):
+                    value = result.get("message_id")
+                    if isinstance(value, int):
+                        self.status_message_id = value
+            else:
+                await self.telegram.edit_message_text(
+                    self.conversation.chat_id,
+                    self.status_message_id,
+                    status_text,
+                )
+            self.last_status_text = status_text
+            self.status_sent_at = elapsed
+
+    async def _send_draft(self, text: str) -> None:
+        try:
+            await self.telegram.send_message_draft(
+                self.conversation.chat_id,
+                self.draft_id,
+                text,
+                thread_id=self.conversation.thread_id,
+            )
+        except (RuntimeError, httpx.HTTPError):
+            self.drafts_ok = False
+            await self._send_chat_action()
+
+    async def _send_chat_action(self) -> None:
+        now = self.clock()
+        if (
+            self.last_chat_action_at is not None
+            and now - self.last_chat_action_at < 4
+        ):
+            return
+        self.last_chat_action_at = now
+        try:
+            await self.telegram.send_chat_action(
+                self.conversation.chat_id,
+                thread_id=self.conversation.thread_id,
+            )
+        except (RuntimeError, httpx.HTTPError):
+            logger.warning("Failed to send typing action chat=%s", self.conversation.chat_id)
+
+    async def _cleanup_transients(self) -> None:
+        if self.cleaned_up:
+            return
+        self.cleaned_up = True
+        message_ids = list(self.transient_message_ids)
+        if self.status_message_id is not None:
+            message_ids.append(self.status_message_id)
+        for message_id in message_ids:
+            try:
+                await self.telegram.delete_message(
+                    self.conversation.chat_id,
+                    message_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to delete transient Telegram message chat=%s message=%s",
+                    self.conversation.chat_id,
+                    message_id,
+                    exc_info=True,
+                )
+
+    async def _deliver(
+        self,
+        message: DevinMessage,
+        state: SessionState,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> None:
         body, options = extract_options(message.message)
         if not body and options:
             body = "Choose an option:"
@@ -174,15 +304,20 @@ class SessionWatcher:
                 choice_ids.append((choice_id, option))
                 buttons.append([{"text": option, "callback_data": choice_id}])
             markup = {"inline_keyboard": buttons}
-        results = await self.telegram.send_markdown(
-            self.conversation.chat_id,
-            body,
-            thread_id=self.conversation.thread_id,
-            reply_markup=markup,
-            disable_notification=(
+        delivery_kwargs: dict[str, object] = {
+            "thread_id": self.conversation.thread_id,
+            "reply_markup": markup,
+            "disable_notification": (
                 self.settings.telegram_notification_mode == "important"
                 and state.status_enum == "working"
             ),
+        }
+        if reply_to_message_id is not None:
+            delivery_kwargs["reply_to_message_id"] = reply_to_message_id
+        results = await self.telegram.send_markdown(
+            self.conversation.chat_id,
+            body,
+            **delivery_kwargs,
         )
         if options:
             message_id = None
@@ -199,6 +334,31 @@ class SessionWatcher:
                     option,
                     message_id,
                 )
+
+    def _status_text(self, elapsed: float, structured_output: object | None) -> str:
+        total_seconds = max(0, int(elapsed))
+        minutes, seconds = divmod(total_seconds, 60)
+        text = f"👀 Working… {minutes}:{seconds:02d}"
+        if self.delivered_count:
+            text += f" · {self.delivered_count} messages"
+        summary = self._structured_summary(structured_output)
+        if summary:
+            text += f"\n{summary}"
+        return text
+
+    @staticmethod
+    def _structured_summary(value: object | None) -> str:
+        if isinstance(value, dict):
+            pairs = [
+                f"{key}: {item}"
+                for key, item in value.items()
+                if isinstance(key, str)
+                and isinstance(item, (str, int, float, bool))
+            ][:3]
+            return " · ".join(pairs)
+        if isinstance(value, str):
+            return value[:200]
+        return ""
 
     def _new_messages(
         self,

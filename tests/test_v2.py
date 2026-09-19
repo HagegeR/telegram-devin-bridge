@@ -612,11 +612,19 @@ class _FakeTelegram:
         self.actions: list[dict[str, object]] = []
         self.edited_topics: list[tuple[int, int, str]] = []
         self.created_topics: list[tuple[int, str]] = []
+        self.deleted: list[tuple[int, int]] = []
+        self.deleted_topics: list[tuple[int, int]] = []
         self.topic_error: Exception | None = None
         self.draft_error: Exception | None = None
 
-    async def send_message(self, chat_id: int, text: str, **kwargs: object) -> None:
+    async def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
         self.sent.append({"chat_id": chat_id, "text": text, **kwargs})
+        return {"message_id": len(self.sent)}
 
     async def send_markdown(
         self, chat_id: int, text: str, **kwargs: object
@@ -659,6 +667,12 @@ class _FakeTelegram:
         self, _chat_id: int, _message_id: int, text: str, **_: object
     ) -> None:
         self.edits.append(text)
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        self.deleted.append((chat_id, message_id))
+
+    async def delete_forum_topic(self, chat_id: int, thread_id: int) -> None:
+        self.deleted_topics.append((chat_id, thread_id))
 
     async def edit_message_reply_markup(
         self, _chat_id: int, _message_id: int, markup: dict[str, object] | None = None
@@ -1432,3 +1446,311 @@ async def test_devin_send_message_accepts_non_object_body() -> None:
     await devin.send_message("devin-1", "hello")
     await devin.terminate("devin-1")
     await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_watcher_adaptive_polling_resets_after_delivery(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "adaptive.sqlite3"))
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    states = [
+        SessionState("working", "title", None, []),
+        SessionState("working", "title", None, []),
+        SessionState(
+            "working",
+            "title",
+            None,
+            [DevinMessage("devin_message", "e1", "hello", None)],
+        ),
+        SessionState("working", "title", None, [DevinMessage("devin_message", "e1", "hello", None)]),
+        SessionState("finished", "title", None, [DevinMessage("devin_message", "e1", "hello", None)]),
+    ]
+
+    class AdaptiveDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return states.pop(0)
+
+    sleeps: list[float] = []
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += max(seconds, 1)
+
+    await SessionWatcher(
+        conversation,
+        store,
+        AdaptiveDevin(),  # type: ignore[arg-type]
+        _FakeTelegram(),  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_fast_seconds=1,
+            devin_poll_seconds=3,
+            devin_watch_timeout_seconds=20,
+        ),
+        clock=clock,
+        sleep=sleep,
+    ).run()
+    assert sleeps[:3] == [1, 1.5, 1]
+
+
+@pytest.mark.asyncio
+async def test_watcher_status_and_cleanup(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    states = [
+        SessionState(
+            "working",
+            "title",
+            None,
+            [],
+            {"phase": "build", "count": 2, "ignored": ["x"]},
+        ),
+        SessionState(
+            "working",
+            "title",
+            None,
+            [],
+            {"phase": "build", "count": 3},
+        ),
+        SessionState(
+            "working",
+            "title",
+            None,
+            [],
+            {"phase": "build"},
+        ),
+        SessionState(
+            "working",
+            "title",
+            None,
+            [DevinMessage("devin_message", "e1", "done", None)],
+            {"phase": "build"},
+        ),
+    ]
+
+    class StatusDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return states.pop(0) if states else SessionState("finished", "title", None, [])
+
+    telegram = _FakeTelegram()
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 10)
+
+    await SessionWatcher(
+        conversation,
+        store,
+        StatusDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_status_after_seconds=8,
+            devin_poll_fast_seconds=1,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=40,
+        ),
+        transient_message_ids=[99],
+        clock=clock,
+        sleep=sleep,
+    ).run()
+    assert any("Working" in str(item["text"]) for item in telegram.sent)
+    assert any("phase: build" in text for text in telegram.edits)
+    assert (222, 99) in telegram.deleted
+    assert any(message_id != 99 for _, message_id in telegram.deleted)
+
+
+@pytest.mark.asyncio
+async def test_watcher_private_draft_uses_status_text(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    now = 0.0
+
+    class DraftDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return (
+                SessionState("working", "title", None, [])
+                    if now <= 10
+                else SessionState("finished", "title", None, [])
+            )
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 10)
+
+    await SessionWatcher(
+        conversation,
+        store,
+        DraftDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            telegram_drafts=True,
+            devin_status_after_seconds=8,
+            devin_poll_fast_seconds=1,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=40,
+        ),
+        clock=lambda: now,
+        sleep=sleep,
+    ).run()
+    assert any("Working" in str(item["text"]) for item in telegram.drafts)
+
+
+@pytest.mark.asyncio
+async def test_reaction_retry_stop_and_edited_message(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="old",
+    )
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await runtime.handle_reaction(
+        {
+            "user": {"id": 111},
+            "chat": {"id": 222, "type": "private"},
+            "message_id": 8,
+            "old_reaction": [],
+            "new_reaction": [{"type": "emoji", "emoji": "🔁"}],
+        }
+    )
+    assert devin.sent == [("s1", "old")]
+    await runtime.handle_reaction(
+        {
+            "user": {"id": 111},
+            "chat": {"id": 222, "type": "private"},
+            "message_id": 8,
+            "old_reaction": [],
+            "new_reaction": [{"type": "emoji", "emoji": "🛑"}],
+        }
+    )
+    assert devin.terminated == ["s1"]
+    assert any(item["text"] == "Stopped session." for item in telegram.sent)
+
+
+@pytest.mark.asyncio
+async def test_edited_message_correction_and_noop(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="old",
+    )
+    devin = _FakeDevin()
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    edited = {**message("new"), "message_id": 12}
+    await runtime.handle_edited_message(edited)
+    assert devin.sent == [("s1", "Correction to my previous message: new")]
+    await runtime.handle_edited_message({**edited, "text": "new"})
+    assert devin.sent == [("s1", "Correction to my previous message: new")]
+
+
+@pytest.mark.asyncio
+async def test_topic_close_and_rename_commands(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/close"), "/close")
+    assert "This command only works inside a topic." in telegram.sent[-1]["text"]
+    topic_message = {**message("/rename New name"), "message_thread_id": 9}
+    await handle_command(runtime, topic_message, "/rename New name")
+    assert telegram.edited_topics == [(222, 9, "New name")]
+
+
+@pytest.mark.asyncio
+async def test_watcher_anchors_only_first_reply_and_cleans_transient(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+
+    class TwoMessageDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState(
+                "finished",
+                "title",
+                None,
+                [
+                    DevinMessage("devin_message", "e1", "one", None),
+                    DevinMessage("devin_message", "e2", "two", None),
+                ],
+            )
+
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        TwoMessageDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        trigger_message_id=44,
+        transient_message_ids=[43],
+    ).run()
+    assert telegram.sent[0]["reply_to_message_id"] == 44
+    assert "reply_to_message_id" not in telegram.sent[1]
+    assert (222, 43) in telegram.deleted

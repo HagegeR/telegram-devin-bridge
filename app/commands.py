@@ -31,7 +31,7 @@ class CommandRuntime(Protocol):
         *,
         silent: bool = False,
         ephemeral: bool = False,
-    ) -> None: ...
+    ) -> int | None: ...
 
     async def create_session_for_message(
         self,
@@ -46,6 +46,24 @@ class CommandRuntime(Protocol):
     async def start_watcher(self, conversation: Conversation) -> None: ...
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int: ...
+
+    async def delete_forum_topic(self, chat_id: int, thread_id: int) -> None: ...
+
+    async def edit_forum_topic(
+        self,
+        chat_id: int,
+        thread_id: int,
+        name: str,
+    ) -> None: ...
+
+    async def stop_conversation(self, conversation: Conversation) -> None: ...
+
+    async def retry_conversation(
+        self,
+        conversation: Conversation,
+        *,
+        trigger_message_id: int | None = None,
+    ) -> None: ...
 
     async def replace_conversation(
         self,
@@ -167,6 +185,34 @@ async def handle_command(
                 ),
                 ephemeral=True,
             )
+    elif command == "close":
+        if thread_id is None:
+            await runtime.send_text(
+                message,
+                "This command only works inside a topic.",
+            )
+            return
+        if conversation is not None:
+            await runtime.stop_conversation(conversation)
+        try:
+            await runtime.delete_forum_topic(chat_id, thread_id)
+        except RuntimeError as exc:
+            reason = str(exc).strip().replace("\n", " ")[:120] or "temporary error"
+            await runtime.send_text(
+                message,
+                f"Couldn't delete this topic: {reason}",
+            )
+    elif command == "rename":
+        if thread_id is None:
+            await runtime.send_text(
+                message,
+                "This command only works inside a topic.",
+            )
+            return
+        if not args:
+            await runtime.send_text(message, "Usage: /rename <name>")
+            return
+        await runtime.edit_forum_topic(chat_id, thread_id, args)
     elif command == "stop":
         await _stop(runtime, message, conversation)
     elif command == "playbook":
@@ -175,16 +221,7 @@ async def handle_command(
         if conversation is None or not conversation.last_user_text:
             await runtime.send_text(message, "Nothing to retry.")
         else:
-            runtime.store.update_conversation(
-                conversation.conv_key,
-                conversation.session_id,
-                last_user_text=conversation.last_user_text,
-            )
-            await runtime.send_session_message(
-                conversation.session_id,
-                conversation.last_user_text,
-            )
-            await runtime.start_watcher(conversation)
+            await runtime.retry_conversation(conversation)
     elif command == "whoami":
         await _whoami(runtime, message)
     elif command == "sethome":
@@ -360,8 +397,9 @@ def _parse(text: str) -> tuple[str, str]:
 
 def _help_text() -> str:
     return (
-        "/new [title]\n/topic <name>\n/sessions\n/resume <n>\n/status\n/stop\n"
-        "/playbook [n] [text]\n/retry\n/whoami\n/sethome\n/help"
+        "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
+        "/resume <n>\n/status\n/stop\n/playbook [n] [text]\n/retry\n"
+        "/whoami\n/sethome\n/help"
     )
 
 

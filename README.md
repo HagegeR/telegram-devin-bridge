@@ -29,9 +29,11 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `DATABASE_PATH` | no | `./bridge.sqlite3` |
 | `DEVIN_API_BASE_URL` | no | `https://api.devin.ai` |
 | `DEVIN_MAX_ACU_LIMIT` | no | `3` |
-| `DEVIN_POLL_SECONDS` | no | `3` |
+| `DEVIN_POLL_FAST_SECONDS` | no | `1.0` |
+| `DEVIN_POLL_SECONDS` | no | `5` |
 | `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` |
 | `DEVIN_SETTLE_SECONDS` | no | `30` |
+| `DEVIN_STATUS_AFTER_SECONDS` | no | `8` |
 | `DEVIN_SESSION_INSTRUCTIONS` | no | empty |
 | `TELEGRAM_RICH_MESSAGES` | no | `true` |
 | `TELEGRAM_DRAFTS` | no | `false` |
@@ -51,13 +53,16 @@ must mention `@BOT_USERNAME`, reply to a bot message, or come from a
 
 ## Commands
 
-`/start`, `/help`, `/new [title]`, `/topic <name>`, `/sessions`, `/resume <n>`, `/status`,
-`/stop`, `/playbook [n] [text]`, `/retry`, `/whoami`, and `/sethome` are
+`/start`, `/help`, `/new [title]`, `/topic <name>`, `/close`, `/rename <name>`,
+`/sessions`, `/resume <n>`, `/status`, `/stop`, `/playbook [n] [text]`, `/retry`,
+`/whoami`, and `/sethome` are
 available. `/new` creates a fresh active session without deleting history.
 `/topic <name>` creates a Telegram topic with its own Devin session and posts
 an instructional seed message into it. Private-chat topics must first be
 enabled from the chat's bot settings; groups must have Topics enabled.
-`/stop` asks for inline confirmation. `/playbook` lists available Devin
+`/close` and `/rename` manage the current forum topic. React 🔁 to retry the
+last user message or 🛑 to stop the active session. `/stop` asks for inline
+confirmation. `/playbook` lists available Devin
 playbooks or starts one. `/retry` resends the last user message.
 
 ## Notifications

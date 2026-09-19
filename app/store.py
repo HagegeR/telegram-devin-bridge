@@ -19,6 +19,7 @@ class Conversation:
     created_at: float
     last_user_text: str | None
     last_pr_url: str | None
+    updated_at: float
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,8 @@ class Store:
                     last_event_id TEXT,
                     created_at REAL NOT NULL,
                     last_user_text TEXT,
-                    last_pr_url TEXT
+                    last_pr_url TEXT,
+                    updated_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS session_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,6 +108,14 @@ class Store:
             if "last_pr_url" not in columns:
                 self.connection.execute(
                     "ALTER TABLE conversations ADD COLUMN last_pr_url TEXT"
+                )
+            if "updated_at" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN updated_at REAL"
+                )
+                self.connection.execute(
+                    "UPDATE conversations SET updated_at = created_at "
+                    "WHERE updated_at IS NULL"
                 )
             choice_columns = {
                 str(row["name"])
@@ -155,8 +165,8 @@ class Store:
                     """
                     INSERT INTO conversations(
                         conv_key, chat_id, thread_id, session_id, session_url,
-                        title, last_event_id, created_at, last_user_text
-                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL)
+                        title, last_event_id, created_at, last_user_text, updated_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?)
                     """,
                     (
                         conv_key,
@@ -165,6 +175,7 @@ class Store:
                         session_url,
                         "Telegram conversation",
                         row["last_message_id"],
+                        timestamp,
                         timestamp,
                     ),
                 )
@@ -220,8 +231,9 @@ class Store:
                 """
                 INSERT INTO conversations(
                     conv_key, chat_id, thread_id, session_id, session_url,
-                    title, last_event_id, created_at, last_user_text, last_pr_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    title, last_event_id, created_at, last_user_text, last_pr_url,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(conv_key) DO UPDATE SET
                     chat_id = excluded.chat_id,
                     thread_id = excluded.thread_id,
@@ -231,6 +243,7 @@ class Store:
                     last_event_id = excluded.last_event_id,
                     last_user_text = excluded.last_user_text,
                     last_pr_url = excluded.last_pr_url
+                    , updated_at = excluded.updated_at
                 """,
                 (
                     conv_key,
@@ -243,6 +256,7 @@ class Store:
                     timestamp,
                     last_user_text,
                     last_pr_url,
+                    timestamp,
                 ),
             )
 
@@ -268,6 +282,8 @@ class Store:
             values.append(last_pr_url)
         if not assignments:
             return
+        values.append(time.time())
+        assignments.append("updated_at = ?")
         values.extend((conv_key, session_id))
         with self.lock, self.connection:
             self.connection.execute(
@@ -282,6 +298,15 @@ class Store:
                 "DELETE FROM conversations WHERE conv_key = ? AND session_id = ?",
                 (conv_key, session_id),
             )
+
+    def get_conversation_for_chat(self, chat_id: int) -> Conversation | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM conversations WHERE chat_id = ? "
+                "ORDER BY updated_at DESC, created_at DESC LIMIT 1",
+                (chat_id,),
+            ).fetchone()
+        return self._conversation(row)
 
     def add_history(
         self,
@@ -474,4 +499,5 @@ class Store:
             last_pr_url=(
                 None if row["last_pr_url"] is None else str(row["last_pr_url"])
             ),
+            updated_at=float(row["updated_at"] or row["created_at"]),
         )

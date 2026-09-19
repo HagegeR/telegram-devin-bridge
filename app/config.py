@@ -11,9 +11,11 @@ class Settings(BaseSettings):
     database_path: str = "./bridge.sqlite3"
     devin_api_base_url: str = "https://api.devin.ai"
     devin_max_acu_limit: int = 3
-    devin_poll_seconds: float = 3
+    devin_poll_seconds: float = 5
+    devin_poll_fast_seconds: float = 1
     devin_watch_timeout_seconds: float = 1800
     devin_settle_seconds: float = 30
+    devin_status_after_seconds: float = 8
     devin_session_instructions: str = ""
     telegram_rich_messages: bool = True
     telegram_drafts: bool = False
