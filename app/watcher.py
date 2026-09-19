@@ -344,6 +344,7 @@ class SessionWatcher:
         reply_to_message_id: int | None = None,
     ) -> None:
         body, attachment_urls = extract_attachments(message.message)
+        metadata_urls = set(attachment_urls)
         body, options = extract_options(body)
         if not body and options:
             body = "Choose an option:"
@@ -359,6 +360,8 @@ class SessionWatcher:
         for url in attachment_urls:
             downloaded = await self.devin.download_attachment(url)
             if downloaded is None:
+                if url in metadata_urls and url not in body:
+                    body = f"{body}\n\n{url}".strip()
                 continue
             content, content_type = downloaded
             filename = unquote(urlparse(url).path.rsplit("/", 1)[-1])

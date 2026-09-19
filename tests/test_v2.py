@@ -3218,6 +3218,53 @@ async def test_attachment_line_delivers_document_and_options(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_attachment_link_fallback_when_download_fails(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "attachment-fallback.sqlite3"))
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        _FakeDevin(),
+        telegram,
+        settings(tmp_path),
+    )
+    url = "https://app.devin.ai/attachments/9/big.zip"
+    await watcher._deliver(
+        DevinMessage(
+            "devin_message",
+            "metadata-only",
+            f'ATTACHMENT:{{"url":"{url}","fileSize":1}}',
+            None,
+        ),
+        SessionState("finished", "title", None, []),
+    )
+    assert url in str(telegram.sent[-1]["text"])
+    assert not telegram.documents
+    await watcher._deliver(
+        DevinMessage(
+            "devin_message",
+            "text-options-metadata",
+            f'Text\nOPTIONS: A | B\nATTACHMENT:{{"url":"{url}","fileSize":1}}',
+            None,
+        ),
+        SessionState("finished", "title", None, []),
+    )
+    sent_text = str(telegram.sent[-1]["text"])
+    assert "Text" in sent_text
+    assert url in sent_text
+    assert "ATTACHMENT:" not in sent_text
+    markup = cast(dict[str, object], telegram.sent[-1]["reply_markup"])
+    keyboard = cast(list[list[dict[str, str]]], markup["inline_keyboard"])
+    assert len(keyboard) == 2
+
+
+@pytest.mark.asyncio
 async def test_pr_card_rendering_and_failure_fallback(tmp_path: Path) -> None:
     class PRDevin(_FakeDevin):
         async def fetch_github_pr(self, _url: str, _token: str | None = None) -> dict[str, object] | None:
