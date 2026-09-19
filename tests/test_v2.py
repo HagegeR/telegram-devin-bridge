@@ -1723,6 +1723,7 @@ async def test_reaction_retry_stop_and_edited_message(tmp_path: Path) -> None:
         session_url="https://devin.test/s1",
         title="title",
         last_user_text="old",
+        last_user_message_id=12,
     )
     telegram = _FakeTelegram()
     devin = _FakeDevin()
@@ -1763,6 +1764,7 @@ async def test_edited_message_correction_and_noop(tmp_path: Path) -> None:
         session_url="https://devin.test/s1",
         title="title",
         last_user_text="old",
+        last_user_message_id=12,
     )
     devin = _FakeDevin()
     telegram = _FakeTelegram()
@@ -1772,6 +1774,153 @@ async def test_edited_message_correction_and_noop(tmp_path: Path) -> None:
     assert devin.sent == [("s1", "Correction to my previous message: new")]
     await runtime.handle_edited_message({**edited, "text": "new"})
     assert devin.sent == [("s1", "Correction to my previous message: new")]
+
+
+@pytest.mark.asyncio
+async def test_historical_edit_is_ignored(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="old",
+        last_user_message_id=12,
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        devin,
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    await runtime.handle_edited_message({**message("new"), "message_id": 11})
+    assert not devin.sent
+
+
+@pytest.mark.asyncio
+async def test_forum_reaction_uses_message_index(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    for key, thread, session in (("222:9", 9, "s1"), ("222:10", 10, "s2")):
+        store.save_conversation(
+            conv_key=key,
+            chat_id=222,
+            thread_id=thread,
+            session_id=session,
+            session_url=f"https://devin.test/{session}",
+            title="title",
+            last_user_text=session,
+        )
+    store.index_message(222, 99, "222:10")
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        devin,
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    await runtime.handle_reaction(
+        {
+            "user": {"id": 111},
+            "chat": {"id": 222, "type": "supergroup", "is_forum": True},
+            "message_id": 99,
+            "old_reaction": [],
+            "new_reaction": [{"type": "emoji", "emoji": "🔁"}],
+        }
+    )
+    assert devin.sent == [("s2", "s2")]
+
+
+@pytest.mark.asyncio
+async def test_unindexed_forum_reaction_is_ignored(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="old",
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        devin,
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    await runtime.handle_reaction(
+        {
+            "user": {"id": 111},
+            "chat": {"id": 222, "type": "supergroup", "is_forum": True},
+            "message_id": 8,
+            "old_reaction": [],
+            "new_reaction": [{"type": "emoji", "emoji": "🔁"}],
+        }
+    )
+    assert not devin.sent
+
+
+@pytest.mark.asyncio
+async def test_watcher_cleanup_can_delete_later_status_and_clear_draft(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        _FakeDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, telegram_drafts=True),
+    )
+    watcher.status_message_id = 10
+    watcher.draft_used = True
+    await watcher._cleanup_transients()
+    watcher.status_message_id = 11
+    await watcher._cleanup_transients()
+    assert (222, 10) in telegram.deleted
+    assert (222, 11) in telegram.deleted
+    assert [draft["text"] for draft in telegram.drafts] == [""]
+
+
+def test_watcher_set_trigger_resets_delivery(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        _FakeDevin(),  # type: ignore[arg-type]
+        _FakeTelegram(),  # type: ignore[arg-type]
+        settings(tmp_path),
+        trigger_message_id=1,
+    )
+    watcher.delivered = True
+    watcher.set_trigger(2)
+    assert watcher.trigger_message_id == 2
+    assert watcher.delivered is False
 
 
 @pytest.mark.asyncio

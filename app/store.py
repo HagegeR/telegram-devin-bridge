@@ -18,6 +18,7 @@ class Conversation:
     last_event_id: str | None
     created_at: float
     last_user_text: str | None
+    last_user_message_id: int | None
     last_pr_url: str | None
     updated_at: float
 
@@ -65,6 +66,7 @@ class Store:
                     last_event_id TEXT,
                     created_at REAL NOT NULL,
                     last_user_text TEXT,
+                    last_user_message_id INTEGER,
                     last_pr_url TEXT,
                     updated_at REAL NOT NULL
                 );
@@ -100,6 +102,13 @@ class Store:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS message_index (
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    conv_key TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY(chat_id, message_id)
+                );
                 """
             )
             columns = {
@@ -124,6 +133,10 @@ class Store:
                     "UPDATE conversations SET updated_at = created_at "
                     "WHERE updated_at IS NULL"
                 )
+            if "last_user_message_id" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN last_user_message_id INTEGER"
+                )
             choice_columns = {
                 str(row["name"])
                 for row in self.connection.execute(
@@ -138,6 +151,21 @@ class Store:
                 self.connection.execute(
                     "ALTER TABLE pending_choices ADD COLUMN message_id INTEGER"
                 )
+            message_index_columns = {
+                str(row["name"])
+                for row in self.connection.execute(
+                    "PRAGMA table_info(message_index)"
+                )
+            }
+            if "created_at" not in message_index_columns:
+                self.connection.execute(
+                    "ALTER TABLE message_index ADD COLUMN created_at REAL"
+                )
+                self.connection.execute(
+                    "UPDATE message_index SET created_at = ? "
+                    "WHERE created_at IS NULL",
+                    (time.time(),),
+                )
             legacy_table = self.connection.execute(
                 """
                 SELECT 1 FROM sqlite_master
@@ -146,6 +174,10 @@ class Store:
             ).fetchone()
             if legacy_table is not None:
                 self._migrate_legacy_sessions()
+            self.connection.execute(
+                "DELETE FROM message_index WHERE created_at < ?",
+                (time.time() - 30 * 86400,),
+            )
 
     def _migrate_legacy_sessions(self) -> None:
         rows = self.connection.execute(
@@ -172,8 +204,9 @@ class Store:
                     """
                     INSERT INTO conversations(
                         conv_key, chat_id, thread_id, session_id, session_url,
-                        title, last_event_id, created_at, last_user_text, updated_at
-                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?)
+                        title, last_event_id, created_at, last_user_text,
+                        last_user_message_id, updated_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, ?)
                     """,
                     (
                         conv_key,
@@ -225,6 +258,7 @@ class Store:
         title: str,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_user_message_id: int | None = None,
         last_pr_url: str | None = None,
         created_at: float | None = None,
     ) -> None:
@@ -238,9 +272,9 @@ class Store:
                 """
                 INSERT INTO conversations(
                     conv_key, chat_id, thread_id, session_id, session_url,
-                    title, last_event_id, created_at, last_user_text, last_pr_url,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    title, last_event_id, created_at, last_user_text,
+                    last_user_message_id, last_pr_url, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(conv_key) DO UPDATE SET
                     chat_id = excluded.chat_id,
                     thread_id = excluded.thread_id,
@@ -249,6 +283,7 @@ class Store:
                     title = excluded.title,
                     last_event_id = excluded.last_event_id,
                     last_user_text = excluded.last_user_text,
+                    last_user_message_id = excluded.last_user_message_id,
                     last_pr_url = excluded.last_pr_url,
                     updated_at = excluded.updated_at
                 """,
@@ -262,6 +297,7 @@ class Store:
                     last_event_id,
                     timestamp,
                     last_user_text,
+                    last_user_message_id,
                     last_pr_url,
                     timestamp,
                 ),
@@ -274,6 +310,7 @@ class Store:
         *,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_user_message_id: int | None = None,
         last_pr_url: str | None = None,
     ) -> None:
         assignments: list[str] = []
@@ -284,6 +321,9 @@ class Store:
         if last_user_text is not None:
             assignments.append("last_user_text = ?")
             values.append(last_user_text)
+        if last_user_message_id is not None:
+            assignments.append("last_user_message_id = ?")
+            values.append(last_user_message_id)
         if last_pr_url is not None:
             assignments.append("last_pr_url = ?")
             values.append(last_pr_url)
@@ -314,6 +354,38 @@ class Store:
                 (chat_id,),
             ).fetchone()
         return self._conversation(row)
+
+    def index_message(self, chat_id: int, message_id: int, conv_key: str) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO message_index(chat_id, message_id, conv_key, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                    conv_key = excluded.conv_key,
+                    created_at = excluded.created_at
+                """,
+                (chat_id, message_id, conv_key, time.time()),
+            )
+
+    def conv_key_for_message(self, chat_id: int, message_id: int) -> str | None:
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT conv_key FROM message_index
+                WHERE chat_id = ? AND message_id = ?
+                """,
+                (chat_id, message_id),
+            ).fetchone()
+        return None if row is None else str(row["conv_key"])
+
+    def cleanup_message_index(self, max_age_seconds: float = 30 * 86400) -> None:
+        cutoff = time.time() - max_age_seconds
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM message_index WHERE created_at < ?",
+                (cutoff,),
+            )
 
     def add_history(
         self,
@@ -546,6 +618,11 @@ class Store:
             created_at=float(row["created_at"]),
             last_user_text=(
                 None if row["last_user_text"] is None else str(row["last_user_text"])
+            ),
+            last_user_message_id=(
+                None
+                if row["last_user_message_id"] is None
+                else int(row["last_user_message_id"])
             ),
             last_pr_url=(
                 None if row["last_pr_url"] is None else str(row["last_pr_url"])

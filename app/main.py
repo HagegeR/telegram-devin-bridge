@@ -393,12 +393,15 @@ class Bridge:
         thread_id = _thread_id(message)
         conv_key = self._conversation_key(message)
         message_id = _int(message.get("message_id"))
+        if message_id:
+            self.store.index_message(chat_id, message_id, conv_key)
         conversation = self.store.get_conversation(conv_key)
         if conversation is not None:
             self.store.update_conversation(
                 conv_key,
                 conversation.session_id,
                 last_user_text=text,
+                last_user_message_id=message_id,
             )
         await self.telegram.set_message_reaction(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
@@ -438,6 +441,7 @@ class Bridge:
                 conv_key,
                 conversation.session_id,
                 last_user_text=text,
+                last_user_message_id=message_id,
             )
             await self.send_session_message(conversation.session_id, text)
             conversation = self.store.get_conversation(conv_key) or conversation
@@ -477,6 +481,7 @@ class Bridge:
             session_url=session_url,
             title=title,
             last_user_text=last_user_text or prompt,
+            last_user_message_id=_int(message.get("message_id")),
         )
         self.store.add_history(
             conv_key=conv_key,
@@ -509,6 +514,7 @@ class Bridge:
         title: str,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_user_message_id: int | None = None,
     ) -> Conversation:
         previous = self.store.get_conversation(conv_key)
         if previous is not None and previous.session_id != session_id:
@@ -527,6 +533,7 @@ class Bridge:
             title=title,
             last_event_id=last_event_id,
             last_user_text=last_user_text,
+            last_user_message_id=last_user_message_id,
         )
         conversation = self.store.get_conversation(conv_key)
         if conversation is None:
@@ -542,6 +549,9 @@ class Bridge:
     ) -> None:
         existing = self.watchers.get(conversation.session_id)
         if existing is not None and not existing.done():
+            watcher = self.active_watchers.get(conversation.session_id)
+            if watcher is not None and trigger_message_id is not None:
+                watcher.set_trigger(trigger_message_id)
             return
         watcher = SessionWatcher(
             conversation,
@@ -705,7 +715,13 @@ class Bridge:
         old_emojis = _reaction_emojis(reaction.get("old_reaction"))
         new_emojis = _reaction_emojis(reaction.get("new_reaction"))
         added = new_emojis - old_emojis
-        conversation = self.store.get_conversation_for_chat(chat_id)
+        conv_key = self.store.conv_key_for_message(chat_id, message_id)
+        if conv_key is None:
+            if chat.get("is_forum"):
+                return
+            conversation = self.store.get_conversation_for_chat(chat_id)
+        else:
+            conversation = self.store.get_conversation(conv_key)
         if conversation is None:
             return
         async with self._lock(conversation.conv_key):
@@ -749,8 +765,11 @@ class Bridge:
         if _mapping(message.get("chat")).get("type") in {"group", "supergroup"}:
             text = strip_bot_mention(text, self.bot_username)
         conv_key = self._conversation_key(message)
-        if self.store.get_conversation(conv_key) is None:
-            await self.handle_user_turn(message, text)
+        conversation = self.store.get_conversation(conv_key)
+        if conversation is None:
+            return
+        message_id = _int(message.get("message_id"))
+        if conversation.last_user_message_id != message_id:
             return
         async with self._lock(conv_key):
             conversation = self.store.get_conversation(conv_key)
@@ -762,6 +781,7 @@ class Bridge:
                 conv_key,
                 conversation.session_id,
                 last_user_text=text,
+                last_user_message_id=message_id,
             )
             await self.devin.send_message(
                 conversation.session_id,
@@ -919,6 +939,11 @@ class Bridge:
                 disable_notification=silent,
                 receiver_user_id=receiver_user_id,
             )
+            conv_key = self._conversation_key(message)
+            for result in results:
+                sent_id = result.get("message_id")
+                if isinstance(sent_id, int):
+                    self.store.index_message(chat_id, sent_id, conv_key)
             return _sent_message_id(results)
         except RuntimeError as exc:
             if receiver_user_id is None or "ephemeral" not in str(exc).casefold():
@@ -929,6 +954,11 @@ class Bridge:
                 thread_id=_thread_id(message),
                 disable_notification=silent,
             )
+            conv_key = self._conversation_key(message)
+            for result in results:
+                sent_id = result.get("message_id")
+                if isinstance(sent_id, int):
+                    self.store.index_message(chat_id, sent_id, conv_key)
             return _sent_message_id(results)
 
     async def send_markup(
