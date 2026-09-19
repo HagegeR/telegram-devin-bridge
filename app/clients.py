@@ -7,6 +7,12 @@ from typing import cast
 
 import httpx
 
+from app.formatting import (
+    chunk,
+    markdown_to_telegram_markdown_v2,
+    normalize_rich_linebreaks,
+)
+
 
 @dataclass(frozen=True)
 class DevinMessage:
@@ -173,6 +179,7 @@ class TelegramClient:
         base_url: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 30,
+        rich_enabled: bool = True,
     ) -> None:
         self.base_url = (
             base_url.rstrip("/")
@@ -185,6 +192,7 @@ class TelegramClient:
             transport=transport,
         )
         self._file_base_url = self._derive_file_base_url(self.base_url)
+        self.rich_enabled = rich_enabled
 
     async def send_message(
         self,
@@ -196,13 +204,13 @@ class TelegramClient:
         parse_mode: str | None = None,
         reply_markup: dict[str, object] | None = None,
         disable_notification: bool = False,
-        disable_web_page_preview: bool = True,
+        receiver_user_id: int | None = None,
     ) -> dict[str, object]:
         body: dict[str, object] = {
             "chat_id": chat_id,
             "text": text,
             "disable_notification": disable_notification,
-            "disable_web_page_preview": disable_web_page_preview,
+            "link_preview_options": {"is_disabled": True},
         }
         if thread_id is not None:
             body["message_thread_id"] = thread_id
@@ -212,7 +220,83 @@ class TelegramClient:
             body["parse_mode"] = parse_mode
         if reply_markup is not None:
             body["reply_markup"] = reply_markup
+        if receiver_user_id is not None:
+            body["ephemeral_message_parameters"] = {
+                "receiver_user_id": receiver_user_id,
+            }
         return await self._request("POST", "/sendMessage", body, parse_mode)
+
+    async def send_rich_message(
+        self,
+        chat_id: int,
+        markdown: str,
+        *,
+        thread_id: int | None = None,
+        reply_markup: dict[str, object] | None = None,
+        disable_notification: bool = False,
+        receiver_user_id: int | None = None,
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "chat_id": chat_id,
+            "rich_message": {"markdown": normalize_rich_linebreaks(markdown)},
+            "disable_notification": disable_notification,
+        }
+        if thread_id is not None:
+            body["message_thread_id"] = thread_id
+        if reply_markup is not None:
+            body["reply_markup"] = reply_markup
+        if receiver_user_id is not None:
+            body["ephemeral_message_parameters"] = {
+                "receiver_user_id": receiver_user_id,
+            }
+        return await self._request("POST", "/sendRichMessage", body, None)
+
+    async def send_markdown(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        thread_id: int | None = None,
+        reply_markup: dict[str, object] | None = None,
+        disable_notification: bool = False,
+        receiver_user_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        if self.rich_enabled and 0 < len(text) <= 32768:
+            try:
+                return [
+                    await self.send_rich_message(
+                        chat_id,
+                        text,
+                        thread_id=thread_id,
+                        reply_markup=reply_markup,
+                        disable_notification=disable_notification,
+                        receiver_user_id=receiver_user_id,
+                    )
+                ]
+            except RuntimeError as exc:
+                reason = str(exc).casefold()
+                if (
+                    "method not found" in reason
+                    or ("method" in reason and "not found" in reason)
+                    or "unknown method" in reason
+                ):
+                    self.rich_enabled = False
+        rendered = markdown_to_telegram_markdown_v2(text)
+        parts = chunk(rendered)
+        results: list[dict[str, object]] = []
+        for index, part in enumerate(parts):
+            results.append(
+                await self.send_message(
+                    chat_id,
+                    part,
+                    thread_id=thread_id,
+                    parse_mode="MarkdownV2",
+                    reply_markup=reply_markup if index == len(parts) - 1 else None,
+                    disable_notification=disable_notification,
+                    receiver_user_id=receiver_user_id,
+                )
+            )
+        return results
 
     async def edit_message_text(
         self,
@@ -238,6 +322,7 @@ class TelegramClient:
         self,
         chat_id: int,
         message_id: int,
+        markup: dict[str, object] | None = None,
     ) -> dict[str, object]:
         return await self._request(
             "POST",
@@ -245,7 +330,7 @@ class TelegramClient:
             {
                 "chat_id": chat_id,
                 "message_id": message_id,
-                "reply_markup": {"inline_keyboard": []},
+                "reply_markup": markup or {"inline_keyboard": []},
             },
             None,
         )
@@ -260,6 +345,23 @@ class TelegramClient:
         if thread_id is not None:
             body["message_thread_id"] = thread_id
         await self._request("POST", "/sendChatAction", body, None)
+
+    async def send_message_draft(
+        self,
+        chat_id: int,
+        draft_id: int,
+        text: str = "",
+        *,
+        thread_id: int | None = None,
+    ) -> None:
+        body: dict[str, object] = {
+            "chat_id": chat_id,
+            "draft_id": draft_id,
+            "text": text,
+        }
+        if thread_id is not None:
+            body["message_thread_id"] = thread_id
+        await self._request("POST", "/sendMessageDraft", body, None)
 
     async def set_message_reaction(
         self,
@@ -308,6 +410,14 @@ class TelegramClient:
             )
         return thread_id
 
+    async def edit_forum_topic(self, chat_id: int, thread_id: int, name: str) -> None:
+        await self._request(
+            "POST",
+            "/editForumTopic",
+            {"chat_id": chat_id, "message_thread_id": thread_id, "name": name},
+            None,
+        )
+
     async def download_file(self, file_path: str) -> bytes:
         limit = 20 * 1024 * 1024
         async with self.client.stream(
@@ -330,12 +440,9 @@ class TelegramClient:
                     raise ValueError("Telegram attachments are limited to 20 MB")
             return bytes(content)
 
-    async def get_me(self) -> str:
+    async def get_me(self) -> dict[str, object]:
         payload = await self._request("GET", "/getMe", None, None)
-        username = payload.get("username")
-        if not isinstance(username, str):
-            raise TypeError("Telegram getMe response did not include username")
-        return username
+        return payload
 
     async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
         await self._request("POST", "/setMyCommands", {"commands": commands}, None)
