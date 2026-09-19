@@ -73,7 +73,7 @@ class CommandRuntime(Protocol):
         markup: dict[str, object],
         *,
         ephemeral: bool = False,
-    ) -> None: ...
+    ) -> int | None: ...
 
     def new_choice_id(self) -> str: ...
 
@@ -262,21 +262,7 @@ async def _stop(
         await runtime.send_text(message, "No active session.")
         return
     choice_id = runtime.new_choice_id()
-    runtime.store.add_choice(
-        choice_id,
-        conversation.conv_key,
-        conversation.session_id,
-        conversation.chat_id,
-        f"__cmd:terminate:{conversation.session_id}",
-    )
-    runtime.store.add_choice(
-        f"{choice_id}:cancel",
-        conversation.conv_key,
-        conversation.session_id,
-        conversation.chat_id,
-        "__cmd:cancel",
-    )
-    await runtime.send_markup(
+    message_id = await runtime.send_markup(
         message,
         "Terminate the active Devin session?",
         {"inline_keyboard": [[
@@ -287,6 +273,22 @@ async def _stop(
                 "style": "primary",
             },
         ]]},
+    )
+    runtime.store.add_choice(
+        choice_id,
+        conversation.conv_key,
+        conversation.session_id,
+        conversation.chat_id,
+        f"__cmd:terminate:{conversation.session_id}",
+        message_id,
+    )
+    runtime.store.add_choice(
+        f"{choice_id}:cancel",
+        conversation.conv_key,
+        conversation.session_id,
+        conversation.chat_id,
+        "__cmd:cancel",
+        message_id,
     )
 
 

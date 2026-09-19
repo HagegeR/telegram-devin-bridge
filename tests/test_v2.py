@@ -345,7 +345,7 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
             self, chat_id: int, text: str, **kwargs: object
         ) -> list[dict[str, object]]:
             await self.send_message(chat_id, text, **kwargs)
-            return [self.sent[-1]]
+            return [{**self.sent[-1], "message_id": len(self.sent)}]
 
         async def send_chat_action(self, *_: object, **__: object) -> None:
             return None
@@ -622,7 +622,7 @@ class _FakeTelegram:
         self, chat_id: int, text: str, **kwargs: object
     ) -> list[dict[str, object]]:
         await self.send_message(chat_id, text, **kwargs)
-        return [self.sent[-1]]
+        return [{**self.sent[-1], "message_id": len(self.sent)}]
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int:
         if self.topic_error is not None:
@@ -1214,8 +1214,8 @@ async def test_option_callback_rebuilds_disabled_markup(tmp_path: Path) -> None:
         session_url="https://devin.test/s1",
         title="title",
     )
-    store.add_choice("yes-id", "222", "s1", 222, "Yes")
-    store.add_choice("no-id", "222", "s1", 222, "No")
+    store.add_choice("yes-id", "222", "s1", 222, "Yes", 4)
+    store.add_choice("no-id", "222", "s1", 222, "No", 4)
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
     await runtime.handle_callback(
@@ -1238,6 +1238,133 @@ async def test_option_callback_rebuilds_disabled_markup(tmp_path: Path) -> None:
     await runtime.shutdown()
 
 
+def test_pending_choices_migrate_message_id_column(tmp_path: Path) -> None:
+    database_path = tmp_path / "pending.sqlite3"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE pending_choices (
+            choice_id TEXT PRIMARY KEY,
+            conv_key TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            option_text TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        INSERT INTO pending_choices(
+            choice_id, conv_key, session_id, option_text, created_at
+        ) VALUES ('legacy', '222', 's1', 'Legacy', 1);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    store = Store(str(database_path))
+    columns = {
+        str(row["name"])
+        for row in store.connection.execute("PRAGMA table_info(pending_choices)")
+    }
+    assert "message_id" in columns
+    assert store.list_choice_messages("222") == []
+    store.add_choice("new", "222", "s1", 222, "New", 17)
+    assert store.list_choices("222", 17) == [("new", "New")]
+    assert store.list_choice_messages("222") == [17]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_option_callback_scopes_keyboard_to_tapped_message(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    store.add_choice("old-a", "222", "s1", 222, "Old A", 11)
+    store.add_choice("old-b", "222", "s1", 222, "Old B", 11)
+    store.add_choice("new-a", "222", "s1", 222, "New A", 22)
+    store.add_choice("new-b", "222", "s1", 222, "New B", 22)
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await runtime.handle_callback(
+        {
+            "id": "callback",
+            "data": "new-b",
+            "from": {"id": 111},
+            "message": {
+                "message_id": 22,
+                "chat": {"id": 222, "type": "private"},
+            },
+        }
+    )
+    assert telegram.markup_edits[-1] == {
+        "inline_keyboard": [
+            [{"text": "New A", "disabled": {}}],
+            [{"text": "✅ New B", "disabled": {}}],
+        ]
+    }
+    assert telegram.markup_edits[-1]["inline_keyboard"]  # type: ignore[index]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_second_options_message_clears_first_keyboard(tmp_path: Path) -> None:
+    class OptionsDevin:
+        calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            messages = [
+                DevinMessage(
+                    "devin_message",
+                    "event-1",
+                    "First?\nOPTIONS: First A | First B",
+                    None,
+                )
+            ]
+            if self.calls >= 2:
+                messages.append(
+                    DevinMessage(
+                        "devin_message",
+                        "event-2",
+                        "Second?\nOPTIONS: Second A | Second B",
+                        None,
+                    )
+                )
+            return SessionState(
+                "working" if self.calls == 1 else "finished",
+                "title",
+                None,
+                messages,
+            )
+
+    store = Store(str(tmp_path / "watch-options.sqlite3"))
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        OptionsDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, devin_poll_seconds=0),
+    ).run()
+    assert {"inline_keyboard": []} in telegram.markup_edits
+    assert store.list_choice_messages("222") == [2]
+
+
 @pytest.mark.asyncio
 async def test_stop_keyboard_uses_bot_api_button_styles(tmp_path: Path) -> None:
     store = Store(":memory:")
@@ -1255,6 +1382,7 @@ async def test_stop_keyboard_uses_bot_api_button_styles(tmp_path: Path) -> None:
     markup = telegram.sent[-1]["reply_markup"]
     assert markup["inline_keyboard"][0][0]["style"] == "danger"  # type: ignore[index]
     assert markup["inline_keyboard"][0][1]["style"] == "primary"  # type: ignore[index]
+    assert len(store.list_choices("222", 1)) == 2
     await runtime.shutdown()
 
 
