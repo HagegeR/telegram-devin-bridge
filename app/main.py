@@ -86,9 +86,8 @@ class Bridge:
             task.cancel()
         if self.debounce_tasks:
             await asyncio.gather(*self.debounce_tasks.values(), return_exceptions=True)
-        for conv_key in list(self.pending_turns):
-            await self._flush_pending(conv_key)
-        for conv_key in list(self.queued_turns):
+        conv_keys = set(self.queued_turns) | set(self.pending_turns)
+        for conv_key in conv_keys:
             queued = self.queued_turns.pop(conv_key, [])
             for message, text, attachment in queued:
                 try:
@@ -103,6 +102,7 @@ class Bridge:
                         conv_key,
                     )
                     await self._report_processing_failure({"message": message}, exc)
+            await self._flush_pending(conv_key)
         for task in self.watchers.values():
             task.cancel()
         if self.watchers:
@@ -879,13 +879,17 @@ class Bridge:
         )
 
     async def stop_conversation(self, conversation: Conversation) -> None:
-        await self.devin.terminate(conversation.session_id)
-        self.clear_queued_turns(conversation.conv_key)
         task = self.watchers.pop(conversation.session_id, None)
         self.active_watchers.pop(conversation.session_id, None)
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        try:
+            await self.devin.terminate(conversation.session_id)
+        except Exception:
+            await self.start_watcher(conversation)
+            raise
+        self.clear_queued_turns(conversation.conv_key)
         self.store.clear_conversation(
             conversation.conv_key,
             conversation.session_id,
