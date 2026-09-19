@@ -247,6 +247,9 @@ class Bridge:
             thread_id,
             is_forum=is_topic_chat(message),
         )
+        extra = self.settings.devin_session_instructions.strip()
+        if extra:
+            prompt = f"{extra}\n\n{prompt}"
         session_id, session_url = await self.devin.create_session(
             prompt,
             title,

@@ -32,6 +32,7 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `DEVIN_POLL_SECONDS` | no | `3` |
 | `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` |
 | `DEVIN_SETTLE_SECONDS` | no | `30` |
+| `DEVIN_SESSION_INSTRUCTIONS` | no | empty |
 | `TELEGRAM_RICH_MESSAGES` | no | `true` |
 | `TELEGRAM_DRAFTS` | no | `false` |
 | `TELEGRAM_ALLOWED_USERS` | no | empty |
@@ -96,6 +97,10 @@ Bot API 10.3 topic creation and implicit-topic renaming are supported. The
 first message in an implicitly named topic renames it from its first line.
 `/help`, `/sessions`, `/status`, and `/whoami` use ephemeral group replies
 when Telegram accepts them, and retry as normal messages if it does not.
+
+`DEVIN_SESSION_INSTRUCTIONS` is prepended verbatim to the prompt of every
+session the bridge starts — use it for org-specific guidance such as which
+injected secret grants Devin v3 API access for editing automations.
 
 `DEVIN_SETTLE_SECONDS` keeps a newly started watcher alive while Devin's API
 still reports a stale non-active status after the message is submitted.
