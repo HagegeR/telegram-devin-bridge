@@ -645,8 +645,10 @@ class Bridge:
             try:
                 await self.send_session_message(conversation.session_id, text)
             except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in {404, 410}:
+                    raise
                 logger.warning(
-                    "Session %s rejected message (%s); starting a new one",
+                    "Session %s is gone (%s); starting a new one",
                     conversation.session_id,
                     exc.response.status_code,
                 )
@@ -655,6 +657,7 @@ class Bridge:
                 conversation = self.store.get_conversation(conv_key) or conversation
         if conversation is None:
             title = f"Telegram: {text[:60]}"
+            queued = self.queued_turns.get(conv_key, [])
             conversation = await self.create_session_for_message(
                 message,
                 SYSTEM_PREAMBLE + text,
@@ -663,6 +666,8 @@ class Bridge:
                 last_user_text=text,
                 start_watcher=False,
             )
+            if queued:
+                self.queued_turns[conv_key] = queued
             if thread_id is not None and (chat_id, thread_id) in self.implicit_topics:
                 topic_name = text[:60].splitlines()[0] or "Devin"
                 try:

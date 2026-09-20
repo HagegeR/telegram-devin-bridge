@@ -874,24 +874,34 @@ async def test_follow_up_reuses_idle_session(
 
 
 @pytest.mark.asyncio
-async def test_rejected_message_starts_new_session(tmp_path: Path) -> None:
+@pytest.mark.parametrize("status_code", [404, 410, 500])
+async def test_gone_session_starts_new_one_keeping_queue(
+    tmp_path: Path, status_code: int
+) -> None:
     class RejectingDevin(_FakeDevin):
         async def get_session(self, _session_id: str) -> SessionState:
             return SessionState("finished", "title", None, [])
 
         async def send_message(self, session_id: str, text: str) -> None:
             raise httpx.HTTPStatusError(
-                "gone",
+                "rejected",
                 request=httpx.Request("POST", "https://devin.test"),
-                response=httpx.Response(410),
+                response=httpx.Response(status_code),
             )
 
     devin = RejectingDevin()
     runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, _FakeTelegram())  # type: ignore[arg-type]
     await runtime.handle_user_turn(message("first", message_id=1), "first")
-    await runtime.handle_user_turn(message("second", message_id=2), "second")
-    assert len(devin.created) == 2
-    assert "second" in devin.created[1]
+    runtime.queued_turns["222"] = [(message("third", message_id=3), "third", None)]
+    if status_code == 500:
+        with pytest.raises(httpx.HTTPStatusError):
+            await runtime.handle_user_turn(message("second", message_id=2), "second")
+        assert len(devin.created) == 1
+    else:
+        await runtime.handle_user_turn(message("second", message_id=2), "second")
+        assert len(devin.created) == 2
+        assert "second" in devin.created[1]
+    assert runtime.queued_count("222") == 1
     await runtime.shutdown()
 
 
