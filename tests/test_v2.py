@@ -169,6 +169,8 @@ def test_store_topics_dedupe_and_history(tmp_path: Path) -> None:
         title="first",
     )
     assert store.list_history("222:9")[0].session_id == "s1"
+    store.update_conversation("222:9", "s1", title="renamed")
+    assert store.list_history("222:9")[0].title == "renamed"
     store.close()
 
 
@@ -250,11 +252,13 @@ def test_group_bot_mention_is_removed_from_turn_text() -> None:
 @pytest.mark.asyncio
 async def test_clients_use_injected_mock_transports() -> None:
     devin_paths: list[str] = []
+    devin_bodies: list[dict[str, object]] = []
     telegram_paths: list[str] = []
 
     async def devin_handler(request: httpx.Request) -> httpx.Response:
         devin_paths.append(request.url.path)
         if request.url.path == "/v1/sessions":
+            devin_bodies.append(json.loads(request.content))
             return httpx.Response(
                 200,
                 json={"session_id": "s1", "url": "https://devin.test/s1"},
@@ -295,6 +299,12 @@ async def test_clients_use_injected_mock_transports() -> None:
         "s1",
         "https://devin.test/s1",
     )
+    assert "title" in devin_bodies[-1]
+    assert await devin.create_session("prompt", None) == (
+        "s1",
+        "https://devin.test/s1",
+    )
+    assert "title" not in devin_bodies[-1]
     assert (await devin.get_session("s1")).status_enum == "finished"
     await telegram.send_message(222, "hello")
     assert await telegram.create_forum_topic(222, "New topic") == 19
@@ -782,15 +792,17 @@ class _FakeTelegram:
 class _FakeDevin:
     def __init__(self) -> None:
         self.created: list[str] = []
+        self.created_titles: list[str | None] = []
         self.created_playbooks: list[str | None] = []
         self.sent: list[tuple[str, str]] = []
         self.terminated: list[str] = []
         self.playbooks: list[tuple[str, str]] = []
 
     async def create_session(
-        self, prompt: str, title: str, playbook_id: str | None = None
+        self, prompt: str, title: str | None, playbook_id: str | None = None
     ) -> tuple[str, str]:
         self.created.append(prompt)
+        self.created_titles.append(title)
         self.created_playbooks.append(playbook_id)
         return "s1", "https://devin.test/s1"
 
@@ -840,7 +852,11 @@ class _FakeDevin:
 @pytest.mark.asyncio
 async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "lock.sqlite3"))
-    devin = _FakeDevin()
+    class UntitledDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("working", None, None, [])
+
+    devin = UntitledDevin()
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
     await asyncio.gather(
@@ -848,8 +864,12 @@ async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> No
         runtime.handle_user_turn(message("two", message_id=2), "two"),
     )
     assert len(devin.created) == 1
+    assert devin.created_titles == [None]
     assert {text for _, text in devin.sent} == {"two"}
     assert "one" in devin.created[0]
+    stored = store.get_conversation("222")
+    assert stored is not None
+    assert stored.title_pending is True
     await runtime.shutdown()
 
 
@@ -955,7 +975,7 @@ async def test_topic_command_reports_disabled_topics(tmp_path: Path) -> None:
 async def test_dispatch_failure_notifies_and_reacts(tmp_path: Path) -> None:
     class FailingDevin(_FakeDevin):
         async def create_session(
-            self, prompt: str, title: str, playbook_id: str | None = None
+            self, prompt: str, title: str | None, playbook_id: str | None = None
         ) -> tuple[str, str]:
             raise RuntimeError("backend unavailable")
 
@@ -1387,6 +1407,9 @@ async def test_implicit_topic_is_renamed_but_explicit_topic_is_not(
         }
     )
     assert telegram.edited_topics == [(222, 7, "First line")]
+    stored = runtime.store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title_pending is True
     await runtime.shutdown()
 
     explicit_telegram = _FakeTelegram()
@@ -1405,6 +1428,663 @@ async def test_implicit_topic_is_renamed_but_explicit_topic_is_not(
     )
     assert explicit_telegram.edited_topics == []
     await explicit.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class TitledDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    assert telegram.edited_topics == [(222, 7, "A useful session title")]
+    assert store.get_conversation("222:7").title == "A useful session title"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_watcher_keeps_manual_rename_during_auto_title(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class ManualTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            store.update_conversation(
+                "222:7",
+                "s1",
+                title="Manual",
+                title_pending=False,
+            )
+
+    class TitledDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    telegram = ManualTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title == "Manual"
+    assert stored.title_pending is False
+    assert telegram.edited_topics[-1] == (222, 7, "Manual")
+
+
+@pytest.mark.asyncio
+async def test_watcher_retries_manual_title_after_failed_reconcile(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FlakyManualTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            if name == "A useful session title":
+                store.update_conversation(
+                    "222:7", "s1", title="Manual", title_pending=False
+                )
+            elif self.edited_topics.count((chat_id, thread_id, name)) <= 3:
+                raise httpx.ReadTimeout("temporary failure")
+
+    class TitledDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            return SessionState(
+                "working" if self.calls == 1 else "finished",
+                "A useful session title",
+                None,
+                [],
+            )
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = FlakyManualTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    names = [name for _, _, name in telegram.edited_topics]
+    assert names == ["A useful session title"] + ["Manual"] * 4
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title == "Manual"
+
+
+@pytest.mark.asyncio
+async def test_watcher_retries_topic_rename_on_terminal_poll(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FailingTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            if len(self.edited_topics) <= 3:
+                raise httpx.ReadTimeout("temporary failure")
+
+    class FinishedDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = FailingTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        FinishedDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    assert len(telegram.edited_topics) == 4
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title == "A useful session title"
+    assert stored.title_pending is False
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_title_pending(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "resume.sqlite3"))
+    store.add_history(
+        conv_key="222",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    assert store.list_history("222")[0].title_pending is True
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), _FakeTelegram())  # type: ignore[arg-type]
+
+    async def state(_: str) -> SessionState:
+        return SessionState("finished", None, None, [])
+
+    runtime.get_state = state  # type: ignore[method-assign]
+    await handle_command(runtime, message("/resume 1"), "/resume 1")
+    stored = store.get_conversation("222")
+    assert stored is not None
+    assert stored.session_id == "s1"
+    assert stored.title_pending is True
+    store.update_history_title("222", "s1", "Generated")
+    assert store.list_history("222")[0].title_pending is False
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resume_adopts_generated_title(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "resume.sqlite3"))
+    store.add_history(
+        conv_key="222:9",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+
+    async def state(_: str) -> SessionState:
+        return SessionState("finished", "Generated", None, [])
+
+    runtime.get_state = state  # type: ignore[method-assign]
+    topic_message = {
+        **message("/resume 1"),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
+    await handle_command(runtime, topic_message, "/resume 1")
+    assert telegram.edited_topics == [(222, 9, "Generated")]
+    stored = store.get_conversation("222:9")
+    assert stored is not None
+    assert stored.title == "Generated"
+    assert stored.title_pending is False
+    entry = store.list_history("222:9")[0]
+    assert entry.title == "Generated"
+    assert entry.title_pending is False
+    assert telegram.sent[-1]["text"] == "Resumed: Generated https://devin.test/s1"
+
+    store.add_history(
+        conv_key="222:9",
+        session_id="s2",
+        session_url="https://devin.test/s2",
+        title="Manual title",
+        title_pending=False,
+    )
+    await handle_command(runtime, topic_message, "/resume 1")
+    assert telegram.edited_topics == [(222, 9, "Generated")]
+    stored = store.get_conversation("222:9")
+    assert stored is not None
+    assert stored.title == "Manual title"
+    assert stored.title_pending is False
+    assert telegram.sent[-1]["text"] == "Resumed: Manual title https://devin.test/s2"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_watcher_preserves_manual_topic_title(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: Manual topic title",
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class TitledDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    assert telegram.edited_topics == []
+    assert (
+        store.get_conversation("222:7").title
+        == "Telegram: Manual topic title"
+    )  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_watcher_persists_session_title_without_topic(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class TitledDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    assert telegram.edited_topics == []
+    assert store.get_conversation("222").title == "A useful session title"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_history_title_pending_survives_rename_and_resume(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    topic_message = {
+        **message("hello", message_id=1),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
+    await runtime.handle_message(topic_message)
+    conv_key = "222:9"
+    assert store.list_history(conv_key)[0].title_pending is True
+    await handle_command(
+        runtime,
+        {
+            **message("/rename New name", message_id=2),
+            "message_thread_id": 9,
+            "is_topic_message": True,
+        },
+        "/rename New name",
+    )
+    assert store.list_history(conv_key)[0].title_pending is False
+    store.add_history(
+        conv_key=conv_key,
+        session_id="s2",
+        session_url="https://devin.test/s2",
+        title="pending session",
+        title_pending=True,
+    )
+    await handle_command(
+        runtime,
+        {
+            **message("/resume 1", message_id=3),
+            "message_thread_id": 9,
+            "is_topic_message": True,
+        },
+        "/resume 1",
+    )
+    stored = store.get_conversation(conv_key)
+    assert stored is not None
+    assert stored.session_id == "s2"
+    assert stored.title == "title"
+    assert stored.title_pending is False
+    entry = store.list_history(conv_key)[0]
+    assert entry.title == "title"
+    assert entry.title_pending is False
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_watcher_retries_title_past_finished_status(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FlakyTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            if len(self.edited_topics) <= 3:
+                raise RuntimeError("temporary failure")
+
+    class FinishedDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            return SessionState("finished", "A useful session title", None, [])
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = FlakyTelegram()
+    devin = FinishedDevin()
+    await SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+        trigger_message_id=7,
+    ).run()
+    assert telegram.edited_topics[-1] == (222, 7, "A useful session title")
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title == "A useful session title"
+    assert stored.title_pending is False
+    assert devin.calls == 2
+    assert telegram.reactions == ["👍"]
+
+
+@pytest.mark.asyncio
+async def test_watcher_exits_after_bounded_title_retries(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FailingTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            raise httpx.ReadTimeout("t")
+
+    class FinishedDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            return SessionState("finished", "A useful session title", None, [])
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = FailingTelegram()
+    devin = FinishedDevin()
+    await SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+        trigger_message_id=7,
+    ).run()
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title_pending is True
+    assert devin.calls <= 4
+    assert telegram.reactions == ["👍"]
+
+
+@pytest.mark.asyncio
+async def test_watcher_terminal_cleanup_after_title_retry_deadline(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FailingTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            raise httpx.ReadTimeout("t")
+
+    class FinishedDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    telegram = FailingTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        FinishedDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, devin_watch_timeout_seconds=2),
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=7,
+    ).run()
+    assert telegram.reactions == ["👍"]
+    assert not any(
+        "still working" in str(item["text"]) for item in telegram.sent
+    )
+
+
+@pytest.mark.asyncio
+async def test_watcher_retries_topic_rename_after_failure(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    store.add_history(
+        conv_key="222:7",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FailingTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            if len(self.edited_topics) == 1:
+                raise RuntimeError("temporary failure")
+
+    class RetryingDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            return SessionState(
+                "working" if self.calls == 1 else "finished",
+                "A useful session title",
+                None,
+                [],
+            )
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = FailingTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        RetryingDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert telegram.edited_topics == [
+        (222, 7, "A useful session title"),
+        (222, 7, "A useful session title"),
+    ]
+    assert stored.title == "A useful session title"
+    assert stored.title_pending is False
+    assert store.list_history("222:7")[0].title == "A useful session title"
+
+
+@pytest.mark.asyncio
+async def test_watcher_tolerates_topic_rename_transport_errors(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class TransportErrorTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            raise httpx.ReadTimeout("t")
+
+    class ReplyDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState(
+                "finished",
+                "A useful session title",
+                None,
+                [DevinMessage("devin_message", "e1", "reply", None)],
+            )
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = TransportErrorTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        ReplyDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title_pending is True
+    assert len(telegram.edited_topics) == 12
+    assert [item["text"] for item in telegram.sent].count("reply") == 1
 
 
 @pytest.mark.asyncio
@@ -2754,13 +3434,123 @@ async def test_topic_close_and_rename_commands(tmp_path: Path) -> None:
         session_url="https://devin.test/s1",
         title="title",
     )
+    store.add_history(
+        conv_key="222:9",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
     await handle_command(runtime, message("/close"), "/close")
     assert "This command only works inside a topic." in telegram.sent[-1]["text"]
-    topic_message = {**message("/rename New name"), "message_thread_id": 9}
+    topic_message = {
+        **message("/rename New name"),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
     await handle_command(runtime, topic_message, "/rename New name")
     assert telegram.edited_topics == [(222, 9, "New name")]
+    assert store.get_conversation("222:9").title == "New name"  # type: ignore[union-attr]
+    assert store.list_history("222:9")[0].title == "New name"
+    assert store.get_conversation("222:9").title_pending is False  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_rename_rolls_back_when_topic_edit_fails(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    store.add_history(
+        conv_key="222:9",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+
+    class FailingTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            raise httpx.ReadTimeout("t")
+
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), FailingTelegram())  # type: ignore[arg-type]
+    topic_message = {
+        **message("/rename New name"),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
+    with pytest.raises(httpx.ReadTimeout):
+        await handle_command(runtime, topic_message, "/rename New name")
+    stored = store.get_conversation("222:9")
+    assert stored is not None
+    assert stored.title == "Telegram: prompt"
+    assert stored.title_pending is True
+    entry = store.list_history("222:9")[0]
+    assert entry.title == "Telegram: prompt"
+    assert entry.title_pending is True
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resume_survives_failed_topic_edit(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "resume.sqlite3"))
+    store.add_history(
+        conv_key="222:9",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+
+    class FailingTelegram(_FakeTelegram):
+        def __init__(self) -> None:
+            super().__init__()
+            self.edits: list[str] = []
+
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edits.append(name)
+            if len(self.edits) == 1:
+                raise httpx.ReadTimeout("t")
+
+    class FinishedDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "Generated", "https://gh.test/pr/1", [])
+
+    telegram = FailingTelegram()
+    runtime = Bridge(settings(tmp_path), store, FinishedDevin(), telegram)  # type: ignore[arg-type]
+    topic_message = {
+        **message("/resume 1"),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
+    await handle_command(runtime, topic_message, "/resume 1")
+    stored = store.get_conversation("222:9")
+    assert stored is not None
+    assert stored.session_id == "s1"
+    assert stored.title == "Telegram: prompt"
+    assert stored.title_pending is True
+    assert store.list_history("222:9")[0].title_pending is True
+    assert telegram.sent[-1]["text"] == "Resumed: Telegram: prompt https://devin.test/s1"
+    await runtime.watchers["s1"]
+    assert telegram.edits == ["Generated", "Generated"]
+    stored = store.get_conversation("222:9")
+    assert stored is not None
+    assert stored.title == "Generated"
+    assert stored.title_pending is False
+    assert stored.last_pr_url == "https://gh.test/pr/1"
+    assert not any("PR:" in sent["text"] for sent in telegram.sent)
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio

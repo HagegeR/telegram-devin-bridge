@@ -37,7 +37,11 @@ from app.formatting import (
 from app.notify import register_notify_route
 from app.polling import run_polling
 from app.set_webhook import configure_bot
-from app.store import Conversation, Store
+from app.store import (
+    PLACEHOLDER_TITLE_PREFIX,
+    Conversation,
+    Store,
+)
 from app.telegram import TelegramClient
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
 
@@ -664,11 +668,10 @@ class Bridge:
             else:
                 conversation = self.store.get_conversation(conv_key) or conversation
         if conversation is None:
-            title = f"Telegram: {text[:60]}"
             conversation = await self.create_session_for_message(
                 message,
                 SYSTEM_PREAMBLE + text,
-                title,
+                None,
                 playbook_id=self.store.get_settings(conv_key).default_playbook,
                 last_user_text=text,
                 start_watcher=False,
@@ -696,7 +699,7 @@ class Bridge:
         self,
         message: Mapping[str, object],
         prompt: str,
-        title: str,
+        title: str | None,
         *,
         playbook_id: str | None = None,
         last_user_text: str | None = None,
@@ -719,13 +722,19 @@ class Bridge:
             title,
             playbook_id,
         )
+        stored_title = (
+            title
+            if title is not None
+            else f"{PLACEHOLDER_TITLE_PREFIX}{(last_user_text or prompt)[:60]}"
+        )
         conversation = await self.replace_conversation(
             conv_key=conv_key,
             chat_id=chat_id,
             thread_id=thread_id,
             session_id=session_id,
             session_url=session_url,
-            title=title,
+            title=stored_title,
+            title_pending=title is None,
             last_user_text=last_user_text or prompt,
             last_user_message_id=(
                 _int(message.get("message_id"))
@@ -738,7 +747,8 @@ class Bridge:
             conv_key=conv_key,
             session_id=session_id,
             session_url=session_url,
-            title=title,
+            title=stored_title,
+            title_pending=title is None,
         )
         started_id = await self.send_text(
             message,
@@ -763,9 +773,11 @@ class Bridge:
         session_id: str,
         session_url: str,
         title: str,
+        title_pending: bool = False,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
         last_user_message_id: int | None = None,
+        last_pr_url: str | None = None,
         keep_queued: bool = False,
     ) -> Conversation:
         previous = self.store.get_conversation(conv_key)
@@ -784,9 +796,11 @@ class Bridge:
             session_id=session_id,
             session_url=session_url,
             title=title,
+            title_pending=title_pending,
             last_event_id=last_event_id,
             last_user_text=last_user_text,
             last_user_message_id=last_user_message_id,
+            last_pr_url=last_pr_url,
         )
         conversation = self.store.get_conversation(conv_key)
         if conversation is None:

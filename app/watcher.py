@@ -92,6 +92,7 @@ class SessionWatcher:
         self.last_status: str | None = None
         self.started_at = self.clock()
         self.generation = 0
+        self.topic_title_stale = False
 
     def set_trigger(self, message_id: int) -> None:
         self.trigger_message_id = message_id
@@ -111,6 +112,7 @@ class SessionWatcher:
             self.poll_seconds,
         )
         previous_status: str | None = None
+        title_retries_after_finish = 3
         try:
             while (
                 self.clock() - self.started_at
@@ -123,6 +125,20 @@ class SessionWatcher:
                 if self.generation != gen:
                     await self.sleep(interval)
                     continue
+                if self.conversation.title_pending or self.topic_title_stale:
+                    stored = self.store.get_conversation(self.conversation.conv_key)
+                    if stored is not None:
+                        self.conversation = stored
+                if self.topic_title_stale:
+                    self.topic_title_stale = not await self._edit_topic(
+                        self.conversation.title
+                    )
+                elif (
+                    self.conversation.title_pending
+                    and state.title
+                    and state.title != self.conversation.title
+                ):
+                    await self._apply_session_title(state.title)
                 new_messages = self._new_messages(
                     state,
                     wall_started_at,
@@ -185,6 +201,14 @@ class SessionWatcher:
                         self.conversation.session_id,
                         last_pr_url=state.pr_url,
                     )
+                if (
+                    state.status_enum not in ACTIVE_STATUSES
+                    and self._topic_title_outstanding(state)
+                    and title_retries_after_finish
+                ):
+                    title_retries_after_finish -= 1
+                    await self.sleep(max(interval, 0.001))
+                    continue
                 if state.status_enum in {"expired", "finished"}:
                     await self._cleanup_transients()
                     await self._finish_reaction(expired=state.status_enum == "expired")
@@ -204,6 +228,10 @@ class SessionWatcher:
                         await self._sleep_keeping_typing(interval)
                         continue
                 await self.sleep(max(interval, 0.001))
+            if previous_status in {"expired", "finished"}:
+                await self._cleanup_transients()
+                await self._finish_reaction(expired=previous_status == "expired")
+                return
             await self._cleanup_transients()
             if not self.delivered:
                 await self.telegram.send_message(
@@ -227,6 +255,54 @@ class SessionWatcher:
         except asyncio.CancelledError:
             await self._cleanup_transients()
             raise
+
+    def _topic_title_outstanding(self, state: SessionState) -> bool:
+        conv = self.conversation
+        return self.topic_title_stale or bool(
+            conv.title_pending
+            and state.title
+            and state.title != conv.title
+            and conv.thread_id is not None
+        )
+    async def _edit_topic(self, title: str) -> bool:
+        conv = self.conversation
+        for attempt in range(3):
+            try:
+                await self.telegram.edit_forum_topic(
+                    conv.chat_id, conv.thread_id, title[:128]
+                )
+                return True
+            except (RuntimeError, httpx.HTTPError):
+                logger.warning(
+                    "Failed to rename topic chat=%s thread=%s",
+                    conv.chat_id,
+                    conv.thread_id,
+                )
+                if attempt < 2:
+                    await self.sleep(1)
+        return False
+
+    async def _apply_session_title(self, title: str) -> None:
+        conv = self.conversation
+        if conv.thread_id is not None and conv.conv_key == Store.conv_key(
+            conv.chat_id, conv.thread_id, is_forum=True
+        ):
+            if not await self._edit_topic(title):
+                return
+            stored = self.store.get_conversation(conv.conv_key)
+            if stored is None or stored.session_id != conv.session_id:
+                return
+            if not stored.title_pending:
+                self.topic_title_stale = not await self._edit_topic(stored.title)
+                self.conversation = stored
+                return
+        self.store.update_conversation(
+            conv.conv_key,
+            conv.session_id,
+            title=title,
+            title_pending=False,
+        )
+        self.conversation = replace(conv, title=title, title_pending=False)
 
     async def _refresh_progress(
         self,

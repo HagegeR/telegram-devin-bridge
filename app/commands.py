@@ -4,6 +4,8 @@ import re
 from collections.abc import Mapping
 from typing import Protocol
 
+import httpx
+
 from app.access import is_allowed, is_topic_chat
 from app.config import Settings
 from app.devin import Playbook, SessionState
@@ -38,7 +40,7 @@ class CommandRuntime(Protocol):
         self,
         message: Mapping[str, object],
         prompt: str,
-        title: str,
+        title: str | None,
         *,
         playbook_id: str | None = None,
         start_watcher: bool = True,
@@ -84,8 +86,10 @@ class CommandRuntime(Protocol):
         session_id: str,
         session_url: str,
         title: str,
+        title_pending: bool = False,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_pr_url: str | None = None,
     ) -> Conversation: ...
 
     async def get_session_status(self, session_id: str) -> str: ...
@@ -263,7 +267,24 @@ async def handle_command(
         if not args:
             await runtime.send_text(message, "Usage: /rename <name>")
             return
-        await runtime.edit_forum_topic(chat_id, thread_id, args)
+        if conversation is not None:
+            runtime.store.update_conversation(
+                conversation.conv_key,
+                conversation.session_id,
+                title=args,
+                title_pending=False,
+            )
+        try:
+            await runtime.edit_forum_topic(chat_id, thread_id, args)
+        except (RuntimeError, httpx.HTTPError):
+            if conversation is not None:
+                runtime.store.update_conversation(
+                    conversation.conv_key,
+                    conversation.session_id,
+                    title=conversation.title,
+                    title_pending=conversation.title_pending,
+                )
+            raise
     elif command in {"stop", "cancel"}:
         await _stop(runtime, message, conversation)
     elif command == "playbook":
@@ -349,16 +370,40 @@ async def _resume(
         ),
         None,
     )
-    await runtime.replace_conversation(
+    chat_id = _int(_mapping(message.get("chat")).get("id"))
+    thread_id = _thread_id(message)
+    title = entry.title
+    title_pending = entry.title_pending
+    retry_title = False
+    if entry.title_pending and state.title:
+        try:
+            if thread_id is not None:
+                await runtime.edit_forum_topic(
+                    chat_id, thread_id, state.title[:128]
+                )
+        except (RuntimeError, httpx.HTTPError):
+            retry_title = True
+        else:
+            title, title_pending = state.title, False
+            runtime.store.update_history_title(
+                entry.conv_key,
+                entry.session_id,
+                title,
+            )
+    conversation = await runtime.replace_conversation(
         conv_key=entry.conv_key,
-        chat_id=_int(_mapping(message.get("chat")).get("id")),
-        thread_id=_thread_id(message),
+        chat_id=chat_id,
+        thread_id=thread_id,
         session_id=entry.session_id,
         session_url=entry.session_url,
-        title=entry.title,
+        title=title,
+        title_pending=title_pending,
         last_event_id=latest,
+        last_pr_url=state.pr_url,
     )
-    await runtime.send_text(message, f"Resumed: {entry.title} {entry.session_url}")
+    if retry_title:
+        await runtime.start_watcher(conversation)
+    await runtime.send_text(message, f"Resumed: {title} {entry.session_url}")
 
 
 async def _stop(
