@@ -141,7 +141,9 @@ Two deployment styles exist — pick one:
 
 `deploy/self-update.sh` takes a host-wide lock and records a deploy marker, fetches `origin/<branch>`
 (`SELF_UPDATE_BRANCH`, default `main`), checks out the remote head, reinstalls requirements when
-`requirements.txt` changed, and restarts the OpenRC/systemd service detached.
+`requirements.txt` changed, and restarts the OpenRC/systemd service detached. VM installs keep the
+source git checkout under `BRIDGE_HOME` so `/update` works; unprivileged services exit and let
+supervise-daemon or systemd respawn them.
 `--check` reports without touching anything. The host checkout is
 deploy-only: `git checkout -B` discards local changes on purpose. Admins can
 run it from Telegram with `/update` or preview with `/update check`
@@ -241,6 +243,11 @@ changes:
 ```bash
 sh deploy/vm/install.sh --dry-run
 ```
+
+When run from a git checkout, the installer preserves `.git` under
+`BRIDGE_HOME` so `/update` is available; a non-git source prints a note and
+does not support `/update`. The OpenRC service uses `supervise-daemon`, and
+unprivileged updates restart by exiting so OpenRC or systemd can respawn it.
 
 On Alpine/OpenRC:
 

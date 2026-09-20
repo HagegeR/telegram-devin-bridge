@@ -57,6 +57,7 @@ fi
 case "$PKG_MANAGER" in
     apk)
         apk add python3 py3-pip git
+        apk add flock >/dev/null 2>&1 || apk add util-linux-misc
         ;;
     apt-get)
         apt-get update
@@ -103,8 +104,15 @@ if [ "$SOURCE_DIR" = "$BRIDGE_HOME" ]; then
     printf '%s\n' 'installing in place'
 else
     rm -rf "$BRIDGE_HOME/app" "$BRIDGE_HOME/deploy" "$BRIDGE_HOME/tests"
+    if [ -d "$SOURCE_DIR/.git" ]; then
+        rm -rf "$BRIDGE_HOME/.git"
+        GIT_EXCLUDE=
+    else
+        printf '%s\n' 'source is not a git checkout; /update will be unavailable' >&2
+        GIT_EXCLUDE='--exclude=.git'
+    fi
     tar -C "$SOURCE_DIR" \
-        --exclude='.git' \
+        $GIT_EXCLUDE \
         --exclude='.venv' \
         --exclude='*.sqlite3' \
         --exclude='.env' \
