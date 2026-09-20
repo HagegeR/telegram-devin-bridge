@@ -200,6 +200,8 @@ def register_admin_route(
             auth_fail_times.append(now)
             log = logger.warning if len(auth_fail_times) <= _RATE_LIMIT else logger.debug
             log("admin auth failed from=%s", client_host)
+            if auth_fail_lock.locked():
+                raise HTTPException(status_code=429, detail="admin rate limit")
             async with auth_fail_lock:
                 await sleep(_AUTH_FAIL_DELAY)
             raise HTTPException(status_code=403, detail="Invalid bearer token")

@@ -594,7 +594,8 @@ async def test_admin_auth_failures_are_serialized(tmp_path: Path) -> None:
         assert active == 1
         release.set()
         responses = await asyncio.gather(*requests)
-    assert [response.status_code for response in responses] == [403] * 3
+    assert sum(response.status_code == 403 for response in responses) == 1
+    assert sum(response.status_code == 429 for response in responses) == 2
     assert max_active == 1
 
 
