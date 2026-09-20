@@ -592,10 +592,17 @@ async def test_admin_auth_failures_are_serialized(tmp_path: Path) -> None:
             if active:
                 break
         assert active == 1
+        blocked_valid = asyncio.create_task(
+            authed(client, {"action": "get-env"})
+        )
+        blocked_valid_response = await blocked_valid
         release.set()
         responses = await asyncio.gather(*requests)
+        recovered = await authed(client, {"action": "get-env"})
     assert sum(response.status_code == 403 for response in responses) == 1
     assert sum(response.status_code == 429 for response in responses) == 2
+    assert blocked_valid_response.status_code == 429
+    assert recovered.status_code == 200
     assert max_active == 1
 
 

@@ -163,8 +163,10 @@ Security: separate `ADMIN_SECRET`, `ADMIN_ENV_ALLOWLIST` whitelists only
 non-secret keys (tokens/keys are never readable or writable), every call is
 audit-logged and posts a Telegram notification, 10 req/min rate limit, and
 log output is secret-redacted. Failed auth attempts are tarpitted one at a
-time (1 s delay; concurrent failures get 429 immediately) and never block
-valid tokens. Command and path keys can never be set via the API.
+time (1 s delay); while one is in flight every request gets 429 (≈60
+guesses/min cap), so a flood of bad tokens can temporarily block valid ones —
+use Tailscale SSH as fallback. Command and path keys can never be set via the
+API.
 
 ## Self-update
 

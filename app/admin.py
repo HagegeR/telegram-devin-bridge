@@ -188,6 +188,8 @@ def register_admin_route(
     async def admin(request: Request) -> dict[str, object]:
         if settings.admin_secret is None:
             raise HTTPException(status_code=404, detail="Not found")
+        if auth_fail_lock.locked():
+            raise HTTPException(status_code=429, detail="admin rate limit")
         client_host = request.client.host if request.client else "-"
         authorization = request.headers.get("authorization", "")
         expected_authorization = f"Bearer {settings.admin_secret}"
@@ -200,8 +202,6 @@ def register_admin_route(
             auth_fail_times.append(now)
             log = logger.warning if len(auth_fail_times) <= _RATE_LIMIT else logger.debug
             log("admin auth failed from=%s", client_host)
-            if auth_fail_lock.locked():
-                raise HTTPException(status_code=429, detail="admin rate limit")
             async with auth_fail_lock:
                 await sleep(_AUTH_FAIL_DELAY)
             raise HTTPException(status_code=403, detail="Invalid bearer token")
