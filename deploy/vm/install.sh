@@ -108,6 +108,7 @@ else
         rm -rf "$BRIDGE_HOME/.git"
         GIT_EXCLUDE=
     else
+        rm -rf "$BRIDGE_HOME/.git"
         printf '%s\n' 'source is not a git checkout; /update will be unavailable' >&2
         GIT_EXCLUDE='--exclude=.git'
     fi

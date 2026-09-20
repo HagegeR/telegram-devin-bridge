@@ -1,7 +1,7 @@
 #!/bin/sh
 # Update the bridge checkout to the latest origin/<branch> and restart the
-# service if anything changed; unprivileged services exit for their supervisor
-# to respawn because they cannot invoke the service manager directly.
+# service if anything changed; supervised unprivileged services exit for their
+# supervisor to respawn because they cannot invoke the service manager directly.
 # Usage: self-update.sh [--check] [branch] (uses a host-wide lock and deploy marker)
 #   branch default: $SELF_UPDATE_BRANCH or main
 # NOTE: `git reset --hard` + `git checkout -f -B` discards local
@@ -54,8 +54,10 @@ if [ "$(id -u)" -eq 0 ]; then
     nohup sh -c "sleep 2; systemctl restart $SERVICE" >/dev/null 2>&1 &
     echo "restarting $SERVICE"
   fi
-else
+elif [ -n "${RC_SVCNAME:-}" ] || [ -n "${INVOCATION_ID:-}" ]; then
   nohup sh -c "sleep 2; kill -TERM $PPID" >/dev/null 2>&1 &
   echo "restarting $SERVICE (supervisor respawn)"
+else
+  echo "restart $SERVICE manually to load the update"
 fi
 echo "updated to $(git rev-parse --short "$REMOTE")"
