@@ -204,6 +204,15 @@ On the VM:
 tailscale set --ssh
 ```
 
+> **Tagging the VM (`tag:bridge`)**: Tailscale SSH rules only accept tags (or
+> `autogroup:self`) as `dst`, not `hosts` aliases, so the VM must carry a tag.
+> `tailscale up --advertise-tags=tag:bridge --hostname=devin-bridge --ssh --accept-dns=false`
+> forces a **re-login** (it prints an auth URL) and the Funnel is offline until
+> you authenticate. Before that: add `tag:bridge` to `tagOwners` **and** to the
+> funnel `nodeAttrs` target (a tagged node is no longer in `autogroup:member`).
+> After login, re-toggle the funnel: `tailscale funnel --https=443 off && tailscale funnel --bg 8000`.
+
+
 In the admin console ACL (https://login.tailscale.com/admin/acls/file):
 
 ```json
