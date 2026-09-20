@@ -2491,6 +2491,52 @@ async def test_startup_resumes_watchers_for_recent_conversations(
 
 
 @pytest.mark.asyncio
+async def test_startup_resumes_watcher_without_cursor_delivers_downtime_reply(
+    tmp_path: Path,
+) -> None:
+    downtime_reply_at = datetime.fromtimestamp(
+        time.time() - 30, timezone.utc
+    ).isoformat()
+
+    class BlockedDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [
+                    DevinMessage(
+                        "devin_message", "event-1", "Done", downtime_reply_at
+                    )
+                ],
+            )
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        created_at=time.time() - 60,
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, devin_watch_timeout_seconds=120),
+        store,
+        BlockedDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    await runtime.startup()
+    assert "s1" in runtime.watchers
+    await asyncio.gather(*runtime.watchers.values(), return_exceptions=True)
+    delivered = [str(item["text"]) for item in telegram.sent]
+    assert sum("Done" in text for text in delivered) == 1
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_edited_message_rechecks_target_after_lock(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(

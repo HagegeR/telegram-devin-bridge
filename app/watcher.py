@@ -51,6 +51,7 @@ class SessionWatcher:
         drafts_enabled: bool | None = None,
         status_after_seconds: float | None = None,
         silent: bool = False,
+        resume_from: float | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -79,6 +80,7 @@ class SessionWatcher:
             else status_after_seconds
         )
         self.silent = silent
+        self.resume_from = resume_from
         self.draft_id = secrets.randbelow(2**31 - 1) + 1
         self.status_message_id: int | None = None
         self.last_status_text: str | None = None
@@ -99,7 +101,9 @@ class SessionWatcher:
 
     async def run(self) -> None:
         self.started_at = self.clock()
-        wall_started_at = time.time()
+        wall_started_at = (
+            self.resume_from if self.resume_from is not None else time.time()
+        )
         last_pr_url = self.conversation.last_pr_url
         last_event_id = self.conversation.last_event_id
         interval = min(
