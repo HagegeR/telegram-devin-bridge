@@ -4,7 +4,7 @@ import io
 
 import httpx
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from app.clients import CAPTION_LIMIT, TelegramClient, _caption
 from app.images import PHOTO_MAX_DIMENSION_SUM, fit_photo
@@ -29,6 +29,38 @@ def test_fit_photo_downscales_tall_pages() -> None:
     width, height = Image.open(io.BytesIO(data)).size
     assert width + height <= PHOTO_MAX_DIMENSION_SUM
     assert abs(width / height - 1650 / 8800) < 0.01
+
+
+def test_fit_photo_applies_exif_orientation_before_resize() -> None:
+    image = Image.new("RGB", (6000, 5000), "white")
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", exif=exif.tobytes())
+
+    fitted = fit_photo(buffer.getvalue())
+
+    assert fitted is not None
+    width, height = Image.open(io.BytesIO(fitted[0])).size
+    assert height > width
+
+
+def test_fit_photo_composites_transparency_onto_white() -> None:
+    image = Image.new("RGBA", (6000, 5000), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((2900, 2400, 3099, 2599), fill=(0, 0, 0, 255))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+
+    fitted = fit_photo(buffer.getvalue())
+
+    assert fitted is not None
+    output = Image.open(io.BytesIO(fitted[0])).convert("RGB")
+    assert all(channel > 240 for channel in output.getpixel((0, 0)))
+    assert all(
+        channel < 30
+        for channel in output.getpixel((output.width // 2, output.height // 2))
+    )
 
 
 def test_fit_photo_rejects_extreme_ratio_and_garbage() -> None:

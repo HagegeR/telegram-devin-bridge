@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 # https://core.telegram.org/bots/api#sendphoto
 PHOTO_MAX_BYTES = 10 * 1024 * 1024
@@ -18,6 +18,8 @@ def fit_photo(content: bytes) -> tuple[bytes, str] | None:
     try:
         image = Image.open(io.BytesIO(content))
         image.load()
+        image_format = image.format
+        image = ImageOps.exif_transpose(image) or image
     except (OSError, ValueError, Image.DecompressionBombError):
         return None
     width, height = image.size
@@ -25,10 +27,13 @@ def fit_photo(content: bytes) -> tuple[bytes, str] | None:
         return None
     if width + height <= PHOTO_MAX_DIMENSION_SUM and len(content) <= PHOTO_MAX_BYTES:
         return (
-            None if image.format is None else (content, f"image/{image.format.lower()}")
+            None if image_format is None else (content, f"image/{image_format.lower()}")
         )
     scale = min(1.0, PHOTO_MAX_DIMENSION_SUM / (width + height))
-    resized = image.convert("RGB").resize(
+    flat = Image.new("RGB", image.size, "white")
+    rgba = image.convert("RGBA")
+    flat.paste(rgba, mask=rgba.getchannel("A"))
+    resized = flat.resize(
         (max(1, int(width * scale)), max(1, int(height * scale))),
         Image.Resampling.LANCZOS,
     )
