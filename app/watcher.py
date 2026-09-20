@@ -459,25 +459,31 @@ class SessionWatcher:
                 continue
             content, content_type = downloaded
             filename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
-            if content_type.startswith("image/"):
-                result = await self.telegram.send_photo(
-                    self.conversation.chat_id,
-                    filename,
-                    content,
-                    thread_id=self.conversation.thread_id,
-                    caption=filename,
-                    reply_to=reply_to_message_id,
-                    content_type=content_type,
-                )
-            else:
-                result = await self.telegram.send_document(
-                    self.conversation.chat_id,
-                    filename,
-                    content,
-                    content_type=content_type,
-                    thread_id=self.conversation.thread_id,
-                    reply_to=reply_to_message_id,
-                )
+            try:
+                if content_type.startswith("image/"):
+                    result = await self.telegram.send_photo(
+                        self.conversation.chat_id,
+                        filename,
+                        content,
+                        thread_id=self.conversation.thread_id,
+                        caption=filename,
+                        reply_to=reply_to_message_id,
+                        content_type=content_type,
+                    )
+                else:
+                    result = await self.telegram.send_document(
+                        self.conversation.chat_id,
+                        filename,
+                        content,
+                        content_type=content_type,
+                        thread_id=self.conversation.thread_id,
+                        reply_to=reply_to_message_id,
+                    )
+            except (httpx.HTTPError, RuntimeError):
+                logger.exception("Failed to send attachment %s", filename)
+                if url not in body:
+                    body = f"{body}\n\n{url}".strip()
+                continue
             self._index_outbound(result)
             body = body.replace(f"\n{url}\n", "\n")
             if body == url:

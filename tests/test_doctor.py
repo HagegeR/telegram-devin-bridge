@@ -655,7 +655,9 @@ async def test_send_photo_retries_connect_error(monkeypatch) -> None:
         transport=httpx.MockTransport(handler),
     )
     try:
-        result = await client.send_photo(1, "photo.jpg", b"jpg")
+        from tests.test_photo_limits import png
+
+        result = await client.send_photo(1, "photo.png", png(4, 4))
     finally:
         await client.client.aclose()
     assert result == {"message_id": 1}

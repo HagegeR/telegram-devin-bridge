@@ -16,11 +16,19 @@ from app.formatting import (
     markdown_to_telegram_markdown_v2,
     normalize_rich_linebreaks,
 )
+from app.images import fit_photo
 from app.telegram_updates import ALLOWED_UPDATES
 
 RETRY_ATTEMPTS = 5
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
+CAPTION_LIMIT = 1024  # https://core.telegram.org/bots/api#sendphoto
 T = TypeVar("T")
+
+
+def _caption(caption: str | None) -> str | None:
+    if caption is None or len(caption) <= CAPTION_LIMIT:
+        return caption
+    return caption[: CAPTION_LIMIT - 1] + "\u2026"
 
 
 def _is_dot_segment(segment: str) -> bool:
@@ -670,7 +678,7 @@ class TelegramClient:
         if thread_id is not None:
             data["message_thread_id"] = str(thread_id)
         if caption is not None:
-            data["caption"] = caption
+            data["caption"] = cast(str, _caption(caption))
         if reply_to is not None:
             data["reply_parameters"] = (
                 f'{{"message_id": {reply_to}, '
@@ -707,11 +715,26 @@ class TelegramClient:
         reply_to: int | None = None,
         content_type: str = "image/jpeg",
     ) -> dict[str, object]:
+        """Send an image as a photo, downscaling it to Telegram's sendPhoto limits
+        (10 MB, width+height <= 10000, ratio <= 20). Images that cannot fit, or
+        that Telegram still rejects with 400, are sent as a document instead."""
+        fitted = fit_photo(content)
+        if fitted is None:
+            return await self.send_document(
+                chat_id,
+                filename,
+                content,
+                thread_id=thread_id,
+                caption=caption,
+                reply_to=reply_to,
+                content_type=content_type,
+            )
+        photo, photo_type = fitted
         data: dict[str, str] = {"chat_id": str(chat_id)}
         if thread_id is not None:
             data["message_thread_id"] = str(thread_id)
         if caption is not None:
-            data["caption"] = caption
+            data["caption"] = cast(str, _caption(caption))
         if reply_to is not None:
             data["reply_parameters"] = (
                 f'{{"message_id": {reply_to}, '
@@ -721,10 +744,20 @@ class TelegramClient:
             lambda: self.client.post(
                 "/sendPhoto",
                 data=data,
-                files={"photo": (filename, content, content_type)},
+                files={"photo": (filename, photo, photo_type)},
             ),
             idempotent=False,
         )
+        if response.status_code == 400:
+            return await self.send_document(
+                chat_id,
+                filename,
+                content,
+                thread_id=thread_id,
+                caption=caption,
+                reply_to=reply_to,
+                content_type=content_type,
+            )
         response.raise_for_status()
         payload = self._json_object(response)
         if payload.get("ok") is False:
