@@ -44,12 +44,14 @@ elif ! git diff --quiet "$PREV" "$REMOTE" -- requirements.txt; then
 fi
 echo "$REMOTE" > "$MARKER"
 # restart detached so a caller running inside the service (the /update
-# command) can still reply before the process is recycled
+# command) can still reply before the process is recycled. Close the lock fd
+# (9>&-) so the restarted service does not inherit the flock and block every
+# later update with "another update is running".
 if command -v rc-service >/dev/null 2>&1; then
-  nohup sh -c "sleep 2; rc-service $SERVICE restart" >/dev/null 2>&1 &
+  nohup sh -c "sleep 2; rc-service $SERVICE restart" >/dev/null 2>&1 9>&- &
   echo "restarting $SERVICE"
 elif command -v systemctl >/dev/null 2>&1; then
-  nohup sh -c "sleep 2; systemctl restart $SERVICE" >/dev/null 2>&1 &
+  nohup sh -c "sleep 2; systemctl restart $SERVICE" >/dev/null 2>&1 9>&- &
   echo "restarting $SERVICE"
 fi
 echo "updated to $(git rev-parse --short "$REMOTE")"
