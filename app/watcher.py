@@ -20,7 +20,7 @@ from app.formatting import (
     extract_options,
     split_long_text,
 )
-from app.store import PLACEHOLDER_TITLE_PREFIX, Conversation, Store
+from app.store import Conversation, Store
 from app.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -117,59 +117,16 @@ class SessionWatcher:
                 if self.generation != gen:
                     await self.sleep(interval)
                     continue
-                stored = self.store.get_conversation(self.conversation.conv_key)
-                if stored is not None and stored.title != self.conversation.title:
-                    self.conversation = replace(
-                        self.conversation,
-                        title=stored.title,
-                    )
+                if self.conversation.title_pending:
+                    stored = self.store.get_conversation(self.conversation.conv_key)
+                    if stored is not None:
+                        self.conversation = stored
                 if (
-                    state.title
+                    self.conversation.title_pending
+                    and state.title
                     and state.title != self.conversation.title
-                    and self.conversation.title.startswith(PLACEHOLDER_TITLE_PREFIX)
                 ):
-                    is_topic = (
-                        self.conversation.thread_id is not None
-                        and self.conversation.conv_key
-                        == Store.conv_key(
-                            self.conversation.chat_id,
-                            self.conversation.thread_id,
-                            is_forum=True,
-                        )
-                    )
-                    if is_topic:
-                        try:
-                            await self.telegram.edit_forum_topic(
-                                self.conversation.chat_id,
-                                self.conversation.thread_id,
-                                state.title[:128],
-                            )
-                        except RuntimeError:
-                            logger.warning(
-                                "Failed to rename topic chat=%s thread=%s",
-                                self.conversation.chat_id,
-                                self.conversation.thread_id,
-                            )
-                        else:
-                            self.store.update_conversation(
-                                self.conversation.conv_key,
-                                self.conversation.session_id,
-                                title=state.title,
-                            )
-                            self.conversation = replace(
-                                self.conversation,
-                                title=state.title,
-                            )
-                    else:
-                        self.store.update_conversation(
-                            self.conversation.conv_key,
-                            self.conversation.session_id,
-                            title=state.title,
-                        )
-                        self.conversation = replace(
-                            self.conversation,
-                            title=state.title,
-                        )
+                    await self._apply_session_title(state.title)
                 new_messages = self._new_messages(
                     state,
                     wall_started_at,
@@ -271,6 +228,44 @@ class SessionWatcher:
         except asyncio.CancelledError:
             await self._cleanup_transients()
             raise
+
+    async def _apply_session_title(self, title: str) -> None:
+        conv = self.conversation
+        if conv.thread_id is not None and conv.conv_key == Store.conv_key(
+            conv.chat_id, conv.thread_id, is_forum=True
+        ):
+            for attempt in range(3):
+                try:
+                    await self.telegram.edit_forum_topic(
+                        conv.chat_id, conv.thread_id, title[:128]
+                    )
+                except RuntimeError:
+                    logger.warning(
+                        "Failed to rename topic chat=%s thread=%s",
+                        conv.chat_id,
+                        conv.thread_id,
+                    )
+                    if attempt == 2:
+                        return
+                    await self.sleep(1)
+                else:
+                    break
+            stored = self.store.get_conversation(conv.conv_key)
+            if (
+                stored is None
+                or not stored.title_pending
+                or stored.session_id != conv.session_id
+            ):
+                self.conversation = stored or conv
+                return
+        self.store.update_conversation(
+            conv.conv_key,
+            conv.session_id,
+            title=title,
+            title_pending=False,
+        )
+        self.store.update_history_title(conv.conv_key, conv.session_id, title)
+        self.conversation = replace(conv, title=title, title_pending=False)
 
     async def _refresh_progress(
         self,

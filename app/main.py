@@ -711,6 +711,7 @@ class Bridge:
             session_id=session_id,
             session_url=session_url,
             title=stored_title,
+            title_pending=title is None,
             last_user_text=last_user_text or prompt,
             last_user_message_id=(
                 _int(message.get("message_id"))
@@ -747,6 +748,7 @@ class Bridge:
         session_id: str,
         session_url: str,
         title: str,
+        title_pending: bool = False,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
         last_user_message_id: int | None = None,
@@ -766,6 +768,7 @@ class Bridge:
             session_id=session_id,
             session_url=session_url,
             title=title,
+            title_pending=title_pending,
             last_event_id=last_event_id,
             last_user_text=last_user_text,
             last_user_message_id=last_user_message_id,

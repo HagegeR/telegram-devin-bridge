@@ -18,6 +18,7 @@ class Conversation:
     session_id: str
     session_url: str
     title: str
+    title_pending: bool
     last_event_id: str | None
     created_at: float
     last_user_text: str | None
@@ -85,6 +86,7 @@ class Store:
                     session_id TEXT NOT NULL,
                     session_url TEXT NOT NULL,
                     title TEXT NOT NULL,
+                    title_pending INTEGER NOT NULL DEFAULT 0,
                     last_event_id TEXT,
                     created_at REAL NOT NULL,
                     last_user_text TEXT,
@@ -174,6 +176,10 @@ class Store:
             if "last_user_message_id" not in columns:
                 self.connection.execute(
                     "ALTER TABLE conversations ADD COLUMN last_user_message_id INTEGER"
+                )
+            if "title_pending" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN title_pending INTEGER NOT NULL DEFAULT 0"
                 )
             choice_columns = {
                 str(row["name"])
@@ -294,6 +300,7 @@ class Store:
         session_id: str,
         session_url: str,
         title: str,
+        title_pending: bool = False,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
         last_user_message_id: int | None = None,
@@ -310,15 +317,16 @@ class Store:
                 """
                 INSERT INTO conversations(
                     conv_key, chat_id, thread_id, session_id, session_url,
-                    title, last_event_id, created_at, last_user_text,
+                    title, title_pending, last_event_id, created_at, last_user_text,
                     last_user_message_id, last_pr_url, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(conv_key) DO UPDATE SET
                     chat_id = excluded.chat_id,
                     thread_id = excluded.thread_id,
                     session_id = excluded.session_id,
                     session_url = excluded.session_url,
                     title = excluded.title,
+                    title_pending = excluded.title_pending,
                     last_event_id = excluded.last_event_id,
                     last_user_text = excluded.last_user_text,
                     last_user_message_id = excluded.last_user_message_id,
@@ -332,6 +340,7 @@ class Store:
                     session_id,
                     session_url,
                     title,
+                    int(title_pending),
                     last_event_id,
                     timestamp,
                     last_user_text,
@@ -347,6 +356,7 @@ class Store:
         session_id: str,
         *,
         title: str | None = None,
+        title_pending: bool | None = None,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
         last_user_message_id: object = UNSET,
@@ -357,6 +367,9 @@ class Store:
         if title is not None:
             assignments.append("title = ?")
             values.append(title)
+        if title_pending is not None:
+            assignments.append("title_pending = ?")
+            values.append(int(title_pending))
         if last_event_id is not None:
             assignments.append("last_event_id = ?")
             values.append(last_event_id)
@@ -610,6 +623,17 @@ class Store:
             )
             return int(cursor.lastrowid)
 
+    def update_history_title(self, conv_key: str, session_id: str, title: str) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                UPDATE session_history
+                SET title = ?
+                WHERE conv_key = ? AND session_id = ?
+                """,
+                (title, conv_key, session_id),
+            )
+
     def list_history(self, conv_key: str, limit: int = 10) -> list[HistoryEntry]:
         with self.lock:
             rows = self.connection.execute(
@@ -814,6 +838,7 @@ class Store:
             session_id=str(row["session_id"]),
             session_url=str(row["session_url"]),
             title=str(row["title"]),
+            title_pending=bool(row["title_pending"]),
             last_event_id=(
                 None if row["last_event_id"] is None else str(row["last_event_id"])
             ),

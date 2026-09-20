@@ -84,6 +84,7 @@ class CommandRuntime(Protocol):
         session_id: str,
         session_url: str,
         title: str,
+        title_pending: bool = False,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
     ) -> Conversation: ...
@@ -269,6 +270,12 @@ async def handle_command(
                 conversation.conv_key,
                 conversation.session_id,
                 title=args,
+                title_pending=False,
+            )
+            runtime.store.update_history_title(
+                conversation.conv_key,
+                conversation.session_id,
+                args,
             )
     elif command in {"stop", "cancel"}:
         await _stop(runtime, message, conversation)
