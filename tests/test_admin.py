@@ -49,10 +49,11 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
     return Settings(_env_file=None, **values)
 
 
-def make_app(tmp_path: Path, **overrides: object):
+def make_app(tmp_path: Path, sleep_func=None, **overrides: object):
     spawned: list[str] = []
     ran: list[tuple[str, Path]] = []
     notices: list[str] = []
+    sleeps: list[float] = []
     clock = {"t": 1000.0}
 
     async def fake_spawn(command: str) -> object:
@@ -67,6 +68,9 @@ def make_app(tmp_path: Path, **overrides: object):
         notices.append(text)
         return 0
 
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
     runtime = SimpleNamespace(notify=fake_notify)
     app = FastAPI()
     register_admin_route(
@@ -77,8 +81,9 @@ def make_app(tmp_path: Path, **overrides: object):
         run_shell=fake_run,
         spawn_shell=fake_spawn,
         clock=lambda: clock["t"],
+        sleep=sleep_func or fake_sleep,
     )
-    return app, spawned, ran, clock, notices
+    return app, spawned, ran, clock, notices, sleeps
 
 
 def authed(client: httpx.AsyncClient, body: dict):
@@ -115,7 +120,7 @@ async def test_admin_403_bad_bearer(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_admin_unknown_action(tmp_path: Path) -> None:
-    app, _, _, _, notices = make_app(tmp_path)
+    app, _, _, _, notices, _ = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -166,7 +171,7 @@ async def test_admin_logs_rejects_bool_lines(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_admin_set_env_allowed(tmp_path: Path) -> None:
-    app, _, _, _, notices = make_app(tmp_path)
+    app, _, _, _, notices, _ = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -469,7 +474,7 @@ async def test_admin_logs_redacts(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_admin_restart_and_update(tmp_path: Path) -> None:
-    app, spawned, ran, _, notices = make_app(tmp_path)
+    app, spawned, ran, _, notices, _ = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -532,7 +537,7 @@ async def test_admin_rate_limit(tmp_path: Path) -> None:
 async def test_admin_auth_failures_never_lock_out(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    app, *_ = make_app(tmp_path)
+    app, _, _, _, _, sleeps = make_app(tmp_path)
     caplog.set_level(logging.DEBUG)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -551,12 +556,51 @@ async def test_admin_auth_failures_never_lock_out(
     ]
     assert [response.status_code for response in responses] == [403] * 25
     assert valid_response.status_code == 200
+    assert sleeps == [1.0] * 25
     assert sum(record.levelno == logging.WARNING for record in auth_records) == 10
 
 
 @pytest.mark.asyncio
+async def test_admin_auth_failures_are_serialized(tmp_path: Path) -> None:
+    active = 0
+    max_active = 0
+    release = asyncio.Event()
+
+    async def gated_sleep(_: float) -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await release.wait()
+        active -= 1
+
+    app, *_ = make_app(tmp_path, sleep_func=gated_sleep)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        requests = [
+            asyncio.create_task(
+                client.post(
+                    "/admin",
+                    json={"action": "get-env"},
+                    headers={"Authorization": "Bearer wrong"},
+                )
+            )
+            for _ in range(3)
+        ]
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if active:
+                break
+        assert active == 1
+        release.set()
+        responses = await asyncio.gather(*requests)
+    assert [response.status_code for response in responses] == [403] * 3
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
 async def test_admin_authenticated_rate_limit_notifies(tmp_path: Path) -> None:
-    app, _, _, _, notices = make_app(tmp_path)
+    app, _, _, _, notices, _ = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

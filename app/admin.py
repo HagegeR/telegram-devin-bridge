@@ -44,6 +44,7 @@ _NEVER_ENV_KEYS = frozenset(
     }
 )
 _RATE_LIMIT = 10  # requests per minute
+_AUTH_FAIL_DELAY = 1.0
 
 ACTIONS = ("doctor", "logs", "get-env", "set-env", "restart", "update")
 
@@ -63,6 +64,7 @@ class AdminRuntime(Protocol):
 RunShell = Callable[[list[str], Path], Awaitable[tuple[int, str]]]
 SpawnShell = Callable[[str], Awaitable[object]]
 Clock = Callable[[], float]
+Sleep = Callable[[float], Awaitable[None]]
 
 
 async def _default_spawn(command: str) -> object:
@@ -155,9 +157,11 @@ def register_admin_route(
     run_shell: RunShell,
     spawn_shell: SpawnShell = _default_spawn,
     clock: Clock = time.monotonic,
+    sleep: Sleep = asyncio.sleep,
 ) -> None:
     request_times: deque[float] = deque()
     auth_fail_times: deque[float] = deque()
+    auth_fail_lock = asyncio.Lock()
     env_lock = asyncio.Lock()
 
     def _check_rate(times: deque[float]) -> None:
@@ -196,6 +200,8 @@ def register_admin_route(
             auth_fail_times.append(now)
             log = logger.warning if len(auth_fail_times) <= _RATE_LIMIT else logger.debug
             log("admin auth failed from=%s", client_host)
+            async with auth_fail_lock:
+                await sleep(_AUTH_FAIL_DELAY)
             raise HTTPException(status_code=403, detail="Invalid bearer token")
         action = "-"
         key = "-"
