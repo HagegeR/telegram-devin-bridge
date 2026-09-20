@@ -721,28 +721,7 @@ async def test_download_attachment_retries_read_error(monkeypatch) -> None:
 async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     from app.main import create_app
 
-    class FakeTelegram:
-        def __init__(self) -> None:
-            self.command_calls: list[list[dict[str, str]]] = []
-
-        async def set_my_commands(
-            self,
-            commands: list[dict[str, str]],
-            *_: object,
-        ) -> None:
-            self.command_calls.append(commands)
-
-        async def set_my_description(self, _description: str) -> None:
-            return None
-
-        async def set_my_short_description(self, _description: str) -> None:
-            return None
-
-    telegram = FakeTelegram()
-    app = create_app(
-        settings=settings(tmp_path, telegram_admin_user_ids="42"),
-        telegram=telegram,  # type: ignore[arg-type]
-    )
+    app = create_app(settings=settings(tmp_path, telegram_admin_user_ids="42"))
     runtime = app.state.bridge
 
     sent: list[str] = []
@@ -766,7 +745,6 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     admin_msg = {"from": {"id": 42}, "chat": {"id": 5}}
     await runtime.self_update(admin_msg, "")
     assert commands[-1] == ["sh", "deploy/self-update.sh"]
-    assert telegram.command_calls
     assert "abc1234" in sent[-1]
     assert sent[-1].startswith("```")
 
@@ -786,6 +764,33 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     ]
     assert send_kwargs[-1]["ephemeral"] is True
     assert commands == previous_commands
+
+
+@pytest.mark.asyncio
+async def test_webhook_startup_refreshes_bot_commands(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app import main as main_module
+
+    app = create_app(settings=settings(tmp_path))
+    runtime = app.state.bridge
+    configured: list[object] = []
+
+    async def fake_configure(telegram: object) -> None:
+        configured.append(telegram)
+
+    async def fake_startup() -> None:
+        return None
+
+    async def fake_shutdown() -> None:
+        return None
+
+    monkeypatch.setattr(main_module, "configure_bot", fake_configure)
+    runtime.startup = fake_startup  # type: ignore[method-assign]
+    runtime.shutdown = fake_shutdown  # type: ignore[method-assign]
+    async with app.router.lifespan_context(app):
+        pass
+    assert configured == [runtime.telegram]
 
 
 @pytest.mark.asyncio

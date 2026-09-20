@@ -1375,8 +1375,6 @@ class Bridge:
         if args.strip() == "check":
             argv.append("--check")
         exit_code, output = await self._run_command(argv, _REPO_ROOT)
-        if exit_code == 0:
-            await configure_bot(self.telegram)
         tail = "\n".join(output.strip().splitlines()[-30:]) or "(no output)"
         if exit_code != 0:
             tail = f"exit {exit_code}\n{tail}"
@@ -1775,6 +1773,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await runtime.startup()
+        if actual_settings.telegram_mode != "polling":
+            await configure_bot(runtime.telegram)
         polling_task: asyncio.Task[None] | None = None
         if actual_settings.telegram_mode == "polling":
             polling_task = asyncio.create_task(
