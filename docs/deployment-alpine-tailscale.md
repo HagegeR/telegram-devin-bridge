@@ -184,6 +184,45 @@ The branch is configured once in `/etc/conf.d/telegram-devin-bridge`
 (`SELF_UPDATE_BRANCH="main"`) and read by both the service environment and
 the cron wrapper — set it there, not in the cron file.
 
+## Remote control from Devin cloud sessions
+
+Two paths; use the narrowest that works. Details for the session side live in
+`docs/devin-knowledge.md`.
+
+### Admin API (narrow, no shell)
+
+Set `ADMIN_SECRET` (`openssl rand -hex 32`) in `.env` and restart. Give the
+Devin session the secrets `BRIDGE_PUBLIC_BASE_URL` (the funnel URL) and
+`BRIDGE_ADMIN_SECRET`. Actions: `doctor`, `logs`, `get-env`, `set-env`
+(allowlisted keys only), `restart`, `update` — see README "Admin API".
+
+### Tailscale SSH (full shell)
+
+On the VM:
+
+```sh
+tailscale set --ssh
+```
+
+In the admin console ACL (https://login.tailscale.com/admin/acls/file):
+
+```json
+"tagOwners": {"tag:devin": ["autogroup:admin"]},
+"hosts": {"devin-bridge": "100.127.21.58"},
+```
+
+an `acls` entry `{"action":"accept","src":["tag:devin"],"dst":["devin-bridge:22"]}`,
+and an `ssh` entry
+`{"action":"accept","src":["tag:devin"],"dst":["devin-bridge"],"users":["root"]}`.
+
+Then Settings → Keys → Generate auth key: **Reusable, Ephemeral,
+Pre-approved**, Tags `tag:devin`; store it as the Devin secret
+`TAILSCALE_AUTHKEY`.
+
+Tailscale SSH authenticates by tailnet identity — it does **not** use
+sshd/`authorized_keys`; `tailscale set --ssh` only affects tailnet
+connections, LAN sshd is unchanged.
+
 ## 9. Alternative: polling mode
 
 `TELEGRAM_MODE=polling` needs no public URL, funnel, or webhook — see

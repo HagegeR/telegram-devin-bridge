@@ -22,6 +22,7 @@ from app.access import (
     should_respond_in_group,
     strip_bot_mention,
 )
+from app.admin import register_admin_route
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
@@ -1804,6 +1805,9 @@ def create_app(
 
     register_notify_route(application, runtime, actual_settings)
     register_doctor_route(application, actual_settings)
+    register_admin_route(
+        application, runtime, actual_settings, port=8000, run_shell=_run_command
+    )
     application.state.bridge = runtime
     return application
 
