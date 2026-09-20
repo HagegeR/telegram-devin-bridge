@@ -692,7 +692,9 @@ async def test_download_attachment_retries_read_error(monkeypatch) -> None:
         transport=httpx.MockTransport(handler),
     )
     try:
-        result = await client.download_attachment("https://app.devin.ai/files/1")
+        result = await client.download_attachment(
+            "https://app.devin.ai/attachments/1/file.png"
+        )
     finally:
         await client.close()
     assert result == (b"png", "image/png")

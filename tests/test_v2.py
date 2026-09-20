@@ -1601,12 +1601,17 @@ async def test_devin_send_message_accepts_non_object_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_download_attachment_rejects_cross_host_redirect() -> None:
+async def test_download_attachment_rejects_non_https_redirect() -> None:
+    requests: list[tuple[str, str]] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.host == "app.devin.ai"
+        requests.append((
+            str(request.url),
+            request.headers.get("authorization", ""),
+        ))
         return httpx.Response(
             302,
-            headers={"Location": "https://evil.example/attachment"},
+            headers={"Location": "http://bucket.s3.amazonaws.com/x?sig=1"},
         )
 
     devin = DevinClient(
@@ -1621,6 +1626,12 @@ async def test_download_attachment_rejects_cross_host_redirect() -> None:
         )
         is None
     )
+    assert requests == [
+        (
+            "https://devin.test/v1/attachments/1/file.txt",
+            "Bearer fake-key",
+        )
+    ]
     await devin.close()
 
 
@@ -1643,7 +1654,9 @@ async def test_download_attachment_stream_limits_body() -> None:
 
     chunks = Chunks()
 
-    def handler(_request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://devin.test/v1/attachments/1/file.txt"
+        assert request.headers["authorization"] == "Bearer fake-key"
         return httpx.Response(200, stream=chunks)
 
     devin = DevinClient(
@@ -1663,15 +1676,24 @@ async def test_download_attachment_stream_limits_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_download_attachment_redirect_uses_public_client() -> None:
-    authorizations: list[str] = []
+async def test_download_attachment_redirect_uses_public_client(monkeypatch) -> None:
+    import app.clients as clients_mod
+
+    async def public_host(_: str) -> bool:
+        return True
+
+    monkeypatch.setattr(clients_mod, "_is_public_host", public_host)
+    requests: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        authorizations.append(request.headers.get("authorization", ""))
-        if len(authorizations) == 1:
+        requests.append((
+            str(request.url),
+            request.headers.get("authorization", ""),
+        ))
+        if len(requests) == 1:
             return httpx.Response(
                 302,
-                headers={"Location": "https://app.devin.ai/attachments/1/file.txt"},
+                headers={"Location": "https://bucket.s3.amazonaws.com/x?sig=1"},
             )
         return httpx.Response(
             200,
@@ -1686,9 +1708,77 @@ async def test_download_attachment_redirect_uses_public_client() -> None:
         transport=httpx.MockTransport(handler),
     )
     assert await devin.download_attachment(
-        "https://app.devin.ai/attachments/1/start"
+        "https://app.devin.ai/attachments/1/file.txt"
     ) == (b"ok", "text/plain")
-    assert authorizations == ["Bearer fake-key", ""]
+    assert requests == [
+        (
+            "https://devin.test/v1/attachments/1/file.txt",
+            "Bearer fake-key",
+        ),
+        (
+            "https://bucket.s3.amazonaws.com/x?sig=1",
+            "",
+        ),
+    ]
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_download_attachment_rejects_non_public_redirect(monkeypatch) -> None:
+    import app.clients as clients_mod
+
+    async def private_host(_: str) -> bool:
+        return False
+
+    monkeypatch.setattr(clients_mod, "_is_public_host", private_host)
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(
+            302,
+            headers={"Location": "https://169.254.169.254/x"},
+        )
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.download_attachment(
+        "https://app.devin.ai/attachments/1/file.txt"
+    ) is None
+    assert requests == ["https://devin.test/v1/attachments/1/file.txt"]
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_is_public_host_rejects_loopback() -> None:
+    from app.clients import _is_public_host
+
+    assert not await _is_public_host("127.0.0.1")
+
+
+@pytest.mark.asyncio
+async def test_download_attachment_rejects_invalid_path() -> None:
+    called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, content=b"unexpected")
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.download_attachment(
+        "https://app.devin.ai/sessions/x"
+    ) is None
+    assert not called
     await devin.close()
 
 
