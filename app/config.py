@@ -76,6 +76,22 @@ class Settings(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def validate_id_lists(self) -> "Settings":
+        for field_name, property_name in (
+            ("telegram_allowed_chat_ids", "allowed_chat_ids"),
+            ("telegram_allowed_users", "allowed_users"),
+            ("telegram_free_response_chats", "free_response_chats"),
+            ("telegram_admin_user_ids", "admin_user_ids"),
+        ):
+            try:
+                getattr(self, property_name)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{field_name} must be a comma-separated list of integers"
+                ) from exc
+        return self
+
     @staticmethod
     def _csv_ints(value: str) -> frozenset[int]:
         return frozenset(

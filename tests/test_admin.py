@@ -118,11 +118,20 @@ async def test_admin_unknown_action(tmp_path: Path) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await authed(client, {"action": "rm-rf"})
+        response = await authed(
+            client,
+            {"action": "x\nAdmin API: restart — ok"},
+        )
         assert response.status_code == 400
         assert "doctor" in response.json()["detail"]
         await asyncio.sleep(0)
-    assert any("error 400" in notice for notice in notices)
+    assert notices == [
+        (
+            "Admin API: invalid — error 400: "
+            "unknown action; one of ['doctor', 'logs', 'get-env', 'set-env', "
+            "'restart', 'update']"
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -221,6 +230,38 @@ async def test_admin_set_env_validates_before_replace(tmp_path: Path) -> None:
     assert after_invalid == original
     assert dotenv_values(env_path)["DEVIN_MAX_ACU_LIMIT"] == "7"
     assert valid.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_set_env_validates_csv_lists(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    env_path = tmp_path / ".env"
+    original = env_path.read_text()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        invalid = await authed(
+            client,
+            {
+                "action": "set-env",
+                "key": "TELEGRAM_ALLOWED_USERS",
+                "value": "111,alice",
+            },
+        )
+        after_invalid = env_path.read_text()
+        valid = await authed(
+            client,
+            {
+                "action": "set-env",
+                "key": "TELEGRAM_ALLOWED_USERS",
+                "value": "111,222",
+            },
+        )
+    assert invalid.status_code == 400
+    assert "telegram_allowed_users" in invalid.json()["detail"]
+    assert after_invalid == original
+    assert valid.status_code == 200
+    assert dotenv_values(env_path)["TELEGRAM_ALLOWED_USERS"] == "111,222"
 
 
 @pytest.mark.asyncio
@@ -474,7 +515,7 @@ async def test_admin_set_env_concurrent_writes(tmp_path: Path, monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_admin_rate_limit(tmp_path: Path) -> None:
-    app, _, _, _, notices = make_app(tmp_path)
+    app, *_ = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -484,5 +525,21 @@ async def test_admin_rate_limit(tmp_path: Path) -> None:
         ]
     assert codes[:10] == [200] * 10
     assert codes[10] == 429
-    await asyncio.sleep(0)
-    assert any("error 429" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_admin_rate_limit_applies_before_auth(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        responses = [
+            await client.post(
+                "/admin",
+                json={"action": "get-env"},
+                headers={"Authorization": "Bearer wrong"},
+            )
+            for _ in range(11)
+        ]
+    assert [response.status_code for response in responses[:10]] == [403] * 10
+    assert responses[10].status_code == 429

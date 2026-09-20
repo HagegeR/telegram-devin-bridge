@@ -181,6 +181,7 @@ def register_admin_route(
 
     @application.post("/admin")
     async def admin(request: Request) -> dict[str, object]:
+        _check_rate()
         if settings.admin_secret is None:
             raise HTTPException(status_code=404, detail="Not found")
         authorization = request.headers.get("authorization", "")
@@ -198,7 +199,6 @@ def register_admin_route(
 
         async def _dispatch() -> dict[str, object]:
             nonlocal action, key
-            _check_rate()
             try:
                 payload = await request.json()
             except ValueError as exc:
@@ -207,8 +207,16 @@ def register_admin_route(
                 raise HTTPException(status_code=400, detail="JSON object required")
             action_value = payload.get("action")
             key_value = payload.get("key")
-            action = action_value if isinstance(action_value, str) else "-"
-            key = key_value if isinstance(key_value, str) else "-"
+            action = action_value if action_value in ACTIONS else "invalid"
+            key = (
+                key_value
+                if (
+                    isinstance(key_value, str)
+                    and _ENV_KEY_RE.fullmatch(key_value)
+                    and len(key_value) <= 64
+                )
+                else "-"
+            )
             if action_value not in ACTIONS:
                 raise HTTPException(
                     status_code=400, detail=f"unknown action; one of {list(ACTIONS)}"
