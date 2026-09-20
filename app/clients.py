@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TypeVar, cast
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
@@ -21,6 +21,13 @@ from app.telegram_updates import ALLOWED_UPDATES
 RETRY_ATTEMPTS = 5
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
 T = TypeVar("T")
+
+
+def _is_dot_segment(segment: str) -> bool:
+    decoded = segment
+    for _ in range(3):
+        decoded = unquote(decoded)
+    return decoded in {".", ".."} or "/" in decoded or "\\" in decoded
 
 
 async def _is_public_host(hostname: str) -> bool:
@@ -202,8 +209,16 @@ class DevinClient:
         match = re.fullmatch(r"/attachments/([^/]+)/([^/]+)", parsed_url.path)
         if parsed_url.hostname != "app.devin.ai" or match is None:
             return None
-        request_path = f"/v1/attachments/{match.group(1)}/{match.group(2)}"
+        segments = (match.group(1), match.group(2))
+        if any(_is_dot_segment(segment) for segment in segments):
+            return None
+        request_path = f"/v1/attachments/{segments[0]}/{segments[1]}"
         current_url = urljoin(self.base_url, request_path)
+        normalized = httpx.URL(current_url)
+        if not normalized.raw_path.startswith(b"/v1/attachments/") or (
+            normalized.host != urlparse(self.base_url).hostname
+        ):
+            return None
         for hop in range(4):
             if hop > 0 and urlparse(current_url).scheme != "https":
                 return None
