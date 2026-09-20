@@ -25,6 +25,8 @@ from app.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
 
+TYPING_REFRESH_SECONDS = 4
+
 ACTIVE_STATUSES = frozenset({
     "working",
     "resumed",
@@ -194,6 +196,9 @@ class SessionWatcher:
                         return
                 else:
                     await self._refresh_progress(self.started_at, state)
+                    if self.last_chat_action_at is not None:
+                        await self._sleep_keeping_typing(interval)
+                        continue
                 await self.sleep(max(interval, 0.001))
             await self._cleanup_transients()
             if not self.delivered:
@@ -225,11 +230,11 @@ class SessionWatcher:
         state: SessionState,
     ) -> None:
         elapsed = self.clock() - started_at
+        if not (self.drafts_ok and self.conversation.chat_id > 0):
+            await self._send_chat_action()
         if elapsed < self.status_after_seconds:
             if self.drafts_ok and self.conversation.chat_id > 0:
                 await self._send_draft("")
-            else:
-                await self._send_chat_action()
             return
         status_text = self._status_text(elapsed, state.structured_output)
         if self.drafts_ok and self.conversation.chat_id > 0:
@@ -285,11 +290,20 @@ class SessionWatcher:
             self.drafts_ok = False
             await self._send_chat_action()
 
+    async def _sleep_keeping_typing(self, interval: float) -> None:
+        remaining = max(interval, 0.001)
+        while remaining > 0:
+            last = self.last_chat_action_at or self.clock()
+            step = min(remaining, max(last + TYPING_REFRESH_SECONDS - self.clock(), 0.001))
+            await self.sleep(step)
+            remaining -= step
+            await self._send_chat_action()
+
     async def _send_chat_action(self) -> None:
         now = self.clock()
         if (
             self.last_chat_action_at is not None
-            and now - self.last_chat_action_at < 4
+            and now - self.last_chat_action_at < TYPING_REFRESH_SECONDS
         ):
             return
         self.last_chat_action_at = now
