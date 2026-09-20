@@ -1642,6 +1642,56 @@ async def test_resume_keeps_title_pending(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resume_adopts_generated_title(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "resume.sqlite3"))
+    store.add_history(
+        conv_key="222:9",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+
+    async def state(_: str) -> SessionState:
+        return SessionState("finished", "Generated", None, [])
+
+    runtime.get_state = state  # type: ignore[method-assign]
+    topic_message = {
+        **message("/resume 1"),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
+    await handle_command(runtime, topic_message, "/resume 1")
+    assert telegram.edited_topics == [(222, 9, "Generated")]
+    stored = store.get_conversation("222:9")
+    assert stored is not None
+    assert stored.title == "Generated"
+    assert stored.title_pending is False
+    entry = store.list_history("222:9")[0]
+    assert entry.title == "Generated"
+    assert entry.title_pending is False
+    assert telegram.sent[-1]["text"] == "Resumed: Generated https://devin.test/s1"
+
+    store.add_history(
+        conv_key="222:9",
+        session_id="s2",
+        session_url="https://devin.test/s2",
+        title="Manual title",
+        title_pending=False,
+    )
+    await handle_command(runtime, topic_message, "/resume 1")
+    assert telegram.edited_topics == [(222, 9, "Generated")]
+    stored = store.get_conversation("222:9")
+    assert stored is not None
+    assert stored.title == "Manual title"
+    assert stored.title_pending is False
+    assert telegram.sent[-1]["text"] == "Resumed: Manual title https://devin.test/s2"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_watcher_preserves_manual_topic_title(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
@@ -1749,7 +1799,11 @@ async def test_history_title_pending_survives_rename_and_resume(
     stored = store.get_conversation(conv_key)
     assert stored is not None
     assert stored.session_id == "s2"
-    assert stored.title_pending is True
+    assert stored.title == "title"
+    assert stored.title_pending is False
+    entry = store.list_history(conv_key)[0]
+    assert entry.title == "title"
+    assert entry.title_pending is False
     await runtime.shutdown()
 
 

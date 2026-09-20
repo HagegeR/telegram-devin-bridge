@@ -264,7 +264,6 @@ async def handle_command(
         if not args:
             await runtime.send_text(message, "Usage: /rename <name>")
             return
-        await runtime.edit_forum_topic(chat_id, thread_id, args)
         if conversation is not None:
             runtime.store.update_conversation(
                 conversation.conv_key,
@@ -272,11 +271,7 @@ async def handle_command(
                 title=args,
                 title_pending=False,
             )
-            runtime.store.update_history_title(
-                conversation.conv_key,
-                conversation.session_id,
-                args,
-            )
+        await runtime.edit_forum_topic(chat_id, thread_id, args)
     elif command in {"stop", "cancel"}:
         await _stop(runtime, message, conversation)
     elif command == "playbook":
@@ -362,17 +357,30 @@ async def _resume(
         ),
         None,
     )
+    chat_id = _int(_mapping(message.get("chat")).get("id"))
+    thread_id = _thread_id(message)
+    title = entry.title
+    title_pending = entry.title_pending
+    if entry.title_pending and state.title:
+        if thread_id is not None:
+            await runtime.edit_forum_topic(chat_id, thread_id, state.title[:128])
+        title, title_pending = state.title, False
+        runtime.store.update_history_title(
+            entry.conv_key,
+            entry.session_id,
+            title,
+        )
     await runtime.replace_conversation(
         conv_key=entry.conv_key,
-        chat_id=_int(_mapping(message.get("chat")).get("id")),
-        thread_id=_thread_id(message),
+        chat_id=chat_id,
+        thread_id=thread_id,
         session_id=entry.session_id,
         session_url=entry.session_url,
-        title=entry.title,
-        title_pending=entry.title_pending,
+        title=title,
+        title_pending=title_pending,
         last_event_id=latest,
     )
-    await runtime.send_text(message, f"Resumed: {entry.title} {entry.session_url}")
+    await runtime.send_text(message, f"Resumed: {title} {entry.session_url}")
 
 
 async def _stop(

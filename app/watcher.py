@@ -293,7 +293,6 @@ class SessionWatcher:
             title=title,
             title_pending=False,
         )
-        self.store.update_history_title(conv.conv_key, conv.session_id, title)
         self.conversation = replace(conv, title=title, title_pending=False)
 
     async def _refresh_progress(
