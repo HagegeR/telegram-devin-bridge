@@ -195,11 +195,15 @@ class SessionWatcher:
                         self.conversation.session_id,
                         last_pr_url=state.pr_url,
                     )
+                if (
+                    state.status_enum not in ACTIVE_STATUSES
+                    and self._topic_title_outstanding(state)
+                    and title_retries_after_finish
+                ):
+                    title_retries_after_finish -= 1
+                    await self.sleep(max(interval, 0.001))
+                    continue
                 if state.status_enum in {"expired", "finished"}:
-                    if self._topic_title_outstanding(state) and title_retries_after_finish:
-                        title_retries_after_finish -= 1
-                        await self.sleep(max(interval, 0.001))
-                        continue
                     await self._cleanup_transients()
                     await self._finish_reaction(expired=state.status_enum == "expired")
                     return
@@ -247,7 +251,6 @@ class SessionWatcher:
             and state.title != conv.title
             and conv.thread_id is not None
         )
-
     async def _edit_topic(self, title: str) -> bool:
         conv = self.conversation
         for attempt in range(3):

@@ -35,7 +35,7 @@ class HistoryEntry:
     session_url: str
     title: str
     created_at: float
-    title_pending: bool = False
+    title_pending: bool
 
 
 @dataclass(frozen=True)
@@ -655,7 +655,7 @@ class Store:
             self.connection.execute(
                 """
                 UPDATE session_history
-                SET title = ?, title_pending = 0
+                SET title = ?
                 WHERE conv_key = ? AND session_id = ?
                 """,
                 (title, conv_key, session_id),
