@@ -89,6 +89,7 @@ class CommandRuntime(Protocol):
         title_pending: bool = False,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
+        last_pr_url: str | None = None,
     ) -> Conversation: ...
 
     async def get_session_status(self, session_id: str) -> str: ...
@@ -398,6 +399,7 @@ async def _resume(
         title=title,
         title_pending=title_pending,
         last_event_id=latest,
+        last_pr_url=state.pr_url,
     )
     if retry_title:
         await runtime.start_watcher(conversation)

@@ -769,6 +769,7 @@ class Bridge:
         last_event_id: str | None = None,
         last_user_text: str | None = None,
         last_user_message_id: int | None = None,
+        last_pr_url: str | None = None,
         keep_queued: bool = False,
     ) -> Conversation:
         previous = self.store.get_conversation(conv_key)
@@ -791,6 +792,7 @@ class Bridge:
             last_event_id=last_event_id,
             last_user_text=last_user_text,
             last_user_message_id=last_user_message_id,
+            last_pr_url=last_pr_url,
         )
         conversation = self.store.get_conversation(conv_key)
         if conversation is None:

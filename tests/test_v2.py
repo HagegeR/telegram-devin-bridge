@@ -3426,7 +3426,7 @@ async def test_resume_survives_failed_topic_edit(tmp_path: Path) -> None:
 
     class FinishedDevin(_FakeDevin):
         async def get_session(self, _session_id: str) -> SessionState:
-            return SessionState("finished", "Generated", None, [])
+            return SessionState("finished", "Generated", "https://gh.test/pr/1", [])
 
     telegram = FailingTelegram()
     runtime = Bridge(settings(tmp_path), store, FinishedDevin(), telegram)  # type: ignore[arg-type]
@@ -3449,6 +3449,8 @@ async def test_resume_survives_failed_topic_edit(tmp_path: Path) -> None:
     assert stored is not None
     assert stored.title == "Generated"
     assert stored.title_pending is False
+    assert stored.last_pr_url == "https://gh.test/pr/1"
+    assert not any("PR:" in sent["text"] for sent in telegram.sent)
     await runtime.shutdown()
 
 
