@@ -3804,6 +3804,111 @@ async def test_rate_limit_does_not_block_commands(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_blocks_reaction_retry(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="old",
+        last_user_message_id=12,
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
+    runtime._rate_limited = lambda _user_id: True  # type: ignore[method-assign]
+    await runtime.handle_reaction(
+        {
+            "user": {"id": 111},
+            "chat": {"id": 222, "type": "private"},
+            "message_id": 12,
+            "old_reaction": [],
+            "new_reaction": [{"type": "emoji", "emoji": "🔁"}],
+        }
+    )
+    assert devin.sent == []
+    assert not runtime.watchers
+    await runtime.handle_reaction(
+        {
+            "user": {"id": 111},
+            "chat": {"id": 222, "type": "private"},
+            "message_id": 12,
+            "old_reaction": [],
+            "new_reaction": [{"type": "emoji", "emoji": "🛑"}],
+        }
+    )
+    assert devin.terminated == ["s1"]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_blocks_edited_message_correction(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="old",
+        last_user_message_id=12,
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
+    runtime._rate_limited = lambda _user_id: True  # type: ignore[method-assign]
+    await runtime.handle_edited_message({**message("new"), "message_id": 12})
+    assert devin.sent == []
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    assert conversation.last_user_text == "old"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_blocks_choice_callback(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    store.add_choice("pick", "222", "s1", 222, "yes", message_id=4)
+    store.add_choice("cancel", "222", "s1", 222, "__cmd:cancel", message_id=4)
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    runtime._rate_limited = lambda _user_id: True  # type: ignore[method-assign]
+    await runtime.handle_callback(
+        {
+            "id": "cb",
+            "data": "pick",
+            "from": {"id": 111},
+            "message": {"message_id": 4, "chat": {"id": 222, "type": "private"}},
+        }
+    )
+    assert devin.sent == []
+    assert store.get_choice("pick") is not None
+    assert telegram.answers == ["Slow down — try again in a moment."]
+    await runtime.handle_callback(
+        {
+            "id": "cb2",
+            "data": "cancel",
+            "from": {"id": 111},
+            "message": {"message_id": 4, "chat": {"id": 222, "type": "private"}},
+        }
+    )
+    assert store.get_choice("cancel") is None
+    assert "Cancelled." in telegram.edits
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_stop_cancel_keeps_queued_turns(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(

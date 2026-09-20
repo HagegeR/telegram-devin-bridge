@@ -754,6 +754,7 @@ class Bridge:
     async def handle_callback(self, callback: Mapping[str, object]) -> None:
         callback_id = _text(callback.get("id")) or ""
         sender = _mapping(callback.get("from"))
+        user_id = _int(sender.get("id"))
         callback_message = _mapping(callback.get("message"))
         if any(
             callback_message.get(field) is not None
@@ -819,6 +820,14 @@ class Bridge:
                 or active.session_id != session_id
             ):
                 await self.telegram.answer_callback_query(callback_id, "This choice expired")
+                return
+            if (
+                not option.startswith("__cmd:")
+                and self._rate_limited(user_id)
+            ):
+                await self.telegram.answer_callback_query(
+                    callback_id, "Slow down — try again in a moment."
+                )
                 return
             choices = self.store.list_choices(conv_key, callback_message_id)
             self.store.delete_choices(conv_key)
@@ -915,6 +924,8 @@ class Bridge:
             return
         async with self._lock(conversation.conv_key):
             if "🔁" in added and conversation.last_user_text:
+                if self._rate_limited(_int(user.get("id"))):
+                    return
                 if message_id:
                     await self.telegram.set_message_reaction(
                         chat_id,
@@ -985,6 +996,8 @@ class Bridge:
             if conversation.last_user_message_id != message_id:
                 return
             if conversation.last_user_text == text:
+                return
+            if self._rate_limited(_int(_mapping(message.get("from")).get("id"))):
                 return
             self.store.update_conversation(
                 conv_key,
