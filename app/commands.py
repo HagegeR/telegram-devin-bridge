@@ -291,6 +291,9 @@ async def handle_command(
     elif command == "whoami":
         await _whoami(runtime, message)
     elif command == "sethome":
+        sender_id = _int(_mapping(message.get("from")).get("id"))
+        if sender_id not in runtime.settings.admin_user_ids:
+            return
         runtime.store.set_setting("home_chat_id", str(chat_id))
         runtime.store.set_setting("home_thread_id", str(thread_id or ""))
         await runtime.send_text(message, "This chat is now the notification home.")
