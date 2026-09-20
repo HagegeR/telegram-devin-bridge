@@ -106,6 +106,7 @@ class SessionWatcher:
             self.poll_seconds,
         )
         previous_status: str | None = None
+        title_retries_after_finish = 3
         try:
             while (
                 self.clock() - self.started_at
@@ -195,6 +196,10 @@ class SessionWatcher:
                         last_pr_url=state.pr_url,
                     )
                 if state.status_enum in {"expired", "finished"}:
+                    if self._topic_title_outstanding(state) and title_retries_after_finish:
+                        title_retries_after_finish -= 1
+                        await self.sleep(max(interval, 0.001))
+                        continue
                     await self._cleanup_transients()
                     await self._finish_reaction(expired=state.status_enum == "expired")
                     return
@@ -233,6 +238,15 @@ class SessionWatcher:
         except asyncio.CancelledError:
             await self._cleanup_transients()
             raise
+
+    def _topic_title_outstanding(self, state: SessionState) -> bool:
+        conv = self.conversation
+        return self.topic_title_stale or bool(
+            conv.title_pending
+            and state.title
+            and state.title != conv.title
+            and conv.thread_id is not None
+        )
 
     async def _edit_topic(self, title: str) -> bool:
         conv = self.conversation

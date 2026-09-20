@@ -740,6 +740,7 @@ class Bridge:
             session_id=session_id,
             session_url=session_url,
             title=stored_title,
+            title_pending=title is None,
         )
         started_id = await self.send_text(
             message,

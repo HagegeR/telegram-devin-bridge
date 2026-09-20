@@ -369,6 +369,7 @@ async def _resume(
         session_id=entry.session_id,
         session_url=entry.session_url,
         title=entry.title,
+        title_pending=entry.title_pending,
         last_event_id=latest,
     )
     await runtime.send_text(message, f"Resumed: {entry.title} {entry.session_url}")

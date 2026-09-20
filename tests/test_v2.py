@@ -1569,6 +1569,79 @@ async def test_watcher_retries_manual_title_after_failed_reconcile(
 
 
 @pytest.mark.asyncio
+async def test_watcher_retries_topic_rename_on_terminal_poll(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FailingTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            if len(self.edited_topics) <= 3:
+                raise httpx.ReadTimeout("temporary failure")
+
+    class FinishedDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = FailingTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        FinishedDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    assert len(telegram.edited_topics) == 4
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title == "A useful session title"
+    assert stored.title_pending is False
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_title_pending(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "resume.sqlite3"))
+    store.add_history(
+        conv_key="222",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    assert store.list_history("222")[0].title_pending is True
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), _FakeTelegram())  # type: ignore[arg-type]
+
+    async def state(_: str) -> SessionState:
+        return SessionState("finished", None, None, [])
+
+    runtime.get_state = state  # type: ignore[method-assign]
+    await handle_command(runtime, message("/resume 1"), "/resume 1")
+    stored = store.get_conversation("222")
+    assert stored is not None
+    assert stored.session_id == "s1"
+    assert stored.title_pending is True
+    store.update_history_title("222", "s1", "Generated")
+    assert store.list_history("222")[0].title_pending is False
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_watcher_preserves_manual_topic_title(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
@@ -1746,8 +1819,8 @@ async def test_watcher_tolerates_topic_rename_transport_errors(
     stored = store.get_conversation("222:7")
     assert stored is not None
     assert stored.title_pending is True
-    assert len(telegram.edited_topics) == 3
-    assert any(item["text"] == "reply" for item in telegram.sent)
+    assert len(telegram.edited_topics) == 12
+    assert [item["text"] for item in telegram.sent].count("reply") == 1
 
 
 @pytest.mark.asyncio

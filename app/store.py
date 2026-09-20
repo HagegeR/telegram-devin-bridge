@@ -35,6 +35,7 @@ class HistoryEntry:
     session_url: str
     title: str
     created_at: float
+    title_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,8 @@ class Store:
                     session_id TEXT NOT NULL,
                     session_url TEXT NOT NULL,
                     title TEXT NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    title_pending INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS processed_updates (
                     update_id INTEGER PRIMARY KEY,
@@ -180,6 +182,16 @@ class Store:
             if "title_pending" not in columns:
                 self.connection.execute(
                     "ALTER TABLE conversations ADD COLUMN title_pending INTEGER NOT NULL DEFAULT 0"
+                )
+            history_columns = {
+                str(row["name"])
+                for row in self.connection.execute(
+                    "PRAGMA table_info(session_history)"
+                )
+            }
+            if "title_pending" not in history_columns:
+                self.connection.execute(
+                    "ALTER TABLE session_history ADD COLUMN title_pending INTEGER NOT NULL DEFAULT 0"
                 )
             choice_columns = {
                 str(row["name"])
@@ -399,6 +411,12 @@ class Store:
                     "WHERE conv_key = ? AND session_id = ?",
                     (title, conv_key, session_id),
                 )
+            if title_pending is not None:
+                self.connection.execute(
+                    "UPDATE session_history SET title_pending = ? "
+                    "WHERE conv_key = ? AND session_id = ?",
+                    (int(title_pending), conv_key, session_id),
+                )
 
     def clear_conversation(self, conv_key: str, session_id: str) -> None:
         with self.lock, self.connection:
@@ -609,6 +627,7 @@ class Store:
         session_id: str,
         session_url: str,
         title: str,
+        title_pending: bool = False,
         created_at: float | None = None,
     ) -> int:
         timestamp = time.time() if created_at is None else created_at
@@ -616,10 +635,18 @@ class Store:
             cursor = self.connection.execute(
                 """
                 INSERT INTO session_history(
-                    conv_key, session_id, session_url, title, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    conv_key, session_id, session_url, title, created_at,
+                    title_pending
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (conv_key, session_id, session_url, title, timestamp),
+                (
+                    conv_key,
+                    session_id,
+                    session_url,
+                    title,
+                    timestamp,
+                    int(title_pending),
+                ),
             )
             return int(cursor.lastrowid)
 
@@ -628,7 +655,7 @@ class Store:
             self.connection.execute(
                 """
                 UPDATE session_history
-                SET title = ?
+                SET title = ?, title_pending = 0
                 WHERE conv_key = ? AND session_id = ?
                 """,
                 (title, conv_key, session_id),
@@ -638,7 +665,8 @@ class Store:
         with self.lock:
             rows = self.connection.execute(
                 """
-                SELECT id, conv_key, session_id, session_url, title, created_at
+                SELECT id, conv_key, session_id, session_url, title, created_at,
+                    title_pending
                 FROM session_history
                 WHERE conv_key = ?
                 ORDER BY id DESC
@@ -654,6 +682,7 @@ class Store:
                 session_url=str(row["session_url"]),
                 title=str(row["title"]),
                 created_at=float(row["created_at"]),
+                title_pending=bool(row["title_pending"]),
             )
             for row in rows
         ]
