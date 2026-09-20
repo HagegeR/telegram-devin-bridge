@@ -4331,15 +4331,22 @@ async def test_attachment_photo_document_and_download_fallback(tmp_path: Path) -
     conversation = store.get_conversation("222")
     assert conversation is not None
     telegram = _FakeTelegram()
-    watcher = SessionWatcher(
-        conversation, store, ArtifactDevin(), telegram, settings(tmp_path),  # type: ignore[arg-type]
-    )
     image_url = "https://app.devin.ai/attachments/1/image.png"
     doc_url = "https://app.devin.ai/attachments/2/archive.zip"
+    hd_watcher = SessionWatcher(
+        conversation, store, ArtifactDevin(), telegram, settings(tmp_path),  # type: ignore[arg-type]
+    )
+    await hd_watcher._deliver(DevinMessage("devin_message", "0", image_url, None), SessionState("finished", "title", None, []))
+    assert telegram.photos == []
+    assert telegram.documents[0]["filename"] == "image.png"
+    watcher = SessionWatcher(
+        conversation, store, ArtifactDevin(), telegram,  # type: ignore[arg-type]
+        settings(tmp_path, telegram_images_as_documents=False),
+    )
     await watcher._deliver(DevinMessage("devin_message", "1", image_url, None), SessionState("finished", "title", None, []))
     await watcher._deliver(DevinMessage("devin_message", "2", doc_url, None), SessionState("finished", "title", None, []))
     assert telegram.photos[0]["filename"] == "image.png"
-    assert telegram.documents[0]["filename"] == "archive.zip"
+    assert telegram.documents[1]["filename"] == "archive.zip"
     assert store.conv_key_for_message(222, 1) == "222"
     sent_before = len(telegram.sent)
     await watcher._deliver(

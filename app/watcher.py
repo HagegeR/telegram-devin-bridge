@@ -460,7 +460,10 @@ class SessionWatcher:
             content, content_type = downloaded
             filename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
             try:
-                if content_type.startswith("image/"):
+                if (
+                    content_type.startswith("image/")
+                    and not self.settings.telegram_images_as_documents
+                ):
                     result = await self.telegram.send_photo(
                         self.conversation.chat_id,
                         filename,

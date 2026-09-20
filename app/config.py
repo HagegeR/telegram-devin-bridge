@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     telegram_mode: str = "webhook"
     telegram_rich_messages: bool = True
     telegram_drafts: bool = False
+    telegram_images_as_documents: bool = True
     telegram_allowed_chat_ids: str = ""
     telegram_allowed_users: str = ""
     telegram_allow_all_users: bool = False
@@ -40,7 +41,8 @@ class Settings(BaseSettings):
         "DEVIN_SESSION_INSTRUCTIONS,DEVIN_MAX_ACU_LIMIT,DEVIN_POLL_SECONDS,"
         "DEVIN_POLL_FAST_SECONDS,DEVIN_WATCH_TIMEOUT_SECONDS,"
         "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
-        "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_NOTIFICATION_MODE,"
+        "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_IMAGES_AS_DOCUMENTS,"
+        "TELEGRAM_NOTIFICATION_MODE,"
         "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
         "TELEGRAM_ALLOWED_USERS,TELEGRAM_DEBOUNCE_SECONDS,"
         "TELEGRAM_QUEUE_WHILE_BUSY,TELEGRAM_LONG_REPLY_CHARS,"
