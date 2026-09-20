@@ -2854,7 +2854,7 @@ async def test_busy_turn_is_queued_and_drained(tmp_path: Path) -> None:
     runtime.watchers["s1"] = task
     await runtime._queue_turn(message("next", message_id=9), "next", None)
     assert runtime.queued_count("222") == 1
-    assert telegram.reactions[-1] == "⏳"
+    assert telegram.reactions[-1] == "🤔"
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     runtime.watchers.pop("s1", None)
@@ -2862,6 +2862,144 @@ async def test_busy_turn_is_queued_and_drained(tmp_path: Path) -> None:
     await runtime._drain_queue("222")
     assert runtime.queued_count("222") == 0
     assert telegram.reactions[-1] == "👀"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_busy_turn_queue_survives_reaction_failure(tmp_path: Path) -> None:
+    class FailingReactionTelegram(_FakeTelegram):
+        async def set_message_reaction(
+            self, _chat_id: int, _message_id: int, _emoji: str
+        ) -> None:
+            raise RuntimeError("reaction invalid")
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = FailingReactionTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_queue_while_busy=True),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    runtime.active_watchers["s1"] = SessionWatcher(
+        conversation,
+        store,
+        _FakeDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    )
+    task = asyncio.create_task(asyncio.sleep(10))
+    runtime.watchers["s1"] = task
+    await runtime._queue_turn(message("next", message_id=9), "next", None)
+    assert runtime.queued_count("222") == 1
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    runtime.watchers.pop("s1", None)
+    runtime.active_watchers.pop("s1", None)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_steer_sends_immediately_without_queueing(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_user_text="previous",
+    )
+    devin = _FakeDevin()
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_queue_while_busy=True),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    start_calls: list[tuple[str, int | None]] = []
+
+    async def start_watcher(
+        conversation: object,
+        *,
+        trigger_message_id: int | None = None,
+    ) -> None:
+        start_calls.append(
+            (conversation.session_id, trigger_message_id)  # type: ignore[attr-defined]
+        )
+
+    runtime.start_watcher = start_watcher  # type: ignore[method-assign]
+    await handle_command(
+        runtime,
+        message("/steer hurry up", message_id=19),
+        "/steer hurry up",
+    )
+    assert devin.sent == [("s1", "hurry up")]
+    assert runtime.queued_count("222") == 0
+    assert telegram.reactions[-1] == "👀"
+    assert start_calls == [("s1", 19)]
+    assert store.get_conversation("222").last_user_text == "previous"  # type: ignore[union-attr]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_react_swallows_http_error(tmp_path: Path) -> None:
+    class FailingReactionTelegram(_FakeTelegram):
+        async def set_message_reaction(
+            self, _chat_id: int, _message_id: int, _emoji: str
+        ) -> None:
+            raise httpx.HTTPError("reaction transport failed")
+
+    runtime = Bridge(
+        settings(tmp_path),
+        Store(":memory:"),
+        _FakeDevin(),
+        FailingReactionTelegram(),
+    )  # type: ignore[arg-type]
+    await runtime.react(message("steer"), "👀")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_steer_without_args_sends_usage(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/steer"), "/steer")
+    assert telegram.sent[-1]["text"] == (
+        "Usage: /steer <text> — send a message to the running session immediately."
+    )
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_steer_without_conversation_reports_no_active_session(
+    tmp_path: Path,
+) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/steer x"), "/steer x")
+    assert telegram.sent[-1]["text"] == "No active session."
     await runtime.shutdown()
 
 

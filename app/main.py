@@ -261,6 +261,7 @@ class Bridge:
                 "new",
                 "resume",
                 "retry",
+                "steer",
                 "stop",
                 "cancel",
                 "playbook",
@@ -368,11 +369,7 @@ class Bridge:
                 and self._conversation_busy(conv_key)
             ):
                 self.queued_turns.setdefault(conv_key, []).append(turn)
-                await self.telegram.set_message_reaction(
-                    _int(_mapping(message.get("chat")).get("id")),
-                    _int(message.get("message_id")),
-                    "⏳",
-                )
+                await self.react(message, "🤔")
                 return
             queued = self.queued_turns.pop(conv_key, [])
             for index, queued_turn in enumerate(queued):
@@ -1253,6 +1250,16 @@ class Bridge:
 
     async def send_session_message(self, session_id: str, text: str) -> None:
         await self.devin.send_message(session_id, text)
+
+    async def react(self, message: Mapping[str, object], emoji: str) -> None:
+        try:
+            await self.telegram.set_message_reaction(
+                _int(_mapping(message.get("chat")).get("id")),
+                _int(message.get("message_id")),
+                emoji,
+            )
+        except (RuntimeError, httpx.HTTPError):
+            logger.warning("Failed to set Telegram reaction %s", emoji, exc_info=True)
 
     async def get_state(self, session_id: str) -> SessionState:
         return await self.devin.get_session(session_id)
