@@ -2929,11 +2929,46 @@ async def test_steer_sends_immediately_without_queueing(tmp_path: Path) -> None:
         devin,
         telegram,
     )  # type: ignore[arg-type]
-    await handle_command(runtime, message("/steer hurry up"), "/steer hurry up")
+    start_calls: list[tuple[str, int | None]] = []
+
+    async def start_watcher(
+        conversation: object,
+        *,
+        trigger_message_id: int | None = None,
+    ) -> None:
+        start_calls.append(
+            (conversation.session_id, trigger_message_id)  # type: ignore[attr-defined]
+        )
+
+    runtime.start_watcher = start_watcher  # type: ignore[method-assign]
+    await handle_command(
+        runtime,
+        message("/steer hurry up", message_id=19),
+        "/steer hurry up",
+    )
     assert devin.sent == [("s1", "hurry up")]
     assert runtime.queued_count("222") == 0
     assert telegram.reactions[-1] == "👀"
+    assert start_calls == [("s1", 19)]
     assert store.get_conversation("222").last_user_text == "previous"  # type: ignore[union-attr]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_react_swallows_http_error(tmp_path: Path) -> None:
+    class FailingReactionTelegram(_FakeTelegram):
+        async def set_message_reaction(
+            self, _chat_id: int, _message_id: int, _emoji: str
+        ) -> None:
+            raise httpx.HTTPError("reaction transport failed")
+
+    runtime = Bridge(
+        settings(tmp_path),
+        Store(":memory:"),
+        _FakeDevin(),
+        FailingReactionTelegram(),
+    )  # type: ignore[arg-type]
+    await runtime.react(message("steer"), "👀")
     await runtime.shutdown()
 
 

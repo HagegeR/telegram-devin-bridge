@@ -1258,7 +1258,7 @@ class Bridge:
                 _int(message.get("message_id")),
                 emoji,
             )
-        except RuntimeError:
+        except (RuntimeError, httpx.HTTPError):
             logger.warning("Failed to set Telegram reaction %s", emoji, exc_info=True)
 
     async def get_state(self, session_id: str) -> SessionState:

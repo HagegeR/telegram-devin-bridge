@@ -44,7 +44,12 @@ class CommandRuntime(Protocol):
         start_watcher: bool = True,
     ) -> Conversation: ...
 
-    async def start_watcher(self, conversation: Conversation) -> None: ...
+    async def start_watcher(
+        self,
+        conversation: Conversation,
+        *,
+        trigger_message_id: int | None = None,
+    ) -> None: ...
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int: ...
 
@@ -279,6 +284,10 @@ async def handle_command(
         else:
             await runtime.send_session_message(conversation.session_id, args)
             await runtime.react(message, "👀")
+            await runtime.start_watcher(
+                conversation,
+                trigger_message_id=_int(message.get("message_id")),
+            )
     elif command == "whoami":
         await _whoami(runtime, message)
     elif command == "sethome":
