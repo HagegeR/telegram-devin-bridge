@@ -170,7 +170,7 @@ def register_admin_route(
         key = "-"
         status = "ok"
 
-        async def _dispatch(payload: object | None = None) -> dict[str, object]:
+        async def _dispatch() -> dict[str, object]:
             nonlocal action, key
             _check_rate()
             try:
