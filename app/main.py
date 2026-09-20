@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import os
 import re
 import secrets
 import shlex
@@ -55,12 +56,18 @@ def _sanitize_update_output(text: str) -> str:
     return text[-3000:]
 
 
-async def _run_command(argv: list[str], cwd: Path) -> tuple[int, str]:
+async def _run_command(
+    argv: list[str],
+    cwd: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        env={**os.environ, **env} if env is not None else None,
     )
     try:
         stdout, _ = await asyncio.wait_for(process.communicate(), 300)
@@ -121,6 +128,45 @@ class Bridge:
             request.user_id
             for request in self.store.list_access_requests("approved")
         }
+        await self._announce_update()
+
+    async def _announce_update(self) -> None:
+        try:
+            marker = _REPO_ROOT / ".self-update-pending"
+            if not marker.exists():
+                return
+            lines = marker.read_text(encoding="utf-8").splitlines()
+            marker.unlink()  # delete first so a crash loop can't spam
+            old = lines[0].strip() if len(lines) > 0 else "?"
+            new = lines[1].strip() if len(lines) > 1 else "?"
+            target = lines[2].strip() if len(lines) > 2 else ""
+            text = f"Bridge updated {old[:7]} → {new[:7]} and back online."
+            _, log = await self._run_command(
+                ["git", "log", "--oneline", f"{old}..{new}"], _REPO_ROOT
+            )
+            log_lines = _sanitize_update_output(log.strip()).splitlines()[:10]
+            if log_lines:
+                text += "\n```\n" + "\n".join(log_lines) + "\n```"
+            if target:
+                chat_part, _, thread_part = target.partition(":")
+                await self.telegram.send_markdown(
+                    int(chat_part),
+                    text,
+                    thread_id=int(thread_part) if thread_part else None,
+                )
+            else:
+                try:
+                    await self.notify(
+                        text,
+                        chat_id=None,
+                        thread_id=None,
+                        silent=True,
+                        markdown=True,
+                    )
+                except ValueError:
+                    logger.info("update installed but no home chat configured")
+        except Exception:
+            logger.warning("failed to announce self-update", exc_info=True)
 
     async def shutdown(self) -> None:
         self.shutting_down = True
@@ -1388,7 +1434,15 @@ class Bridge:
             return
         if args.strip() == "check":
             argv.append("--check")
-        exit_code, output = await self._run_command(argv, _REPO_ROOT)
+        await self.send_text(message, "Checking for updates…")
+        chat_id = _int(_mapping(message.get("chat")).get("id"))
+        notify_target = str(chat_id)
+        thread_id = _thread_id(message)
+        if thread_id is not None:
+            notify_target = f"{notify_target}:{thread_id}"
+        exit_code, output = await self._run_command(
+            argv, _REPO_ROOT, env={"SELF_UPDATE_NOTIFY": notify_target}
+        )
         tail = "\n".join(output.strip().splitlines()[-30:]) or "(no output)"
         if exit_code != 0:
             tail = f"exit {exit_code}\n{tail}"
