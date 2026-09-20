@@ -44,7 +44,7 @@ class Settings(BaseSettings):
         "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
         "TELEGRAM_ALLOWED_USERS,TELEGRAM_DEBOUNCE_SECONDS,"
         "TELEGRAM_QUEUE_WHILE_BUSY,TELEGRAM_LONG_REPLY_CHARS,"
-        "TELEGRAM_RATE_LIMIT_PER_MINUTE,BOT_USERNAME,SELF_UPDATE_COMMAND"
+        "TELEGRAM_RATE_LIMIT_PER_MINUTE,BOT_USERNAME"
     )
     admin_log_path: str = "/var/log/telegram-devin-bridge.log"
     admin_restart_command: str = (

@@ -162,7 +162,8 @@ curl -X POST https://<host>.<tailnet>.ts.net/admin   -H "Authorization: Bearer $
 Security: separate `ADMIN_SECRET`, `ADMIN_ENV_ALLOWLIST` whitelists only
 non-secret keys (tokens/keys are never readable or writable), every call is
 audit-logged and posts a Telegram notification, 10 req/min rate limit, and
-log output is secret-redacted.
+log output is secret-redacted. Command and path keys can never be set via the
+API.
 
 ## Self-update
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from dotenv import dotenv_values
 from fastapi import FastAPI
 
 from app.admin import register_admin_route
@@ -109,18 +111,48 @@ async def test_admin_403_bad_bearer(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_admin_unknown_action(tmp_path: Path) -> None:
-    app, *_ = make_app(tmp_path)
+    app, _, _, _, notices = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await authed(client, {"action": "rm-rf"})
         assert response.status_code == 400
         assert "doctor" in response.json()["detail"]
+    assert any("error 400" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_admin_malformed_json(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/admin",
+            content=b"{",
+            headers={
+                "Authorization": "Bearer admin-secret-abcdef",
+                "Content-Type": "application/json",
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid JSON"
+
+
+@pytest.mark.asyncio
+async def test_admin_logs_rejects_bool_lines(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await authed(client, {"action": "logs", "lines": True})
+    assert response.status_code == 400
+    assert response.json()["detail"] == "lines must be int"
 
 
 @pytest.mark.asyncio
 async def test_admin_set_env_allowed(tmp_path: Path) -> None:
-    app, *_ = make_app(tmp_path)
+    app, _, _, _, notices = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -134,12 +166,14 @@ async def test_admin_set_env_allowed(tmp_path: Path) -> None:
     assert "DEVIN_MAX_ACU_LIMIT=5" in env_text
     assert "# a comment" in env_text
     assert "TELEGRAM_ALLOWED_USERS=111" in env_text
+    assert any("ok" in notice for notice in notices)
 
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform == "win32", reason="chmod mode bits")
 async def test_admin_set_env_mode_preserved(tmp_path: Path) -> None:
     env_path = tmp_path / ".env"
+    env_path.write_text("")
     os.chmod(env_path, 0o600)
     app, *_ = make_app(tmp_path)
     async with httpx.AsyncClient(
@@ -173,6 +207,87 @@ async def test_admin_set_env_disallowed_and_bad_value(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_set_env_round_trip_values(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    env_path = tmp_path / ".env"
+    values = (
+        "review changes # no deployment",
+        'quote " and slash \\ value',
+        "",
+        "  leading and trailing spaces  ",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for value in values:
+            response = await authed(
+                client,
+                {
+                    "action": "set-env",
+                    "key": "DEVIN_SESSION_INSTRUCTIONS",
+                    "value": value,
+                },
+            )
+            assert response.status_code == 200
+            assert (
+                dotenv_values(env_path)["DEVIN_SESSION_INSTRUCTIONS"] == value
+            )
+            get_response = await authed(client, {"action": "get-env"})
+            assert get_response.json()["env"]["DEVIN_SESSION_INSTRUCTIONS"] == value
+            loaded = Settings(
+                _env_file=env_path,
+                telegram_bot_token="bot123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                telegram_webhook_secret="secret-placeholder",
+                devin_api_key="apk_user_abcdef123456",
+                public_base_url="https://bridge.example.ts.net",
+            )
+            assert loaded.devin_session_instructions == value
+
+
+@pytest.mark.asyncio
+async def test_admin_set_env_rejects_interpolation(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await authed(
+            client,
+            {
+                "action": "set-env",
+                "key": "DEVIN_SESSION_INSTRUCTIONS",
+                "value": "${X}",
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "interpolation syntax not allowed"
+
+
+@pytest.mark.asyncio
+async def test_admin_env_never_keys_are_rejected_and_hidden(tmp_path: Path) -> None:
+    app, *_ = make_app(
+        tmp_path,
+        admin_env_allowlist="DEVIN_MAX_ACU_LIMIT,SELF_UPDATE_COMMAND",
+    )
+    env_path = tmp_path / ".env"
+    with env_path.open("a", encoding="utf-8") as handle:
+        handle.write("SELF_UPDATE_COMMAND=sh deploy/self-update.sh\n")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        set_response = await authed(
+            client,
+            {
+                "action": "set-env",
+                "key": "SELF_UPDATE_COMMAND",
+                "value": "echo unsafe",
+            },
+        )
+        get_response = await authed(client, {"action": "get-env"})
+    assert set_response.status_code == 400
+    assert "SELF_UPDATE_COMMAND" not in get_response.json()["env"]
+
+
+@pytest.mark.asyncio
 async def test_admin_get_env_allowlist_only(tmp_path: Path) -> None:
     app, *_ = make_app(tmp_path)
     async with httpx.AsyncClient(
@@ -187,7 +302,16 @@ async def test_admin_get_env_allowlist_only(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_admin_logs_redacts(tmp_path: Path) -> None:
-    app, *_ = make_app(tmp_path)
+    app, *_ = make_app(
+        tmp_path,
+        github_token="github-secret",
+        transcription_api_key="transcription-secret",
+    )
+    (tmp_path / "bridge.log").write_text(
+        "INFO ok\n"
+        "github github-secret transcription transcription-secret\n",
+        encoding="utf-8",
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -196,6 +320,8 @@ async def test_admin_logs_redacts(tmp_path: Path) -> None:
     text = "\n".join(response.json()["lines"])
     assert "bot123456:AAAA" not in text
     assert "apk_user_abcdef123456" not in text
+    assert "github-secret" not in text
+    assert "transcription-secret" not in text
     assert "***" in text
     assert "INFO ok" in text
 
@@ -216,11 +342,38 @@ async def test_admin_restart_and_update(tmp_path: Path) -> None:
         assert response.json()["exit_code"] == 0
         assert ran and "self-update" in ran[-1][0]
     assert any("Admin API" in n for n in notices)
+    assert any("ok" in n for n in notices)
+
+
+@pytest.mark.asyncio
+async def test_admin_set_env_concurrent_writes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("app.admin._RATE_LIMIT", 100)
+    app, *_ = make_app(tmp_path)
+    requests = [
+        {
+            "action": "set-env",
+            "key": key,
+            "value": value,
+        }
+        for key, value in (
+            ("DEVIN_MAX_ACU_LIMIT", "5"),
+            ("TELEGRAM_ALLOWED_USERS", "222"),
+        )
+        for _ in range(10)
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        responses = await asyncio.gather(*(authed(client, body) for body in requests))
+    assert all(response.status_code == 200 for response in responses)
+    env = dotenv_values(tmp_path / ".env")
+    assert env["DEVIN_MAX_ACU_LIMIT"] == "5"
+    assert env["TELEGRAM_ALLOWED_USERS"] == "222"
 
 
 @pytest.mark.asyncio
 async def test_admin_rate_limit(tmp_path: Path) -> None:
-    app, *_ = make_app(tmp_path)
+    app, _, _, _, notices = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -230,3 +383,4 @@ async def test_admin_rate_limit(tmp_path: Path) -> None:
         ]
     assert codes[:10] == [200] * 10
     assert codes[10] == 429
+    assert any("error 429" in notice for notice in notices)
