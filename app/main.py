@@ -637,7 +637,29 @@ class Bridge:
             text = f"{text}\n\nAttached file: {url} ({filename})".strip()
         if not text:
             text = "Please inspect the attached file."
-        if conversation is None or await self._is_finished(conversation.session_id):
+        if conversation is not None and await self._is_finished(conversation.session_id):
+            conversation = None
+        if conversation is not None:
+            self.store.update_conversation(
+                conv_key,
+                conversation.session_id,
+                last_user_text=text,
+                last_user_message_id=message_id,
+            )
+            try:
+                await self.send_session_message(conversation.session_id, text)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in {404, 410}:
+                    raise
+                logger.warning(
+                    "Session %s is gone (%s); starting a new one",
+                    conversation.session_id,
+                    exc.response.status_code,
+                )
+                conversation = None
+            else:
+                conversation = self.store.get_conversation(conv_key) or conversation
+        if conversation is None:
             conversation = await self.create_session_for_message(
                 message,
                 SYSTEM_PREAMBLE + text,
@@ -645,6 +667,7 @@ class Bridge:
                 playbook_id=self.store.get_settings(conv_key).default_playbook,
                 last_user_text=text,
                 start_watcher=False,
+                keep_queued=True,
             )
             if thread_id is not None and (chat_id, thread_id) in self.implicit_topics:
                 topic_name = text[:60].splitlines()[0] or "Devin"
@@ -662,15 +685,6 @@ class Bridge:
                     )
                 finally:
                     self.implicit_topics.discard((chat_id, thread_id))
-        else:
-            self.store.update_conversation(
-                conv_key,
-                conversation.session_id,
-                last_user_text=text,
-                last_user_message_id=message_id,
-            )
-            await self.send_session_message(conversation.session_id, text)
-            conversation = self.store.get_conversation(conv_key) or conversation
         await self.start_watcher(conversation, trigger_message_id=message_id)
 
     async def create_session_for_message(
@@ -682,6 +696,7 @@ class Bridge:
         playbook_id: str | None = None,
         last_user_text: str | None = None,
         start_watcher: bool = True,
+        keep_queued: bool = False,
     ) -> Conversation:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
@@ -718,6 +733,7 @@ class Bridge:
                 if last_user_text is not None
                 else None
             ),
+            keep_queued=keep_queued,
         )
         self.store.add_history(
             conv_key=conv_key,
@@ -752,10 +768,12 @@ class Bridge:
         last_event_id: str | None = None,
         last_user_text: str | None = None,
         last_user_message_id: int | None = None,
+        keep_queued: bool = False,
     ) -> Conversation:
         previous = self.store.get_conversation(conv_key)
         if previous is not None and previous.session_id != session_id:
-            self.clear_queued_turns(conv_key)
+            if not keep_queued:
+                self.clear_queued_turns(conv_key)
             task = self.watchers.pop(previous.session_id, None)
             self.active_watchers.pop(previous.session_id, None)
             if task is not None and not task.done():
@@ -1701,10 +1719,9 @@ class Bridge:
         return sent
 
     async def _is_finished(self, session_id: str) -> bool:
-        return (await self.devin.get_session(session_id)).status_enum in {
-            "expired",
-            "finished",
-        }
+        # "finished" (idle, awaiting input) and suspended sessions resume when
+        # messaged, keeping the conversation's context; only expired ones don't.
+        return (await self.devin.get_session(session_id)).status_enum == "expired"
 
     @asynccontextmanager
     async def _lock(self, conv_key: str) -> AsyncIterator[None]:

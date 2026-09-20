@@ -56,7 +56,7 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
 ### `handle_user_turn(conv, message)`
 - React 👀 on the user's message (`set_message_reaction`), start typing.
 - If message has `photo` (largest size) or `document` (<= 20 MB, Telegram getFile limit): download, `upload_attachment`, and prepend `Attached file: <url>` (+ original filename) to the text/caption.
-- If conversation has no active session (or its `status_enum` is `expired`/`finished` -> auto-create new): `create_session(prompt=SYSTEM_PREAMBLE + text, title=f"Telegram: {first 60 chars}")`, insert into `conversations` + `session_history`, reply with `Started session: <url>` (silent).
+- If conversation has no active session (or its `status_enum` is `expired`, or the send below fails with 404/410 -> auto-create new; `finished`/`blocked`/suspended sessions resume when messaged and keep their context): `create_session(prompt=SYSTEM_PREAMBLE + text, title=f"Telegram: {first 60 chars}")`, insert into `conversations` + `session_history`, reply with `Started session: <url>` (silent).
   - `SYSTEM_PREAMBLE` (constant in `commands.py`): "You are chatting with a user over Telegram via a bridge. Keep replies concise. Telegram renders Markdown. When you need the user to pick between a small set of options, end your message with one line exactly like `OPTIONS: first option | second option | third option` (max 8, each under 60 chars); the bridge turns it into buttons. Never ask the user to open a UI; they only see your messages.\n\nUser message: "
 - Else `send_message(session_id, text)`.
 - Ensure a `SessionWatcher` is running for that session (idempotent registry keyed by session_id).
