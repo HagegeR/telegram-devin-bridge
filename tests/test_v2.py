@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Self, cast
@@ -1394,6 +1395,37 @@ async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_watcher_preserves_manual_topic_title(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Manual topic title",
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+    conversation = replace(conversation, title="Telegram: prompt")
+    telegram = _FakeTelegram()
+
+    class TitledDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    assert telegram.edited_topics == []
+    assert store.get_conversation("222:7").title == "Manual topic title"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
 async def test_watcher_persists_session_title_without_topic(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
@@ -2676,9 +2708,14 @@ async def test_topic_close_and_rename_commands(tmp_path: Path) -> None:
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
     await handle_command(runtime, message("/close"), "/close")
     assert "This command only works inside a topic." in telegram.sent[-1]["text"]
-    topic_message = {**message("/rename New name"), "message_thread_id": 9}
+    topic_message = {
+        **message("/rename New name"),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+    }
     await handle_command(runtime, topic_message, "/rename New name")
     assert telegram.edited_topics == [(222, 9, "New name")]
+    assert store.get_conversation("222:9").title == "New name"  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio

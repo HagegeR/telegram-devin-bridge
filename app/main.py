@@ -37,7 +37,11 @@ from app.formatting import (
 from app.notify import register_notify_route
 from app.polling import run_polling
 from app.set_webhook import configure_bot
-from app.store import Conversation, Store
+from app.store import (
+    PLACEHOLDER_TITLE_PREFIX,
+    Conversation,
+    Store,
+)
 from app.telegram import TelegramClient
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
 
@@ -696,7 +700,9 @@ class Bridge:
             playbook_id,
         )
         stored_title = (
-            title if title is not None else f"Telegram: {(last_user_text or prompt)[:60]}"
+            title
+            if title is not None
+            else f"{PLACEHOLDER_TITLE_PREFIX}{(last_user_text or prompt)[:60]}"
         )
         conversation = await self.replace_conversation(
             conv_key=conv_key,

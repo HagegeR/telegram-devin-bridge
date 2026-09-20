@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 UNSET = object()
+PLACEHOLDER_TITLE_PREFIX = "Telegram: "
 
 
 @dataclass(frozen=True)

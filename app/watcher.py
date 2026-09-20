@@ -20,7 +20,7 @@ from app.formatting import (
     extract_options,
     split_long_text,
 )
-from app.store import Conversation, Store
+from app.store import PLACEHOLDER_TITLE_PREFIX, Conversation, Store
 from app.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,17 @@ class SessionWatcher:
                 if self.generation != gen:
                     await self.sleep(interval)
                     continue
-                if state.title and state.title != self.conversation.title:
+                stored = self.store.get_conversation(self.conversation.conv_key)
+                if stored is not None and stored.title != self.conversation.title:
+                    self.conversation = replace(
+                        self.conversation,
+                        title=stored.title,
+                    )
+                if (
+                    state.title
+                    and state.title != self.conversation.title
+                    and self.conversation.title.startswith(PLACEHOLDER_TITLE_PREFIX)
+                ):
                     self.store.update_conversation(
                         self.conversation.conv_key,
                         self.conversation.session_id,

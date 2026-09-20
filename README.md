@@ -82,8 +82,8 @@ available. `/new` creates a fresh active session without deleting history.
 an instructional seed message into it. Private-chat topics must first be
 enabled from the chat's bot settings; groups must have Topics enabled.
 `/close` and `/rename` manage the current forum topic. React 🔁 to retry the
-last user message or 🛑 to stop the active session. Topics are automatically
-renamed to the Devin session title; `/rename <name>` still overrides it.
+last user message or 🛑 to stop the active session. Topics are renamed to the
+Devin session title once it is generated; `/rename <name>` overrides it.
 `/stop` asks for inline confirmation. `/playbook` lists available Devin
 playbooks or starts one. `/retry` resends the last user message.
 `/settings` controls notification, draft, status timer, and default playbook

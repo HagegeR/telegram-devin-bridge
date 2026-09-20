@@ -264,6 +264,12 @@ async def handle_command(
             await runtime.send_text(message, "Usage: /rename <name>")
             return
         await runtime.edit_forum_topic(chat_id, thread_id, args)
+        if conversation is not None:
+            runtime.store.update_conversation(
+                conversation.conv_key,
+                conversation.session_id,
+                title=args,
+            )
     elif command in {"stop", "cancel"}:
         await _stop(runtime, message, conversation)
     elif command == "playbook":
