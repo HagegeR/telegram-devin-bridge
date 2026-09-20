@@ -709,9 +709,11 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     runtime = app.state.bridge
 
     sent: list[str] = []
+    send_kwargs: list[dict[str, object]] = []
 
     async def fake_send(message, text, **kwargs):
         sent.append(text)
+        send_kwargs.append(kwargs)
         return 1
 
     runtime.send_text = fake_send  # type: ignore[assignment]
@@ -735,8 +737,16 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
 
     sent.clear()
     stranger_msg = {"from": {"id": 7}, "chat": {"id": 5}}
+    previous_commands = list(commands)
     await runtime.self_update(stranger_msg, "")
-    assert sent == []
+    assert sent == [
+        (
+            "Admins only. Add your Telegram user id (see /whoami) to "
+            "TELEGRAM_ADMIN_USER_IDS and restart the bridge."
+        )
+    ]
+    assert send_kwargs[-1]["ephemeral"] is True
+    assert commands == previous_commands
 
 
 @pytest.mark.asyncio

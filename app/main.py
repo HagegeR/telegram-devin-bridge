@@ -1348,6 +1348,12 @@ class Bridge:
     async def self_update(self, message: Mapping[str, object], args: str) -> None:
         sender_id = _int(_mapping(message.get("from")).get("id"))
         if sender_id not in self.settings.admin_user_ids:
+            await self.send_text(
+                message,
+                "Admins only. Add your Telegram user id (see /whoami) to "
+                "TELEGRAM_ADMIN_USER_IDS and restart the bridge.",
+                ephemeral=True,
+            )
             return
         argv = shlex.split(self.settings.self_update_command)
         script = next(
