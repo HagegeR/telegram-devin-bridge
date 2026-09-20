@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -20,6 +21,15 @@ from app.telegram_updates import ALLOWED_UPDATES
 RETRY_ATTEMPTS = 5
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
 T = TypeVar("T")
+
+
+async def _is_public_host(hostname: str) -> bool:
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(hostname, None)
+    except OSError:
+        return False
+    addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    return bool(addresses) and all(address.is_global for address in addresses)
 
 
 async def _with_transport_retry(
@@ -217,6 +227,10 @@ class DevinClient:
                             return None
                         redirect_url = urljoin(current_url, location)
                         if urlparse(redirect_url).scheme != "https":
+                            return None
+                        if not await _is_public_host(
+                            urlparse(redirect_url).hostname or ""
+                        ):
                             return None
                         return redirect_url
                     response.raise_for_status()

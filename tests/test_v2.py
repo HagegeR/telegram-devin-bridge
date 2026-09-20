@@ -1676,7 +1676,13 @@ async def test_download_attachment_stream_limits_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_download_attachment_redirect_uses_public_client() -> None:
+async def test_download_attachment_redirect_uses_public_client(monkeypatch) -> None:
+    import app.clients as clients_mod
+
+    async def public_host(_: str) -> bool:
+        return True
+
+    monkeypatch.setattr(clients_mod, "_is_public_host", public_host)
     requests: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1715,6 +1721,43 @@ async def test_download_attachment_redirect_uses_public_client() -> None:
         ),
     ]
     await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_download_attachment_rejects_non_public_redirect(monkeypatch) -> None:
+    import app.clients as clients_mod
+
+    async def private_host(_: str) -> bool:
+        return False
+
+    monkeypatch.setattr(clients_mod, "_is_public_host", private_host)
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(
+            302,
+            headers={"Location": "https://169.254.169.254/x"},
+        )
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.download_attachment(
+        "https://app.devin.ai/attachments/1/file.txt"
+    ) is None
+    assert requests == ["https://devin.test/v1/attachments/1/file.txt"]
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_is_public_host_rejects_loopback() -> None:
+    from app.clients import _is_public_host
+
+    assert not await _is_public_host("127.0.0.1")
 
 
 @pytest.mark.asyncio
