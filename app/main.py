@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _ANNOUNCE_MAX_ATTEMPTS = 3
+_ANNOUNCE_RETRY_DELAYS = (30.0, 120.0)
 
 
 async def _run_command(
@@ -121,13 +122,23 @@ class Bridge:
             request.user_id
             for request in self.store.list_access_requests("approved")
         }
-        await self._announce_update()
+        if not await self._announce_update():
+            task = asyncio.create_task(self._retry_announce_update())
+            self.background_tasks.add(task)
+            task.add_done_callback(self.background_tasks.discard)
 
-    async def _announce_update(self) -> None:
+    async def _retry_announce_update(self) -> None:
+        for delay in _ANNOUNCE_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            if await self._announce_update():
+                return
+
+    async def _announce_update(self) -> bool:
+        """Return True once the pending marker is consumed (sent or given up)."""
         try:
             marker = _REPO_ROOT / ".self-update-pending"
             if not marker.exists():
-                return
+                return True
             lines = marker.read_text(encoding="utf-8").splitlines()
             old = lines[0].strip() if len(lines) > 0 else "?"
             new = lines[1].strip() if len(lines) > 1 else "?"
@@ -136,7 +147,7 @@ class Bridge:
             if attempts >= _ANNOUNCE_MAX_ATTEMPTS:
                 marker.unlink()
                 logger.warning("giving up on self-update announcement")
-                return
+                return True
             marker.write_text(
                 f"{old}\n{new}\n{target}\n{attempts + 1}\n", encoding="utf-8"
             )
@@ -169,8 +180,10 @@ class Bridge:
                 except ValueError:
                     logger.info("update installed but no home chat configured")
             marker.unlink()
+            return True
         except Exception:
             logger.warning("failed to announce self-update", exc_info=True)
+            return False
 
     async def shutdown(self) -> None:
         self.shutting_down = True

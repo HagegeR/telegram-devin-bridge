@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -148,11 +149,11 @@ async def test_announce_update_keeps_marker_on_send_failure(
     runtime._run_command = fake_run
     telegram.send_markdown = failing_send  # type: ignore[method-assign]
     for _ in range(3):
-        await runtime._announce_update()
+        assert await runtime._announce_update() is False
         assert marker.exists()
     assert marker.read_text().splitlines()[3] == "3"
 
-    await runtime._announce_update()
+    assert await runtime._announce_update() is True
     assert not marker.exists()
     assert telegram.sent == []
 
@@ -175,4 +176,39 @@ async def test_announce_update_sends_without_changelog_on_git_failure(
     await runtime._announce_update()
     assert len(telegram.sent) == 1
     assert "updated abcdef1 → 1234567" in telegram.sent[0]["text"]
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_startup_retries_announce_in_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, telegram = _runtime(tmp_path)
+    marker_dir = tmp_path / "repo"
+    marker_dir.mkdir()
+    marker = marker_dir / ".self-update-pending"
+    marker.write_text("abcdef1234567\n1234567890abc\n555\n")
+    monkeypatch.setattr("app.main._REPO_ROOT", marker_dir)
+    monkeypatch.setattr("app.main._ANNOUNCE_RETRY_DELAYS", (0.0, 0.0))
+
+    async def fake_run(argv, cwd, env=None):
+        return 0, ""
+
+    original_send = telegram.send_markdown
+    calls = 0
+
+    async def flaky_send(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("telegram 502")
+        return await original_send(*args, **kwargs)
+
+    runtime._run_command = fake_run
+    telegram.send_markdown = flaky_send  # type: ignore[method-assign]
+    await runtime.startup()
+    assert marker.exists()
+    await asyncio.gather(*runtime.background_tasks)
+    assert calls == 2
+    assert len(telegram.sent) == 1
     assert not marker.exists()
