@@ -49,7 +49,8 @@ echo "$REMOTE" > "$MARKER"
 # (9>&-) so the restarted service does not inherit the flock and block every
 # later update with "another update is running".
 # leave a pending-notification marker for the restarted process: old rev,
-# new rev, and an optional chat target ($SELF_UPDATE_NOTIFY, empty for cron)
+# new rev, an optional chat target ($SELF_UPDATE_NOTIFY, empty for cron); the
+# bridge appends a delivery attempt count and removes the file once announced
 write_pending() { printf '%s\n%s\n%s\n' "$LOCAL" "$REMOTE" "${SELF_UPDATE_NOTIFY:-}" > .self-update-pending; }
 if [ "$(id -u)" -eq 0 ]; then
   if command -v rc-service >/dev/null 2>&1; then

@@ -46,6 +46,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_ANNOUNCE_MAX_ATTEMPTS = 3
 
 
 async def _run_command(
@@ -128,17 +129,27 @@ class Bridge:
             if not marker.exists():
                 return
             lines = marker.read_text(encoding="utf-8").splitlines()
-            marker.unlink()  # delete first so a crash loop can't spam
             old = lines[0].strip() if len(lines) > 0 else "?"
             new = lines[1].strip() if len(lines) > 1 else "?"
             target = lines[2].strip() if len(lines) > 2 else ""
-            text = f"Bridge updated {old[:7]} → {new[:7]} and back online."
-            _, log = await self._run_command(
-                ["git", "log", "--oneline", f"{old}..{new}"], _REPO_ROOT
+            attempts = int(lines[3]) if len(lines) > 3 and lines[3].strip() else 0
+            if attempts >= _ANNOUNCE_MAX_ATTEMPTS:
+                marker.unlink()
+                logger.warning("giving up on self-update announcement")
+                return
+            marker.write_text(
+                f"{old}\n{new}\n{target}\n{attempts + 1}\n", encoding="utf-8"
             )
-            log_lines = _sanitize_update_output(log.strip()).splitlines()[:10]
-            if log_lines:
-                text += "\n```\n" + "\n".join(log_lines) + "\n```"
+            text = f"Bridge updated {old[:7]} → {new[:7]} and back online."
+            try:
+                _, log = await self._run_command(
+                    ["git", "log", "--oneline", f"{old}..{new}"], _REPO_ROOT
+                )
+                log_lines = _sanitize_update_output(log.strip()).splitlines()[:10]
+                if log_lines:
+                    text += "\n```\n" + "\n".join(log_lines) + "\n```"
+            except Exception:
+                logger.warning("failed to build update changelog", exc_info=True)
             if target:
                 chat_part, _, thread_part = target.partition(":")
                 await self.telegram.send_markdown(
@@ -157,6 +168,7 @@ class Bridge:
                     )
                 except ValueError:
                     logger.info("update installed but no home chat configured")
+            marker.unlink()
         except Exception:
             logger.warning("failed to announce self-update", exc_info=True)
 

@@ -126,3 +126,53 @@ async def test_announce_update_no_marker(
     monkeypatch.setattr("app.main._REPO_ROOT", tmp_path)
     await runtime._announce_update()
     assert telegram.sent == []
+
+
+@pytest.mark.asyncio
+async def test_announce_update_keeps_marker_on_send_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, telegram = _runtime(tmp_path)
+    marker_dir = tmp_path / "repo"
+    marker_dir.mkdir()
+    marker = marker_dir / ".self-update-pending"
+    marker.write_text("abcdef1234567\n1234567890abc\n555:9\n")
+    monkeypatch.setattr("app.main._REPO_ROOT", marker_dir)
+
+    async def fake_run(argv, cwd, env=None):
+        raise RuntimeError("git missing")
+
+    async def failing_send(*args, **kwargs):
+        raise RuntimeError("telegram 502")
+
+    runtime._run_command = fake_run
+    telegram.send_markdown = failing_send  # type: ignore[method-assign]
+    for _ in range(3):
+        await runtime._announce_update()
+        assert marker.exists()
+    assert marker.read_text().splitlines()[3] == "3"
+
+    await runtime._announce_update()
+    assert not marker.exists()
+    assert telegram.sent == []
+
+
+@pytest.mark.asyncio
+async def test_announce_update_sends_without_changelog_on_git_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, telegram = _runtime(tmp_path)
+    marker_dir = tmp_path / "repo"
+    marker_dir.mkdir()
+    marker = marker_dir / ".self-update-pending"
+    marker.write_text("abcdef1234567\n1234567890abc\n555\n1\n")
+    monkeypatch.setattr("app.main._REPO_ROOT", marker_dir)
+
+    async def fake_run(argv, cwd, env=None):
+        raise RuntimeError("git missing")
+
+    runtime._run_command = fake_run
+    await runtime._announce_update()
+    assert len(telegram.sent) == 1
+    assert "updated abcdef1 → 1234567" in telegram.sent[0]["text"]
+    assert not marker.exists()
