@@ -1,6 +1,7 @@
 #!/bin/sh
 # Update the bridge checkout to the latest origin/<branch> and restart the
-# service if anything changed.
+# service if anything changed; supervised unprivileged services exit for their
+# supervisor to respawn because they cannot invoke the service manager directly.
 # Usage: self-update.sh [--check] [branch] (uses a host-wide lock and deploy marker)
 #   branch default: $SELF_UPDATE_BRANCH or main
 # NOTE: `git reset --hard` + `git checkout -f -B` discards local
@@ -47,11 +48,18 @@ echo "$REMOTE" > "$MARKER"
 # command) can still reply before the process is recycled. Close the lock fd
 # (9>&-) so the restarted service does not inherit the flock and block every
 # later update with "another update is running".
-if command -v rc-service >/dev/null 2>&1; then
-  nohup sh -c "sleep 2; rc-service $SERVICE restart" >/dev/null 2>&1 9>&- &
-  echo "restarting $SERVICE"
-elif command -v systemctl >/dev/null 2>&1; then
-  nohup sh -c "sleep 2; systemctl restart $SERVICE" >/dev/null 2>&1 9>&- &
-  echo "restarting $SERVICE"
+if [ "$(id -u)" -eq 0 ]; then
+  if command -v rc-service >/dev/null 2>&1; then
+    nohup sh -c "sleep 2; rc-service $SERVICE restart" >/dev/null 2>&1 9>&- &
+    echo "restarting $SERVICE"
+  elif command -v systemctl >/dev/null 2>&1; then
+    nohup sh -c "sleep 2; systemctl restart $SERVICE" >/dev/null 2>&1 9>&- &
+    echo "restarting $SERVICE"
+  fi
+elif [ -n "${RC_SVCNAME:-}" ] || [ -n "${INVOCATION_ID:-}" ]; then
+  nohup sh -c "sleep 2; kill -TERM $PPID" >/dev/null 2>&1 9>&- &
+  echo "restarting $SERVICE (supervisor respawn)"
+else
+  echo "restart $SERVICE manually to load the update"
 fi
 echo "updated to $(git rev-parse --short "$REMOTE")"
