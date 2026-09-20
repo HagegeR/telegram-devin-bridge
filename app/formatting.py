@@ -205,7 +205,7 @@ def extract_options(text: str) -> tuple[str, list[str]]:
         index -= 1
     if index < 0:
         return text, []
-    match = re.fullmatch(r"OPTIONS:\s*(.+)", lines[index].strip())
+    match = re.fullmatch(r"OPTIONS:(.+)", lines[index].strip())
     if match is None:
         return text, []
     options = [item.strip() for item in match.group(1).split("|")]
@@ -217,13 +217,13 @@ def extract_options(text: str) -> tuple[str, list[str]]:
 
 
 def extract_attachments(text: str) -> tuple[str, list[str]]:
-    pattern = re.compile(r"^\s*ATTACHMENT:(\{.*\})\s*$")
+    pattern = re.compile(r"ATTACHMENT:(\{.*\})")
     urls: list[str] = []
     lines = text.splitlines()
     found = False
     remaining: list[str] = []
     for line in lines:
-        match = pattern.fullmatch(line)
+        match = pattern.fullmatch(line.strip())
         if match is None:
             remaining.append(line)
             continue
