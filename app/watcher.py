@@ -128,16 +128,7 @@ class SessionWatcher:
                     and state.title != self.conversation.title
                     and self.conversation.title.startswith(PLACEHOLDER_TITLE_PREFIX)
                 ):
-                    self.store.update_conversation(
-                        self.conversation.conv_key,
-                        self.conversation.session_id,
-                        title=state.title,
-                    )
-                    self.conversation = replace(
-                        self.conversation,
-                        title=state.title,
-                    )
-                    if (
+                    is_topic = (
                         self.conversation.thread_id is not None
                         and self.conversation.conv_key
                         == Store.conv_key(
@@ -145,7 +136,8 @@ class SessionWatcher:
                             self.conversation.thread_id,
                             is_forum=True,
                         )
-                    ):
+                    )
+                    if is_topic:
                         try:
                             await self.telegram.edit_forum_topic(
                                 self.conversation.chat_id,
@@ -158,6 +150,26 @@ class SessionWatcher:
                                 self.conversation.chat_id,
                                 self.conversation.thread_id,
                             )
+                        else:
+                            self.store.update_conversation(
+                                self.conversation.conv_key,
+                                self.conversation.session_id,
+                                title=state.title,
+                            )
+                            self.conversation = replace(
+                                self.conversation,
+                                title=state.title,
+                            )
+                    else:
+                        self.store.update_conversation(
+                            self.conversation.conv_key,
+                            self.conversation.session_id,
+                            title=state.title,
+                        )
+                        self.conversation = replace(
+                            self.conversation,
+                            title=state.title,
+                        )
                 new_messages = self._new_messages(
                     state,
                     wall_started_at,

@@ -380,6 +380,12 @@ class Store:
                 "WHERE conv_key = ? AND session_id = ?",
                 values,
             )
+            if title is not None:
+                self.connection.execute(
+                    "UPDATE session_history SET title = ? "
+                    "WHERE conv_key = ? AND session_id = ?",
+                    (title, conv_key, session_id),
+                )
 
     def clear_conversation(self, conv_key: str, session_id: str) -> None:
         with self.lock, self.connection:

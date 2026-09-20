@@ -169,6 +169,8 @@ def test_store_topics_dedupe_and_history(tmp_path: Path) -> None:
         title="first",
     )
     assert store.list_history("222:9")[0].session_id == "s1"
+    store.update_conversation("222:9", "s1", title="renamed")
+    assert store.list_history("222:9")[0].title == "renamed"
     store.close()
 
 
@@ -1390,6 +1392,62 @@ async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
         telegram,  # type: ignore[arg-type]
         settings(tmp_path),
     ).run()
+    assert telegram.edited_topics == [(222, 7, "A useful session title")]
+    assert store.get_conversation("222:7").title == "A useful session title"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_watcher_retries_topic_rename_after_edit_failure(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class RetryingDevin(_FakeDevin):
+        calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            status = "working" if self.calls == 1 else "finished"
+            return SessionState(status, "A useful session title", None, [])
+
+    class RetryingTelegram(_FakeTelegram):
+        calls = 0
+
+        async def edit_forum_topic(
+            self,
+            chat_id: int,
+            thread_id: int,
+            name: str,
+        ) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                assert store.get_conversation("222:7").title == "Telegram: prompt"  # type: ignore[union-attr]
+                raise RuntimeError("temporary error")
+            await super().edit_forum_topic(chat_id, thread_id, name)
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = RetryingTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        RetryingDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    assert telegram.calls == 2
     assert telegram.edited_topics == [(222, 7, "A useful session title")]
     assert store.get_conversation("222:7").title == "A useful session title"  # type: ignore[union-attr]
 
