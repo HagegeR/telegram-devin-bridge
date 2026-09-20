@@ -1861,6 +1861,60 @@ async def test_watcher_exits_after_bounded_title_retries(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_watcher_terminal_cleanup_after_title_retry_deadline(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FailingTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            raise httpx.ReadTimeout("t")
+
+    class FinishedDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    telegram = FailingTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        FinishedDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, devin_watch_timeout_seconds=2),
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=7,
+    ).run()
+    assert telegram.reactions == ["👍"]
+    assert not any(
+        "still working" in str(item["text"]) for item in telegram.sent
+    )
+
+
+@pytest.mark.asyncio
 async def test_watcher_retries_topic_rename_after_failure(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(

@@ -219,6 +219,10 @@ class SessionWatcher:
                 else:
                     await self._refresh_progress(self.started_at, state)
                 await self.sleep(max(interval, 0.001))
+            if previous_status in {"expired", "finished"}:
+                await self._cleanup_transients()
+                await self._finish_reaction(expired=previous_status == "expired")
+                return
             await self._cleanup_transients()
             if not self.delivered:
                 await self.telegram.send_message(
