@@ -373,6 +373,7 @@ async def _resume(
     thread_id = _thread_id(message)
     title = entry.title
     title_pending = entry.title_pending
+    retry_title = False
     if entry.title_pending and state.title:
         try:
             if thread_id is not None:
@@ -380,7 +381,7 @@ async def _resume(
                     chat_id, thread_id, state.title[:128]
                 )
         except (RuntimeError, httpx.HTTPError):
-            pass
+            retry_title = True
         else:
             title, title_pending = state.title, False
             runtime.store.update_history_title(
@@ -388,7 +389,7 @@ async def _resume(
                 entry.session_id,
                 title,
             )
-    await runtime.replace_conversation(
+    conversation = await runtime.replace_conversation(
         conv_key=entry.conv_key,
         chat_id=chat_id,
         thread_id=thread_id,
@@ -398,6 +399,8 @@ async def _resume(
         title_pending=title_pending,
         last_event_id=latest,
     )
+    if retry_title:
+        await runtime.start_watcher(conversation)
     await runtime.send_text(message, f"Resumed: {title} {entry.session_url}")
 
 

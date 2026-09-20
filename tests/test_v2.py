@@ -3413,18 +3413,23 @@ async def test_resume_survives_failed_topic_edit(tmp_path: Path) -> None:
     )
 
     class FailingTelegram(_FakeTelegram):
+        def __init__(self) -> None:
+            super().__init__()
+            self.edits: list[str] = []
+
         async def edit_forum_topic(
             self, chat_id: int, thread_id: int, name: str
         ) -> None:
-            raise httpx.ReadTimeout("t")
+            self.edits.append(name)
+            if len(self.edits) == 1:
+                raise httpx.ReadTimeout("t")
+
+    class FinishedDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "Generated", None, [])
 
     telegram = FailingTelegram()
-    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
-
-    async def state(_: str) -> SessionState:
-        return SessionState("finished", "Generated", None, [])
-
-    runtime.get_state = state  # type: ignore[method-assign]
+    runtime = Bridge(settings(tmp_path), store, FinishedDevin(), telegram)  # type: ignore[arg-type]
     topic_message = {
         **message("/resume 1"),
         "message_thread_id": 9,
@@ -3438,6 +3443,12 @@ async def test_resume_survives_failed_topic_edit(tmp_path: Path) -> None:
     assert stored.title_pending is True
     assert store.list_history("222:9")[0].title_pending is True
     assert telegram.sent[-1]["text"] == "Resumed: Telegram: prompt https://devin.test/s1"
+    await runtime.watchers["s1"]
+    assert telegram.edits == ["Generated", "Generated"]
+    stored = store.get_conversation("222:9")
+    assert stored is not None
+    assert stored.title == "Generated"
+    assert stored.title_pending is False
     await runtime.shutdown()
 
 
