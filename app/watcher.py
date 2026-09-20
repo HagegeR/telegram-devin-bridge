@@ -225,11 +225,11 @@ class SessionWatcher:
         state: SessionState,
     ) -> None:
         elapsed = self.clock() - started_at
+        if not (self.drafts_ok and self.conversation.chat_id > 0):
+            await self._send_chat_action()
         if elapsed < self.status_after_seconds:
             if self.drafts_ok and self.conversation.chat_id > 0:
                 await self._send_draft("")
-            else:
-                await self._send_chat_action()
             return
         status_text = self._status_text(elapsed, state.structured_output)
         if self.drafts_ok and self.conversation.chat_id > 0:
