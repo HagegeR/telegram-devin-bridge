@@ -68,6 +68,22 @@ def test_env_warns_on_non_v1_devin_key(tmp_path: Path) -> None:
     assert ok.status == "ok"
 
 
+def test_admin_user_ids_fall_back_to_allowed_users(tmp_path: Path) -> None:
+    fallback = settings(
+        tmp_path,
+        telegram_allowed_users="111,222",
+        telegram_admin_user_ids="",
+    )
+    assert fallback.admin_user_ids == frozenset({111, 222})
+
+    explicit = settings(
+        tmp_path,
+        telegram_allowed_users="111,222",
+        telegram_admin_user_ids="42",
+    )
+    assert explicit.admin_user_ids == frozenset({42})
+
+
 def test_load_settings_or_error_empty_int(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
@@ -705,7 +721,28 @@ async def test_download_attachment_retries_read_error(monkeypatch) -> None:
 async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     from app.main import create_app
 
-    app = create_app(settings=settings(tmp_path, telegram_admin_user_ids="42"))
+    class FakeTelegram:
+        def __init__(self) -> None:
+            self.command_calls: list[list[dict[str, str]]] = []
+
+        async def set_my_commands(
+            self,
+            commands: list[dict[str, str]],
+            *_: object,
+        ) -> None:
+            self.command_calls.append(commands)
+
+        async def set_my_description(self, _description: str) -> None:
+            return None
+
+        async def set_my_short_description(self, _description: str) -> None:
+            return None
+
+    telegram = FakeTelegram()
+    app = create_app(
+        settings=settings(tmp_path, telegram_admin_user_ids="42"),
+        telegram=telegram,  # type: ignore[arg-type]
+    )
     runtime = app.state.bridge
 
     sent: list[str] = []
@@ -729,6 +766,7 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     admin_msg = {"from": {"id": 42}, "chat": {"id": 5}}
     await runtime.self_update(admin_msg, "")
     assert commands[-1] == ["sh", "deploy/self-update.sh"]
+    assert telegram.command_calls
     assert "abc1234" in sent[-1]
     assert sent[-1].startswith("```")
 
@@ -742,7 +780,8 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     assert sent == [
         (
             "Admins only. Add your Telegram user id (see /whoami) to "
-            "TELEGRAM_ADMIN_USER_IDS and restart the bridge."
+            "TELEGRAM_ADMIN_USER_IDS (or TELEGRAM_ALLOWED_USERS) and restart "
+            "the bridge."
         )
     ]
     assert send_kwargs[-1]["ephemeral"] is True

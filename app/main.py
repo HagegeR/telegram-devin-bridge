@@ -34,6 +34,7 @@ from app.formatting import (
 )
 from app.notify import register_notify_route
 from app.polling import run_polling
+from app.set_webhook import configure_bot
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
@@ -1351,7 +1352,8 @@ class Bridge:
             await self.send_text(
                 message,
                 "Admins only. Add your Telegram user id (see /whoami) to "
-                "TELEGRAM_ADMIN_USER_IDS and restart the bridge.",
+                "TELEGRAM_ADMIN_USER_IDS (or TELEGRAM_ALLOWED_USERS) and restart "
+                "the bridge.",
                 ephemeral=True,
             )
             return
@@ -1373,6 +1375,8 @@ class Bridge:
         if args.strip() == "check":
             argv.append("--check")
         exit_code, output = await self._run_command(argv, _REPO_ROOT)
+        if exit_code == 0:
+            await configure_bot(self.telegram)
         tail = "\n".join(output.strip().splitlines()[-30:]) or "(no output)"
         if exit_code != 0:
             tail = f"exit {exit_code}\n{tail}"

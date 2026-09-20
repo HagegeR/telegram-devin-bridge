@@ -48,5 +48,8 @@ echo "$REMOTE" > "$MARKER"
 if command -v rc-service >/dev/null 2>&1; then
   nohup sh -c "sleep 2; rc-service $SERVICE restart" >/dev/null 2>&1 &
   echo "restarting $SERVICE"
+elif command -v systemctl >/dev/null 2>&1; then
+  nohup sh -c "sleep 2; systemctl restart $SERVICE" >/dev/null 2>&1 &
+  echo "restarting $SERVICE"
 fi
 echo "updated to $(git rev-parse --short "$REMOTE")"
