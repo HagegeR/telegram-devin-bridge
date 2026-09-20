@@ -633,7 +633,27 @@ class Bridge:
             text = f"{text}\n\nAttached file: {url} ({filename})".strip()
         if not text:
             text = "Please inspect the attached file."
-        if conversation is None or await self._is_finished(conversation.session_id):
+        if conversation is not None and await self._is_finished(conversation.session_id):
+            conversation = None
+        if conversation is not None:
+            self.store.update_conversation(
+                conv_key,
+                conversation.session_id,
+                last_user_text=text,
+                last_user_message_id=message_id,
+            )
+            try:
+                await self.send_session_message(conversation.session_id, text)
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "Session %s rejected message (%s); starting a new one",
+                    conversation.session_id,
+                    exc.response.status_code,
+                )
+                conversation = None
+            else:
+                conversation = self.store.get_conversation(conv_key) or conversation
+        if conversation is None:
             title = f"Telegram: {text[:60]}"
             conversation = await self.create_session_for_message(
                 message,
@@ -659,15 +679,6 @@ class Bridge:
                     )
                 finally:
                     self.implicit_topics.discard((chat_id, thread_id))
-        else:
-            self.store.update_conversation(
-                conv_key,
-                conversation.session_id,
-                last_user_text=text,
-                last_user_message_id=message_id,
-            )
-            await self.send_session_message(conversation.session_id, text)
-            conversation = self.store.get_conversation(conv_key) or conversation
         await self.start_watcher(conversation, trigger_message_id=message_id)
 
     async def create_session_for_message(
@@ -1690,10 +1701,9 @@ class Bridge:
         return sent
 
     async def _is_finished(self, session_id: str) -> bool:
-        return (await self.devin.get_session(session_id)).status_enum in {
-            "expired",
-            "finished",
-        }
+        # "finished" (idle, awaiting input) and suspended sessions resume when
+        # messaged, keeping the conversation's context; only expired ones don't.
+        return (await self.devin.get_session(session_id)).status_enum == "expired"
 
     @asynccontextmanager
     async def _lock(self, conv_key: str) -> AsyncIterator[None]:

@@ -853,6 +853,49 @@ async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "new_sessions"),
+    [("finished", 1), ("blocked", 1), ("expired", 2)],
+)
+async def test_follow_up_reuses_idle_session(
+    tmp_path: Path, status: str, new_sessions: int
+) -> None:
+    class StatusDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState(status, "title", None, [])
+
+    devin = StatusDevin()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, _FakeTelegram())  # type: ignore[arg-type]
+    await runtime.handle_user_turn(message("first", message_id=1), "first")
+    await runtime.handle_user_turn(message("second", message_id=2), "second")
+    assert len(devin.created) == new_sessions
+    assert [text for _, text in devin.sent] == (["second"] if new_sessions == 1 else [])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rejected_message_starts_new_session(tmp_path: Path) -> None:
+    class RejectingDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "title", None, [])
+
+        async def send_message(self, session_id: str, text: str) -> None:
+            raise httpx.HTTPStatusError(
+                "gone",
+                request=httpx.Request("POST", "https://devin.test"),
+                response=httpx.Response(410),
+            )
+
+    devin = RejectingDevin()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, _FakeTelegram())  # type: ignore[arg-type]
+    await runtime.handle_user_turn(message("first", message_id=1), "first")
+    await runtime.handle_user_turn(message("second", message_id=2), "second")
+    assert len(devin.created) == 2
+    assert "second" in devin.created[1]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_session_instructions_prefix_new_session_prompt(tmp_path: Path) -> None:
     devin = _FakeDevin()
     runtime = Bridge(
