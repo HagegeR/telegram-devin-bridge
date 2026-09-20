@@ -345,6 +345,7 @@ class Store:
         conv_key: str,
         session_id: str,
         *,
+        title: str | None = None,
         last_event_id: str | None = None,
         last_user_text: str | None = None,
         last_user_message_id: object = UNSET,
@@ -352,6 +353,9 @@ class Store:
     ) -> None:
         assignments: list[str] = []
         values: list[object] = []
+        if title is not None:
+            assignments.append("title = ?")
+            values.append(title)
         if last_event_id is not None:
             assignments.append("last_event_id = ?")
             values.append(last_event_id)

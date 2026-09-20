@@ -117,6 +117,37 @@ class SessionWatcher:
                 if self.generation != gen:
                     await self.sleep(interval)
                     continue
+                if state.title and state.title != self.conversation.title:
+                    self.store.update_conversation(
+                        self.conversation.conv_key,
+                        self.conversation.session_id,
+                        title=state.title,
+                    )
+                    self.conversation = replace(
+                        self.conversation,
+                        title=state.title,
+                    )
+                    if (
+                        self.conversation.thread_id is not None
+                        and self.conversation.conv_key
+                        == Store.conv_key(
+                            self.conversation.chat_id,
+                            self.conversation.thread_id,
+                            is_forum=True,
+                        )
+                    ):
+                        try:
+                            await self.telegram.edit_forum_topic(
+                                self.conversation.chat_id,
+                                self.conversation.thread_id,
+                                state.title[:128],
+                            )
+                        except RuntimeError:
+                            logger.warning(
+                                "Failed to rename topic chat=%s thread=%s",
+                                self.conversation.chat_id,
+                                self.conversation.thread_id,
+                            )
                 new_messages = self._new_messages(
                     state,
                     wall_started_at,

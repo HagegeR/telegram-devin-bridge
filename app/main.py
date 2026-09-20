@@ -634,11 +634,10 @@ class Bridge:
         if not text:
             text = "Please inspect the attached file."
         if conversation is None or await self._is_finished(conversation.session_id):
-            title = f"Telegram: {text[:60]}"
             conversation = await self.create_session_for_message(
                 message,
                 SYSTEM_PREAMBLE + text,
-                title,
+                None,
                 playbook_id=self.store.get_settings(conv_key).default_playbook,
                 last_user_text=text,
                 start_watcher=False,
@@ -674,7 +673,7 @@ class Bridge:
         self,
         message: Mapping[str, object],
         prompt: str,
-        title: str,
+        title: str | None,
         *,
         playbook_id: str | None = None,
         last_user_text: str | None = None,
@@ -696,13 +695,16 @@ class Bridge:
             title,
             playbook_id,
         )
+        stored_title = (
+            title if title is not None else f"Telegram: {(last_user_text or prompt)[:60]}"
+        )
         conversation = await self.replace_conversation(
             conv_key=conv_key,
             chat_id=chat_id,
             thread_id=thread_id,
             session_id=session_id,
             session_url=session_url,
-            title=title,
+            title=stored_title,
             last_user_text=last_user_text or prompt,
             last_user_message_id=(
                 _int(message.get("message_id"))
@@ -714,7 +716,7 @@ class Bridge:
             conv_key=conv_key,
             session_id=session_id,
             session_url=session_url,
-            title=title,
+            title=stored_title,
         )
         started_id = await self.send_text(
             message,

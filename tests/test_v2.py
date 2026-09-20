@@ -249,11 +249,13 @@ def test_group_bot_mention_is_removed_from_turn_text() -> None:
 @pytest.mark.asyncio
 async def test_clients_use_injected_mock_transports() -> None:
     devin_paths: list[str] = []
+    devin_bodies: list[dict[str, object]] = []
     telegram_paths: list[str] = []
 
     async def devin_handler(request: httpx.Request) -> httpx.Response:
         devin_paths.append(request.url.path)
         if request.url.path == "/v1/sessions":
+            devin_bodies.append(json.loads(request.content))
             return httpx.Response(
                 200,
                 json={"session_id": "s1", "url": "https://devin.test/s1"},
@@ -294,6 +296,12 @@ async def test_clients_use_injected_mock_transports() -> None:
         "s1",
         "https://devin.test/s1",
     )
+    assert "title" in devin_bodies[-1]
+    assert await devin.create_session("prompt", None) == (
+        "s1",
+        "https://devin.test/s1",
+    )
+    assert "title" not in devin_bodies[-1]
     assert (await devin.get_session("s1")).status_enum == "finished"
     await telegram.send_message(222, "hello")
     assert await telegram.create_forum_topic(222, "New topic") == 19
@@ -781,15 +789,17 @@ class _FakeTelegram:
 class _FakeDevin:
     def __init__(self) -> None:
         self.created: list[str] = []
+        self.created_titles: list[str | None] = []
         self.created_playbooks: list[str | None] = []
         self.sent: list[tuple[str, str]] = []
         self.terminated: list[str] = []
         self.playbooks: list[tuple[str, str]] = []
 
     async def create_session(
-        self, prompt: str, title: str, playbook_id: str | None = None
+        self, prompt: str, title: str | None, playbook_id: str | None = None
     ) -> tuple[str, str]:
         self.created.append(prompt)
+        self.created_titles.append(title)
         self.created_playbooks.append(playbook_id)
         return "s1", "https://devin.test/s1"
 
@@ -847,6 +857,7 @@ async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> No
         runtime.handle_user_turn(message("two", message_id=2), "two"),
     )
     assert len(devin.created) == 1
+    assert devin.created_titles == [None]
     assert {text for _, text in devin.sent} == {"two"}
     assert "one" in devin.created[0]
     await runtime.shutdown()
@@ -900,7 +911,7 @@ async def test_topic_command_reports_disabled_topics(tmp_path: Path) -> None:
 async def test_dispatch_failure_notifies_and_reacts(tmp_path: Path) -> None:
     class FailingDevin(_FakeDevin):
         async def create_session(
-            self, prompt: str, title: str, playbook_id: str | None = None
+            self, prompt: str, title: str | None, playbook_id: str | None = None
         ) -> tuple[str, str]:
             raise RuntimeError("backend unavailable")
 
@@ -1350,6 +1361,66 @@ async def test_implicit_topic_is_renamed_but_explicit_topic_is_not(
     )
     assert explicit_telegram.edited_topics == []
     await explicit.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class TitledDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    assert telegram.edited_topics == [(222, 7, "A useful session title")]
+    assert store.get_conversation("222:7").title == "A useful session title"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_watcher_persists_session_title_without_topic(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class TitledDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "A useful session title", None, [])
+
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    assert telegram.edited_topics == []
+    assert store.get_conversation("222").title == "A useful session title"  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio

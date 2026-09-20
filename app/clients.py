@@ -113,15 +113,16 @@ class DevinClient:
     async def create_session(
         self,
         prompt: str,
-        title: str,
+        title: str | None,
         playbook_id: str | None = None,
     ) -> tuple[str, str]:
         body: dict[str, object] = {
             "prompt": prompt,
-            "title": title,
             "max_acu_limit": self.max_acu_limit,
             "tags": ["telegram-bridge"],
         }
+        if title is not None:
+            body["title"] = title
         if playbook_id is not None:
             body["playbook_id"] = playbook_id
         payload = await self._json("POST", "/v1/sessions", json=body)

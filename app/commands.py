@@ -38,7 +38,7 @@ class CommandRuntime(Protocol):
         self,
         message: Mapping[str, object],
         prompt: str,
-        title: str,
+        title: str | None,
         *,
         playbook_id: str | None = None,
         start_watcher: bool = True,
