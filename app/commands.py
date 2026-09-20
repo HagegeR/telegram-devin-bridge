@@ -471,7 +471,8 @@ def _help_text() -> str:
     return (
         "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
         "/resume <n>\n/status\n/stop (/cancel)\n/playbook [n] [text]\n/retry\n"
-        "/steer <text>\n/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n/help"
+        "/steer <text>\n/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n"
+        "/update [check]\n/help"
     )
 
 
