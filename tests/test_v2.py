@@ -893,6 +893,7 @@ async def test_gone_session_starts_new_one_keeping_queue(
     runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, _FakeTelegram())  # type: ignore[arg-type]
     await runtime.handle_user_turn(message("first", message_id=1), "first")
     runtime.queued_turns["222"] = [(message("third", message_id=3), "third", None)]
+    runtime.pending_turns["222"] = [(message("fourth", message_id=4), "fourth", None)]
     if status_code == 500:
         with pytest.raises(httpx.HTTPStatusError):
             await runtime.handle_user_turn(message("second", message_id=2), "second")
@@ -901,7 +902,7 @@ async def test_gone_session_starts_new_one_keeping_queue(
         await runtime.handle_user_turn(message("second", message_id=2), "second")
         assert len(devin.created) == 2
         assert "second" in devin.created[1]
-    assert runtime.queued_count("222") == 1
+    assert runtime.queued_count("222") == 2
     await runtime.shutdown()
 
 

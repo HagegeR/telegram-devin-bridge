@@ -657,7 +657,6 @@ class Bridge:
                 conversation = self.store.get_conversation(conv_key) or conversation
         if conversation is None:
             title = f"Telegram: {text[:60]}"
-            queued = self.queued_turns.get(conv_key, [])
             conversation = await self.create_session_for_message(
                 message,
                 SYSTEM_PREAMBLE + text,
@@ -665,9 +664,8 @@ class Bridge:
                 playbook_id=self.store.get_settings(conv_key).default_playbook,
                 last_user_text=text,
                 start_watcher=False,
+                keep_queued=True,
             )
-            if queued:
-                self.queued_turns[conv_key] = queued
             if thread_id is not None and (chat_id, thread_id) in self.implicit_topics:
                 topic_name = text[:60].splitlines()[0] or "Devin"
                 try:
@@ -695,6 +693,7 @@ class Bridge:
         playbook_id: str | None = None,
         last_user_text: str | None = None,
         start_watcher: bool = True,
+        keep_queued: bool = False,
     ) -> Conversation:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
@@ -725,6 +724,7 @@ class Bridge:
                 if last_user_text is not None
                 else None
             ),
+            keep_queued=keep_queued,
         )
         self.store.add_history(
             conv_key=conv_key,
@@ -758,10 +758,12 @@ class Bridge:
         last_event_id: str | None = None,
         last_user_text: str | None = None,
         last_user_message_id: int | None = None,
+        keep_queued: bool = False,
     ) -> Conversation:
         previous = self.store.get_conversation(conv_key)
         if previous is not None and previous.session_id != session_id:
-            self.clear_queued_turns(conv_key)
+            if not keep_queued:
+                self.clear_queued_turns(conv_key)
             task = self.watchers.pop(previous.session_id, None)
             self.active_watchers.pop(previous.session_id, None)
             if task is not None and not task.done():
