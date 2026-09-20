@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2434,6 +2435,58 @@ async def test_retry_send_failure_restarts_watcher(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="send failed"):
         await runtime.retry_conversation(conversation, trigger_message_id=8)
     assert "s1" in runtime.watchers
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_startup_resumes_watchers_for_recent_conversations(
+    tmp_path: Path,
+) -> None:
+    class BlockedDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [
+                    DevinMessage("devin_message", "event-0", "Old", None),
+                    DevinMessage("devin_message", "event-1", "Done", None),
+                ],
+            )
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_event_id="event-0",
+    )
+    store.save_conversation(
+        conv_key="333",
+        chat_id=333,
+        thread_id=None,
+        session_id="s2",
+        session_url="https://devin.test/s2",
+        title="title",
+        created_at=time.time() - 100,
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        BlockedDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    await runtime.startup()
+    assert "s1" in runtime.watchers
+    assert "s2" not in runtime.watchers
+    await asyncio.gather(*runtime.watchers.values(), return_exceptions=True)
+    delivered = [str(item["text"]) for item in telegram.sent]
+    assert sum("Done" in text for text in delivered) == 1
+    assert not any("Old" in text for text in delivered)
     await runtime.shutdown()
 
 

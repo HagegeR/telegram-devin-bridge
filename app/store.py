@@ -392,6 +392,19 @@ class Store:
             ).fetchone()
         return self._conversation(row)
 
+    def list_recent_conversations(self, since: float) -> list[Conversation]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT * FROM conversations WHERE updated_at >= ? "
+                "ORDER BY updated_at",
+                (since,),
+            ).fetchall()
+        return [
+            conversation
+            for row in rows
+            if (conversation := self._conversation(row)) is not None
+        ]
+
     def count_conversations_for_chat(self, chat_id: int) -> int:
         with self.lock:
             row = self.connection.execute(

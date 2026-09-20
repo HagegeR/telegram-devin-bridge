@@ -122,10 +122,16 @@ class Bridge:
             request.user_id
             for request in self.store.list_access_requests("approved")
         }
+        await self._resume_watchers()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
+
+    async def _resume_watchers(self) -> None:
+        since = time.time() - self.settings.devin_watch_timeout_seconds
+        for conversation in self.store.list_recent_conversations(since):
+            await self.start_watcher(conversation)
 
     async def _retry_announce_update(self) -> None:
         for delay in _ANNOUNCE_RETRY_DELAYS:
