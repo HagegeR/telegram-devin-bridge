@@ -157,15 +157,16 @@ def register_admin_route(
     clock: Clock = time.monotonic,
 ) -> None:
     request_times: deque[float] = deque()
+    auth_fail_times: deque[float] = deque()
     env_lock = asyncio.Lock()
 
-    def _check_rate() -> None:
+    def _check_rate(times: deque[float]) -> None:
         now = clock()
-        while request_times and now - request_times[0] > 60:
-            request_times.popleft()
-        if len(request_times) >= _RATE_LIMIT:
+        while times and now - times[0] > 60:
+            times.popleft()
+        if len(times) >= _RATE_LIMIT:
             raise HTTPException(status_code=429, detail="admin rate limit")
-        request_times.append(now)
+        times.append(now)
 
     async def _notify_outcome(text: str) -> None:
         try:
@@ -181,14 +182,20 @@ def register_admin_route(
 
     @application.post("/admin")
     async def admin(request: Request) -> dict[str, object]:
-        _check_rate()
         if settings.admin_secret is None:
             raise HTTPException(status_code=404, detail="Not found")
+        now = clock()
+        while auth_fail_times and now - auth_fail_times[0] > 60:
+            auth_fail_times.popleft()
         authorization = request.headers.get("authorization", "")
         expected_authorization = f"Bearer {settings.admin_secret}"
-        if not secrets.compare_digest(
+        authorization_matches = secrets.compare_digest(
             authorization.encode(), expected_authorization.encode()
-        ):
+        )
+        if len(auth_fail_times) >= _RATE_LIMIT and not authorization_matches:
+            raise HTTPException(status_code=429, detail="admin rate limit")
+        if not authorization_matches:
+            auth_fail_times.append(clock())
             client_host = request.client.host if request.client else "-"
             logger.warning("admin auth failed from=%s", client_host)
             raise HTTPException(status_code=403, detail="Invalid bearer token")
@@ -199,6 +206,7 @@ def register_admin_route(
 
         async def _dispatch() -> dict[str, object]:
             nonlocal action, key
+            _check_rate(request_times)
             try:
                 payload = await request.json()
             except ValueError as exc:

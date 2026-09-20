@@ -541,5 +541,23 @@ async def test_admin_rate_limit_applies_before_auth(tmp_path: Path) -> None:
             )
             for _ in range(11)
         ]
+        valid_response = await authed(client, {"action": "get-env"})
     assert [response.status_code for response in responses[:10]] == [403] * 10
     assert responses[10].status_code == 429
+    assert valid_response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_authenticated_rate_limit_notifies(tmp_path: Path) -> None:
+    app, _, _, _, notices = make_app(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        responses = [
+            await authed(client, {"action": "get-env"})
+            for _ in range(11)
+        ]
+        await asyncio.sleep(0)
+    assert [response.status_code for response in responses[:10]] == [200] * 10
+    assert responses[10].status_code == 429
+    assert any("error 429" in notice for notice in notices)
