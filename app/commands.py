@@ -89,6 +89,8 @@ class CommandRuntime(Protocol):
 
     async def send_session_message(self, session_id: str, text: str) -> None: ...
 
+    async def react(self, message: Mapping[str, object], emoji: str) -> None: ...
+
     async def send_markup(
         self,
         message: Mapping[str, object],
@@ -266,6 +268,17 @@ async def handle_command(
             await runtime.send_text(message, "Nothing to retry.")
         else:
             await runtime.retry_conversation(conversation)
+    elif command == "steer":
+        if conversation is None:
+            await runtime.send_text(message, "No active session.")
+        elif not args:
+            await runtime.send_text(
+                message,
+                "Usage: /steer <text> — send a message to the running session immediately.",
+            )
+        else:
+            await runtime.send_session_message(conversation.session_id, args)
+            await runtime.react(message, "👀")
     elif command == "whoami":
         await _whoami(runtime, message)
     elif command == "sethome":
@@ -449,7 +462,7 @@ def _help_text() -> str:
     return (
         "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
         "/resume <n>\n/status\n/stop (/cancel)\n/playbook [n] [text]\n/retry\n"
-        "/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n/help"
+        "/steer <text>\n/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n/help"
     )
 
 
