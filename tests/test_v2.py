@@ -1636,6 +1636,36 @@ async def test_download_attachment_rejects_non_https_redirect() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://app.devin.ai/attachments/../sessions",
+        "https://app.devin.ai/attachments/%2e%2e/sessions",
+        "https://app.devin.ai/attachments/%252e%252e/sessions",
+        "https://app.devin.ai/attachments/1/..",
+        "https://app.devin.ai/attachments/./sessions",
+        "https://app.devin.ai/attachments/1%2f..%2f..%2fsessions/x",
+    ],
+)
+async def test_download_attachment_rejects_dot_segments(url: str) -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200, content=b"{}")
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.download_attachment(url) is None
+    assert requests == []
+    await devin.close()
+
+
+@pytest.mark.asyncio
 async def test_download_attachment_stream_limits_body() -> None:
     limit = 20 * 1024 * 1024
 
