@@ -529,7 +529,7 @@ async def test_admin_rate_limit(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_admin_rate_limit_applies_before_auth(tmp_path: Path) -> None:
-    app, *_ = make_app(tmp_path)
+    app, _, _, clock, _ = make_app(tmp_path)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -541,10 +541,13 @@ async def test_admin_rate_limit_applies_before_auth(tmp_path: Path) -> None:
             )
             for _ in range(11)
         ]
-        valid_response = await authed(client, {"action": "get-env"})
+        locked_out = await authed(client, {"action": "get-env"})
+        clock["t"] += 61
+        recovered = await authed(client, {"action": "get-env"})
     assert [response.status_code for response in responses[:10]] == [403] * 10
     assert responses[10].status_code == 429
-    assert valid_response.status_code == 200
+    assert locked_out.status_code == 429
+    assert recovered.status_code == 200
 
 
 @pytest.mark.asyncio

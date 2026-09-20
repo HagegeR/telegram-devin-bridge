@@ -187,14 +187,13 @@ def register_admin_route(
         now = clock()
         while auth_fail_times and now - auth_fail_times[0] > 60:
             auth_fail_times.popleft()
+        if len(auth_fail_times) >= _RATE_LIMIT:
+            raise HTTPException(status_code=429, detail="admin rate limit")
         authorization = request.headers.get("authorization", "")
         expected_authorization = f"Bearer {settings.admin_secret}"
-        authorization_matches = secrets.compare_digest(
+        if not secrets.compare_digest(
             authorization.encode(), expected_authorization.encode()
-        )
-        if len(auth_fail_times) >= _RATE_LIMIT and not authorization_matches:
-            raise HTTPException(status_code=429, detail="admin rate limit")
-        if not authorization_matches:
+        ):
             auth_fail_times.append(clock())
             client_host = request.client.host if request.client else "-"
             logger.warning("admin auth failed from=%s", client_host)
