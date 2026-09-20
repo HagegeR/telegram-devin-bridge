@@ -376,7 +376,7 @@ async def _run_command(args: list[str]) -> str:
     return stdout.decode(errors="replace")
 
 
-_LINK_MTU_RE = re.compile(r"^\d+:\s+([^:@]+)[@:].*?\bmtu\s+(\d+)")
+_LINK_MTU_RE = re.compile(r"^\d+:\s+([^\s:@]+)[@:].*?\bmtu\s+(\d+)")
 
 
 def _routes_from_json(
