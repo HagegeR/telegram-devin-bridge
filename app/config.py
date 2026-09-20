@@ -35,6 +35,23 @@ class Settings(BaseSettings):
     telegram_notification_mode: str = "important"
     notify_secret: str | None = None
     doctor_secret: str | None = None
+    admin_secret: str | None = None
+    admin_env_allowlist: str = (
+        "DEVIN_SESSION_INSTRUCTIONS,DEVIN_MAX_ACU_LIMIT,DEVIN_POLL_SECONDS,"
+        "DEVIN_POLL_FAST_SECONDS,DEVIN_WATCH_TIMEOUT_SECONDS,"
+        "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
+        "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_NOTIFICATION_MODE,"
+        "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
+        "TELEGRAM_ALLOWED_USERS,TELEGRAM_DEBOUNCE_SECONDS,"
+        "TELEGRAM_QUEUE_WHILE_BUSY,TELEGRAM_LONG_REPLY_CHARS,"
+        "TELEGRAM_RATE_LIMIT_PER_MINUTE,BOT_USERNAME"
+    )
+    admin_log_path: str = "/var/log/telegram-devin-bridge.log"
+    admin_restart_command: str = (
+        "nohup sh -c 'sleep 1; rc-service telegram-devin-bridge restart' "
+        ">/dev/null 2>&1 &"
+    )
+    admin_env_path: str = ".env"
     bot_username: str | None = None
     telegram_admin_user_ids: str = ""
     transcription_api_key: str | None = None
@@ -57,6 +74,22 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "telegram_webhook_secret is required in webhook mode"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_id_lists(self) -> "Settings":
+        for field_name, property_name in (
+            ("telegram_allowed_chat_ids", "allowed_chat_ids"),
+            ("telegram_allowed_users", "allowed_users"),
+            ("telegram_free_response_chats", "free_response_chats"),
+            ("telegram_admin_user_ids", "admin_user_ids"),
+        ):
+            try:
+                getattr(self, property_name)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{field_name} must be a comma-separated list of integers"
+                ) from exc
         return self
 
     @staticmethod
@@ -82,6 +115,14 @@ class Settings(BaseSettings):
     @property
     def admin_user_ids(self) -> frozenset[int]:
         return self._csv_ints(self.telegram_admin_user_ids) or self.allowed_users
+
+    @property
+    def admin_env_keys(self) -> frozenset[str]:
+        return frozenset(
+            item.strip().upper()
+            for item in self.admin_env_allowlist.split(",")
+            if item.strip()
+        )
 
 
 @lru_cache

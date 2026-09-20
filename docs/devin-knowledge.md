@@ -74,6 +74,66 @@ the session is already forwarded.
   in the repo (DNS cache with dnsmasq, udhcpc `NO_GATEWAY`, Funnel prerequisites
   in the Tailscale admin console, OpenRC unit, `.env` pitfalls).
 - No-tunnel alternative: `TELEGRAM_MODE=polling` needs no public URL.
+- Self-update: the host tracks `origin/main`; a cron job pulls every 15 min,
+  or the admin sends `/update` in Telegram. Merging to `main` is how code
+  reaches the host — never edit files on the host by hand.
+
+## Fixing the deployment from a cloud session
+
+Two remote-control paths exist. Use the narrowest one that does the job, and
+tell the user what you did. Both need secrets provided to the session — never
+ask the user to paste them into chat, and never print them.
+
+### 1. Bridge admin API (`POST /admin`) — narrow, no shell
+
+`POST $BRIDGE_PUBLIC_BASE_URL/admin` with
+`Authorization: Bearer $BRIDGE_ADMIN_SECRET` and a JSON body:
+
+| body | effect |
+| --- | --- |
+| `{"action":"doctor"}` | run the diagnostics, return the check list |
+| `{"action":"logs","lines":200}` | tail of the service log (secrets redacted; max 500) |
+| `{"action":"get-env"}` | values of the allowlisted non-secret `.env` keys |
+| `{"action":"set-env","key":"DEVIN_MAX_ACU_LIMIT","value":"5"}` | rewrite one allowlisted key in `.env` (takes effect after `restart`) |
+| `{"action":"restart"}` | restart the service (detached; reply arrives before the restart) |
+| `{"action":"update"}` | run the self-updater (pull `main`, pip if needed, restart) |
+
+`set-env` refuses keys outside `ADMIN_ENV_ALLOWLIST` (tokens, API keys and
+secrets are never settable this way). Every admin call is logged and a
+notification is posted to the Telegram home chat, so the user sees it.
+Typical fix flow: `doctor` -> read failing check + `logs` -> `set-env` ->
+`restart` -> `doctor` again.
+
+### 2. Tailscale SSH — full shell on the VM
+
+The VM (`devin-bridge`, Tailscale IP `100.127.21.58`) runs Tailscale SSH;
+the tailnet ACL allows `tag:devin` nodes to SSH in as `root`. Join the tailnet
+from the session with the ephemeral, pre-authorized auth key provided as the
+secret `TAILSCALE_AUTHKEY` (the node is deleted automatically when it goes
+offline):
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscaled --state=mem: >/tmp/tailscaled.log 2>&1 &
+sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=devin-session --ssh=false
+ssh -o StrictHostKeyChecking=accept-new root@100.127.21.58 'rc-service telegram-devin-bridge status'
+```
+
+Without root in the sandbox use userspace networking instead:
+
+```bash
+tailscaled --tun=userspace-networking --socks5-server=localhost:1055 --state=mem: >/tmp/tailscaled.log 2>&1 &
+tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=devin-session
+ssh -o ProxyCommand='nc -x localhost:1055 %h %p' -o StrictHostKeyChecking=accept-new root@100.127.21.58
+```
+
+Tailscale SSH authenticates by tailnet identity — no SSH keys or passwords.
+On the VM, keep to: `rc-service telegram-devin-bridge …`, editing
+`/root/telegram-devin-bridge/.env` (never print it), `sh deploy/self-update.sh`,
+`.venv/bin/python -m app.doctor`, `tail /var/log/telegram-devin-bridge.log`,
+`tailscale funnel status`. Do not change routing, `/etc/udhcpc/udhcpc.conf`,
+Docker, or other services on the VM — another deployment (`ibkr-gateway`)
+shares it. Code changes go through a PR to `main`, not edits on the host.
 
 ## Devin API facts the bridge relies on (v1 key)
 
