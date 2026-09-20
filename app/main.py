@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import secrets
 import shlex
 import time
@@ -22,7 +21,7 @@ from app.access import (
     should_respond_in_group,
     strip_bot_mention,
 )
-from app.admin import register_admin_route
+from app.admin import _sanitize_update_output, register_admin_route
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
@@ -44,14 +43,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-
-
-def _sanitize_update_output(text: str) -> str:
-    text = _ANSI_RE.sub("", text).replace("`", "'")
-    return text[-3000:]
 
 
 async def _run_command(argv: list[str], cwd: Path) -> tuple[int, str]:

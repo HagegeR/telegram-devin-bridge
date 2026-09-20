@@ -21,6 +21,9 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
         "TELEGRAM_ALLOWED_USERS=111\n"
         "# a comment\n"
         "TELEGRAM_BOT_TOKEN=bot123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+        "TELEGRAM_WEBHOOK_SECRET=secret-placeholder\n"
+        "DEVIN_API_KEY=apk_user_abcdef123456\n"
+        "PUBLIC_BASE_URL=https://bridge.example.ts.net\n"
         "DEVIN_MAX_ACU_LIMIT=3\n"
     )
     log_path = tmp_path / "bridge.log"
@@ -57,7 +60,7 @@ def make_app(tmp_path: Path, **overrides: object):
 
     async def fake_run(argv: list[str], cwd: Path) -> tuple[int, str]:
         ran.append((" ".join(argv), cwd))
-        return 0, "up to date"
+        return 0, "\x1b[31mup to date\x1b[0m"
 
     async def fake_notify(text: str, **kwargs) -> int:
         notices.append(text)
@@ -118,6 +121,7 @@ async def test_admin_unknown_action(tmp_path: Path) -> None:
         response = await authed(client, {"action": "rm-rf"})
         assert response.status_code == 400
         assert "doctor" in response.json()["detail"]
+        await asyncio.sleep(0)
     assert any("error 400" in notice for notice in notices)
 
 
@@ -166,6 +170,7 @@ async def test_admin_set_env_allowed(tmp_path: Path) -> None:
     assert "DEVIN_MAX_ACU_LIMIT=5" in env_text
     assert "# a comment" in env_text
     assert "TELEGRAM_ALLOWED_USERS=111" in env_text
+    await asyncio.sleep(0)
     assert any("ok" in notice for notice in notices)
 
 
@@ -183,6 +188,100 @@ async def test_admin_set_env_mode_preserved(tmp_path: Path) -> None:
             client,
             {"action": "set-env", "key": "BOT_USERNAME", "value": "mybot"},
         )
+    assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.asyncio
+async def test_admin_set_env_validates_before_replace(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    env_path = tmp_path / ".env"
+    original = env_path.read_text()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        invalid = await authed(
+            client,
+            {
+                "action": "set-env",
+                "key": "DEVIN_MAX_ACU_LIMIT",
+                "value": "abc",
+            },
+        )
+        after_invalid = env_path.read_text()
+        valid = await authed(
+            client,
+            {
+                "action": "set-env",
+                "key": "DEVIN_MAX_ACU_LIMIT",
+                "value": "7",
+            },
+        )
+    assert invalid.status_code == 400
+    assert "invalid value for DEVIN_MAX_ACU_LIMIT" in invalid.json()["detail"]
+    assert after_invalid == original
+    assert dotenv_values(env_path)["DEVIN_MAX_ACU_LIMIT"] == "7"
+    assert valid.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_set_env_preserves_multiline_dotenv_bindings(
+    tmp_path: Path,
+) -> None:
+    app, *_ = make_app(tmp_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=bot123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+        "# a comment\n"
+        "TELEGRAM_WEBHOOK_SECRET=secret-placeholder\n"
+        "DEVIN_API_KEY=apk_user_abcdef123456\n"
+        "PUBLIC_BASE_URL=https://bridge.example.ts.net\n"
+        'DEVIN_SESSION_INSTRUCTIONS="a\n'
+        "DEVIN_MAX_ACU_LIMIT=notes\n"
+        'b"\n'
+        "DEVIN_MAX_ACU_LIMIT=3\n"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await authed(
+            client,
+            {
+                "action": "set-env",
+                "key": "DEVIN_SESSION_INSTRUCTIONS",
+                "value": "updated",
+            },
+        )
+    assert response.status_code == 200
+    text = env_path.read_text()
+    assert "# a comment" in text
+    assert text.index("TELEGRAM_BOT_TOKEN") < text.index("# a comment")
+    assert text.index("# a comment") < text.index("DEVIN_SESSION_INSTRUCTIONS")
+    values = dotenv_values(env_path)
+    assert values["DEVIN_SESSION_INSTRUCTIONS"] == "updated"
+    assert values["DEVIN_MAX_ACU_LIMIT"] == "3"
+    assert "DEVIN_MAX_ACU_LIMIT=notes" not in values
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod mode bits")
+async def test_admin_set_env_new_file_mode(tmp_path: Path, monkeypatch) -> None:
+    env_path = tmp_path / "new.env"
+    monkeypatch.setenv(
+        "TELEGRAM_BOT_TOKEN",
+        "bot123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret-placeholder")
+    monkeypatch.setenv("DEVIN_API_KEY", "apk_user_abcdef123456")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://bridge.example.ts.net")
+    app, *_ = make_app(tmp_path, admin_env_path=str(env_path))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await authed(
+            client,
+            {"action": "set-env", "key": "BOT_USERNAME", "value": "mybot"},
+        )
+    assert response.status_code == 200
     assert env_path.stat().st_mode & 0o777 == 0o600
 
 
@@ -340,7 +439,9 @@ async def test_admin_restart_and_update(tmp_path: Path) -> None:
         response = await authed(client, {"action": "update"})
         assert response.status_code == 200
         assert response.json()["exit_code"] == 0
+        assert response.json()["output"] == "up to date"
         assert ran and "self-update" in ran[-1][0]
+        await asyncio.sleep(0)
     assert any("Admin API" in n for n in notices)
     assert any("ok" in n for n in notices)
 
@@ -383,4 +484,5 @@ async def test_admin_rate_limit(tmp_path: Path) -> None:
         ]
     assert codes[:10] == [200] * 10
     assert codes[10] == 429
+    await asyncio.sleep(0)
     assert any("error 429" in notice for notice in notices)

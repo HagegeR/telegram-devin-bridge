@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
 import re
@@ -16,7 +17,9 @@ from typing import Protocol
 
 import httpx
 from dotenv import dotenv_values
+from dotenv.parser import parse_stream
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import ValidationError
 
 import app.doctor as doctor_module
 from app.config import Settings
@@ -28,6 +31,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]{20,}")
 _ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _SAFE_ENV_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:@,+-]*$")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _NEVER_ENV_KEYS = frozenset(
     {
         "SELF_UPDATE_COMMAND",
@@ -65,6 +69,11 @@ async def _default_spawn(command: str) -> object:
     return await asyncio.create_subprocess_shell(command)
 
 
+def _sanitize_update_output(text: str) -> str:
+    text = _ANSI_RE.sub("", text).replace("`", "'")
+    return text[-3000:]
+
+
 def _quote_env_value(value: str) -> str:
     if value and _SAFE_ENV_VALUE_RE.fullmatch(value):
         return value
@@ -72,34 +81,39 @@ def _quote_env_value(value: str) -> str:
 
 
 def _write_env_key(env_path: Path, key: str, value: str) -> None:
-    lines = (
-        env_path.read_text(encoding="utf-8").splitlines()
-        if env_path.exists()
-        else []
-    )
+    text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     out: list[str] = []
     written = False
-    for line in lines:
-        stripped = line.strip()
-        if (
-            not stripped.startswith("#")
-            and stripped.partition("=")[0].strip() == key
-        ):
+    serialized_value = _quote_env_value(value)
+    for binding in parse_stream(io.StringIO(text)):
+        if binding.key == key:
             if not written:
-                out.append(f"{key}={_quote_env_value(value)}")
+                out.append(f"{key}={serialized_value}\n")
                 written = True
             continue
-        out.append(line)
+        out.append(binding.original.string)
     if not written:
-        out.append(f"{key}={_quote_env_value(value)}")
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+        out.append(f"{key}={serialized_value}\n")
     fd, tmp_name = tempfile.mkstemp(
         dir=str(env_path.parent), prefix=".env.", text=True
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write("\n".join(out) + "\n")
+            handle.write("".join(out))
         if env_path.exists():
             os.chmod(tmp_name, env_path.stat().st_mode & 0o777)
+        else:
+            os.chmod(tmp_name, 0o600)
+        try:
+            Settings(_env_file=tmp_name)
+        except ValidationError as exc:
+            first_error = exc.errors()[0]["msg"]
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid value for {key}: {first_error}",
+            ) from exc
         os.replace(tmp_name, env_path)
     except BaseException:
         try:
@@ -152,6 +166,18 @@ def register_admin_route(
         if len(request_times) >= _RATE_LIMIT:
             raise HTTPException(status_code=429, detail="admin rate limit")
         request_times.append(now)
+
+    async def _notify_outcome(text: str) -> None:
+        try:
+            await runtime.notify(
+                text,
+                chat_id=None,
+                thread_id=None,
+                silent=True,
+                markdown=False,
+            )
+        except (ValueError, RuntimeError, httpx.HTTPError):
+            logger.debug("Failed to notify admin action outcome", exc_info=True)
 
     @application.post("/admin")
     async def admin(request: Request) -> dict[str, object]:
@@ -278,7 +304,10 @@ def register_admin_route(
             ):
                 raise HTTPException(status_code=409, detail="not a git checkout")
             exit_code, output = await run_shell(argv, _REPO_ROOT)
-            return {"exit_code": exit_code, "output": output[-3000:]}
+            return {
+                "exit_code": exit_code,
+                "output": _sanitize_update_output(output),
+            }
 
         try:
             result = await _dispatch()
@@ -297,14 +326,7 @@ def register_admin_route(
                 status,
             )
             key_suffix = f" {key}" if key != "-" else ""
-            try:
-                await runtime.notify(
-                    f"Admin API: {action}{key_suffix} — {status}",
-                    chat_id=None,
-                    thread_id=None,
-                    silent=True,
-                    markdown=False,
-                )
-            except (ValueError, RuntimeError, httpx.HTTPError):
-                pass
+            asyncio.create_task(
+                _notify_outcome(f"Admin API: {action}{key_suffix} — {status}")
+            )
         return result
