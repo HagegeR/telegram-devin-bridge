@@ -104,7 +104,7 @@ if [ "$SOURCE_DIR" = "$BRIDGE_HOME" ]; then
     printf '%s\n' 'installing in place'
 else
     rm -rf "$BRIDGE_HOME/app" "$BRIDGE_HOME/deploy" "$BRIDGE_HOME/tests"
-    if [ -d "$SOURCE_DIR/.git" ]; then
+    if [ -e "$SOURCE_DIR/.git" ]; then
         rm -rf "$BRIDGE_HOME/.git"
         GIT_EXCLUDE=
     else

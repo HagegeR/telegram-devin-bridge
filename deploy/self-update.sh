@@ -48,15 +48,22 @@ echo "$REMOTE" > "$MARKER"
 # command) can still reply before the process is recycled. Close the lock fd
 # (9>&-) so the restarted service does not inherit the flock and block every
 # later update with "another update is running".
+# leave a pending-notification marker for the restarted process: old rev,
+# new rev, an optional chat target ($SELF_UPDATE_NOTIFY, empty for cron); the
+# bridge appends a delivery attempt count and removes the file once announced
+write_pending() { printf '%s\n%s\n%s\n' "$LOCAL" "$REMOTE" "${SELF_UPDATE_NOTIFY:-}" > .self-update-pending; }
 if [ "$(id -u)" -eq 0 ]; then
   if command -v rc-service >/dev/null 2>&1; then
+    write_pending
     nohup sh -c "sleep 2; rc-service $SERVICE restart" >/dev/null 2>&1 9>&- &
     echo "restarting $SERVICE"
   elif command -v systemctl >/dev/null 2>&1; then
+    write_pending
     nohup sh -c "sleep 2; systemctl restart $SERVICE" >/dev/null 2>&1 9>&- &
     echo "restarting $SERVICE"
   fi
 elif [ -n "${RC_SVCNAME:-}" ] || [ -n "${INVOCATION_ID:-}" ]; then
+  write_pending
   nohup sh -c "sleep 2; kill -TERM $PPID" >/dev/null 2>&1 9>&- &
   echo "restarting $SERVICE (supervisor respawn)"
 else

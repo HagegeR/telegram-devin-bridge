@@ -180,6 +180,11 @@ deploy-only: `git checkout -B` discards local changes on purpose. Admins can
 run it from Telegram with `/update` or preview with `/update check`
 (admins: `TELEGRAM_ADMIN_USER_IDS`, or `TELEGRAM_ALLOWED_USERS` when unset).
 
+`/update` acknowledges immediately with "Checking for updates…", and after the
+restart the bridge posts "Bridge updated … and back online" (plus a short
+changelog) to the chat that triggered it; cron updates post to the home chat
+set with `/sethome`, if any.
+
 On Alpine, install the bundled cron entry to poll every 15 minutes:
 
 ```sh

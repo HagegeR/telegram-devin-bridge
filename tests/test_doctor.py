@@ -736,7 +736,7 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
 
     commands: list[list[str]] = []
 
-    async def fake_run(command: list[str], cwd) -> tuple[int, str]:
+    async def fake_run(command: list[str], cwd, env=None) -> tuple[int, str]:
         commands.append(command)
         return 0, "up to date at abc1234 (main)" + chr(10)
 
@@ -996,7 +996,7 @@ async def test_self_update_sanitizes_output(tmp_path: Path) -> None:
 
     runtime.send_text = fake_send  # type: ignore[assignment]
 
-    async def fake_run(command, cwd):
+    async def fake_run(command, cwd, env=None):
         return 0, "evil ` injection " + chr(0x1B) + "[31mred" + chr(10)
 
     runtime._run_command = fake_run
@@ -1034,7 +1034,7 @@ async def test_self_update_rejects_script_outside_repo(
         sent.append(text)
         return 1
 
-    async def fake_run(command, cwd):
+    async def fake_run(command, cwd, env=None):
         nonlocal calls
         calls += 1
         return 0, ""

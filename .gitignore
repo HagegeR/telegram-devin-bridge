@@ -7,3 +7,4 @@ __pycache__/
 .ruff_cache/
 .self-update.lock
 .self-update-rev
+.self-update-pending
