@@ -157,7 +157,7 @@ def register_admin_route(
     clock: Clock = time.monotonic,
 ) -> None:
     request_times: deque[float] = deque()
-    auth_fail_times: deque[float] = deque()
+    auth_fail_times: dict[str, deque[float]] = {}
     env_lock = asyncio.Lock()
 
     def _check_rate(times: deque[float]) -> None:
@@ -184,21 +184,38 @@ def register_admin_route(
     async def admin(request: Request) -> dict[str, object]:
         if settings.admin_secret is None:
             raise HTTPException(status_code=404, detail="Not found")
+        client_host = request.client.host if request.client else "-"
+        failed_times = auth_fail_times.get(client_host)
         now = clock()
-        while auth_fail_times and now - auth_fail_times[0] > 60:
-            auth_fail_times.popleft()
-        if len(auth_fail_times) >= _RATE_LIMIT:
+        if failed_times:
+            while failed_times and now - failed_times[0] > 60:
+                failed_times.popleft()
+            if not failed_times:
+                del auth_fail_times[client_host]
+                failed_times = None
+        if failed_times and len(failed_times) >= _RATE_LIMIT:
             raise HTTPException(status_code=429, detail="admin rate limit")
         authorization = request.headers.get("authorization", "")
         expected_authorization = f"Bearer {settings.admin_secret}"
         if not secrets.compare_digest(
             authorization.encode(), expected_authorization.encode()
         ):
-            auth_fail_times.append(clock())
-            client_host = request.client.host if request.client else "-"
+            failed_times = auth_fail_times.setdefault(client_host, deque())
+            failed_times.append(clock())
+            if len(auth_fail_times) >= 1000:
+                for host, host_times in list(auth_fail_times.items()):
+                    while host_times and clock() - host_times[0] > 60:
+                        host_times.popleft()
+                    if not host_times:
+                        del auth_fail_times[host]
+                if len(auth_fail_times) >= 1000:
+                    oldest_host = min(
+                        auth_fail_times,
+                        key=lambda host: auth_fail_times[host][-1],
+                    )
+                    del auth_fail_times[oldest_host]
             logger.warning("admin auth failed from=%s", client_host)
             raise HTTPException(status_code=403, detail="Invalid bearer token")
-        client_host = request.client.host if request.client else "-"
         action = "-"
         key = "-"
         status = "ok"

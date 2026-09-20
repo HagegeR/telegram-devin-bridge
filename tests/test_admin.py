@@ -542,11 +542,19 @@ async def test_admin_rate_limit_applies_before_auth(tmp_path: Path) -> None:
             for _ in range(11)
         ]
         locked_out = await authed(client, {"action": "get-env"})
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=app, client=("10.0.0.2", 5000)
+            ),
+            base_url="http://test",
+        ) as other_client:
+            other_host = await authed(other_client, {"action": "get-env"})
         clock["t"] += 61
         recovered = await authed(client, {"action": "get-env"})
     assert [response.status_code for response in responses[:10]] == [403] * 10
     assert responses[10].status_code == 429
     assert locked_out.status_code == 429
+    assert other_host.status_code == 200
     assert recovered.status_code == 200
 
 
