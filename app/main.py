@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import re
 import secrets
@@ -1795,7 +1796,10 @@ def create_app(
     ) -> dict[str, bool]:
         if actual_settings.telegram_mode == "polling":
             raise HTTPException(status_code=404, detail="Polling mode is active")
-        if x_telegram_bot_api_secret_token != actual_settings.telegram_webhook_secret:
+        if not hmac.compare_digest(
+            x_telegram_bot_api_secret_token or "",
+            actual_settings.telegram_webhook_secret or "",
+        ):
             raise HTTPException(status_code=403, detail="Invalid webhook secret")
         payload = await request.json()
         if isinstance(payload, dict):
