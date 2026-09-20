@@ -297,8 +297,7 @@ class SessionWatcher:
             step = min(remaining, max(last + TYPING_REFRESH_SECONDS - self.clock(), 0.001))
             await self.sleep(step)
             remaining -= step
-            if remaining > 0:
-                await self._send_chat_action()
+            await self._send_chat_action()
 
     async def _send_chat_action(self) -> None:
         now = self.clock()
