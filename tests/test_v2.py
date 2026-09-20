@@ -1507,6 +1507,68 @@ async def test_watcher_keeps_manual_rename_during_auto_title(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_watcher_retries_manual_title_after_failed_reconcile(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class FlakyManualTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            if name == "A useful session title":
+                store.update_conversation(
+                    "222:7", "s1", title="Manual", title_pending=False
+                )
+            elif self.edited_topics.count((chat_id, thread_id, name)) <= 3:
+                raise httpx.ReadTimeout("temporary failure")
+
+    class TitledDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(self, _session_id: str) -> SessionState:
+            self.calls += 1
+            return SessionState(
+                "working" if self.calls == 1 else "finished",
+                "A useful session title",
+                None,
+                [],
+            )
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = FlakyManualTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        TitledDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    names = [name for _, _, name in telegram.edited_topics]
+    assert names == ["A useful session title"] + ["Manual"] * 4
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title == "Manual"
+
+
+@pytest.mark.asyncio
 async def test_watcher_preserves_manual_topic_title(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(

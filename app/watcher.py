@@ -88,6 +88,7 @@ class SessionWatcher:
         self.last_status: str | None = None
         self.started_at = self.clock()
         self.generation = 0
+        self.topic_title_stale = False
 
     def set_trigger(self, message_id: int) -> None:
         self.trigger_message_id = message_id
@@ -117,11 +118,15 @@ class SessionWatcher:
                 if self.generation != gen:
                     await self.sleep(interval)
                     continue
-                if self.conversation.title_pending:
+                if self.conversation.title_pending or self.topic_title_stale:
                     stored = self.store.get_conversation(self.conversation.conv_key)
                     if stored is not None:
                         self.conversation = stored
-                if (
+                if self.topic_title_stale:
+                    self.topic_title_stale = not await self._edit_topic(
+                        self.conversation.title
+                    )
+                elif (
                     self.conversation.title_pending
                     and state.title
                     and state.title != self.conversation.title
@@ -229,43 +234,36 @@ class SessionWatcher:
             await self._cleanup_transients()
             raise
 
+    async def _edit_topic(self, title: str) -> bool:
+        conv = self.conversation
+        for attempt in range(3):
+            try:
+                await self.telegram.edit_forum_topic(
+                    conv.chat_id, conv.thread_id, title[:128]
+                )
+                return True
+            except (RuntimeError, httpx.HTTPError):
+                logger.warning(
+                    "Failed to rename topic chat=%s thread=%s",
+                    conv.chat_id,
+                    conv.thread_id,
+                )
+                if attempt < 2:
+                    await self.sleep(1)
+        return False
+
     async def _apply_session_title(self, title: str) -> None:
         conv = self.conversation
         if conv.thread_id is not None and conv.conv_key == Store.conv_key(
             conv.chat_id, conv.thread_id, is_forum=True
         ):
-            for attempt in range(3):
-                try:
-                    await self.telegram.edit_forum_topic(
-                        conv.chat_id, conv.thread_id, title[:128]
-                    )
-                except (RuntimeError, httpx.HTTPError):
-                    logger.warning(
-                        "Failed to rename topic chat=%s thread=%s",
-                        conv.chat_id,
-                        conv.thread_id,
-                    )
-                    if attempt == 2:
-                        return
-                    await self.sleep(1)
-                else:
-                    break
+            if not await self._edit_topic(title):
+                return
             stored = self.store.get_conversation(conv.conv_key)
             if stored is None or stored.session_id != conv.session_id:
                 return
             if not stored.title_pending:
-                try:
-                    await self.telegram.edit_forum_topic(
-                        conv.chat_id,
-                        conv.thread_id,
-                        stored.title[:128],
-                    )
-                except (RuntimeError, httpx.HTTPError):
-                    logger.warning(
-                        "Failed to rename topic chat=%s thread=%s",
-                        conv.chat_id,
-                        conv.thread_id,
-                    )
+                self.topic_title_stale = not await self._edit_topic(stored.title)
                 self.conversation = stored
                 return
         self.store.update_conversation(
