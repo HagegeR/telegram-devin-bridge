@@ -26,9 +26,9 @@ T = TypeVar("T")
 async def _is_public_host(hostname: str) -> bool:
     try:
         infos = await asyncio.get_running_loop().getaddrinfo(hostname, None)
-    except OSError:
+        addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    except (OSError, UnicodeError, ValueError):
         return False
-    addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
     return bool(addresses) and all(address.is_global for address in addresses)
 
 
