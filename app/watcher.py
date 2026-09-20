@@ -251,12 +251,10 @@ class SessionWatcher:
                 else:
                     break
             stored = self.store.get_conversation(conv.conv_key)
-            if (
-                stored is None
-                or not stored.title_pending
-                or stored.session_id != conv.session_id
-            ):
-                self.conversation = stored or conv
+            if stored is None or stored.session_id != conv.session_id:
+                return
+            if not stored.title_pending:
+                self.conversation = stored
                 return
         self.store.update_conversation(
             conv.conv_key,
