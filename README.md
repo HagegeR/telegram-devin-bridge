@@ -61,6 +61,10 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
 | `NOTIFY_SECRET` | no | unset (`/notify` disabled) |
 | `DOCTOR_SECRET` | no | unset (`/doctor` disabled) |
+| `ADMIN_SECRET` | no | unset (`/admin` disabled) |
+| `ADMIN_ENV_ALLOWLIST` | no | built-in non-secret key list |
+| `ADMIN_LOG_PATH` | no | `/var/log/telegram-devin-bridge.log` |
+| `ADMIN_RESTART_COMMAND` | no | OpenRC `rc-service` restart |
 | `BOT_USERNAME` | no | fetched from Telegram at startup |
 
 With allow-all disabled, an empty user/chat allowlist denies access and sends
@@ -136,6 +140,33 @@ Two deployment styles exist — pick one:
   uvicorn as root from `/root/telegram-devin-bridge`, supervise-daemon respawn.
 - `deploy/vm/install.sh`: **polling-mode** installer — `TELEGRAM_MODE=polling`,
   service account under `/opt`, `python -m app.poll`; needs no public URL.
+
+## Admin API
+
+`POST /admin` with `Authorization: Bearer $ADMIN_SECRET` — a narrow,
+no-shell remote control for cloud sessions:
+
+| body | effect |
+| --- | --- |
+| `{"action":"doctor"}` | run the diagnostics, return the check list |
+| `{"action":"logs","lines":200}` | tail of the service log (secrets redacted; max 500) |
+| `{"action":"get-env"}` | values of the allowlisted non-secret `.env` keys |
+| `{"action":"set-env","key":"DEVIN_MAX_ACU_LIMIT","value":"5"}` | rewrite one allowlisted `.env` key (applies after `restart`) |
+| `{"action":"restart"}` | restart the service (detached) |
+| `{"action":"update"}` | run the self-updater |
+
+```bash
+curl -X POST https://<host>.<tailnet>.ts.net/admin   -H "Authorization: Bearer $ADMIN_SECRET"   -H 'Content-Type: application/json'   -d '{"action":"doctor"}'
+```
+
+Security: separate `ADMIN_SECRET`, `ADMIN_ENV_ALLOWLIST` whitelists only
+non-secret keys (tokens/keys are never readable or writable), every call is
+audit-logged and posts a Telegram notification, 10 req/min rate limit, and
+log output is secret-redacted. Failed auth attempts are tarpitted one at a
+time (1 s delay); while one is in flight every request gets 429 (≈60
+guesses/min cap), so a flood of bad tokens can temporarily block valid ones —
+use Tailscale SSH as fallback. Command and path keys can never be set via the
+API.
 
 ## Self-update
 
