@@ -853,6 +853,60 @@ async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "new_sessions"),
+    [("finished", 1), ("blocked", 1), ("expired", 2)],
+)
+async def test_follow_up_reuses_idle_session(
+    tmp_path: Path, status: str, new_sessions: int
+) -> None:
+    class StatusDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState(status, "title", None, [])
+
+    devin = StatusDevin()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, _FakeTelegram())  # type: ignore[arg-type]
+    await runtime.handle_user_turn(message("first", message_id=1), "first")
+    await runtime.handle_user_turn(message("second", message_id=2), "second")
+    assert len(devin.created) == new_sessions
+    assert [text for _, text in devin.sent] == (["second"] if new_sessions == 1 else [])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [404, 410, 500])
+async def test_gone_session_starts_new_one_keeping_queue(
+    tmp_path: Path, status_code: int
+) -> None:
+    class RejectingDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState("finished", "title", None, [])
+
+        async def send_message(self, session_id: str, text: str) -> None:
+            raise httpx.HTTPStatusError(
+                "rejected",
+                request=httpx.Request("POST", "https://devin.test"),
+                response=httpx.Response(status_code),
+            )
+
+    devin = RejectingDevin()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, _FakeTelegram())  # type: ignore[arg-type]
+    await runtime.handle_user_turn(message("first", message_id=1), "first")
+    runtime.queued_turns["222"] = [(message("third", message_id=3), "third", None)]
+    runtime.pending_turns["222"] = [(message("fourth", message_id=4), "fourth", None)]
+    if status_code == 500:
+        with pytest.raises(httpx.HTTPStatusError):
+            await runtime.handle_user_turn(message("second", message_id=2), "second")
+        assert len(devin.created) == 1
+    else:
+        await runtime.handle_user_turn(message("second", message_id=2), "second")
+        assert len(devin.created) == 2
+        assert "second" in devin.created[1]
+    assert runtime.queued_count("222") == 2
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_session_instructions_prefix_new_session_prompt(tmp_path: Path) -> None:
     devin = _FakeDevin()
     runtime = Bridge(
