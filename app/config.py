@@ -81,7 +81,7 @@ class Settings(BaseSettings):
 
     @property
     def admin_user_ids(self) -> frozenset[int]:
-        return self._csv_ints(self.telegram_admin_user_ids)
+        return self._csv_ints(self.telegram_admin_user_ids) or self.allowed_users
 
 
 @lru_cache

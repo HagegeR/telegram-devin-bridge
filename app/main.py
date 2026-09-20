@@ -35,6 +35,7 @@ from app.formatting import (
 )
 from app.notify import register_notify_route
 from app.polling import run_polling
+from app.set_webhook import configure_bot
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
@@ -1365,7 +1366,8 @@ class Bridge:
             await self.send_text(
                 message,
                 "Admins only. Add your Telegram user id (see /whoami) to "
-                "TELEGRAM_ADMIN_USER_IDS and restart the bridge.",
+                "TELEGRAM_ADMIN_USER_IDS (or TELEGRAM_ALLOWED_USERS) and restart "
+                "the bridge.",
                 ephemeral=True,
             )
             return
@@ -1785,6 +1787,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await runtime.startup()
+        if actual_settings.telegram_mode != "polling":
+            await configure_bot(runtime.telegram)
         polling_task: asyncio.Task[None] | None = None
         if actual_settings.telegram_mode == "polling":
             polling_task = asyncio.create_task(

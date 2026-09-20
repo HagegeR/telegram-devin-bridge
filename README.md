@@ -52,7 +52,7 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_FREE_RESPONSE_CHATS` | no | empty |
 | `TELEGRAM_HOME_CHANNEL` | no | unset |
 | `TELEGRAM_NOTIFICATION_MODE` | no | `important` |
-| `TELEGRAM_ADMIN_USER_IDS` | no | empty |
+| `TELEGRAM_ADMIN_USER_IDS` | no | falls back to `TELEGRAM_ALLOWED_USERS` |
 | `TRANSCRIPTION_API_KEY` | no | unset |
 | `TRANSCRIPTION_BASE_URL` | no | `https://api.openai.com/v1` |
 | `TRANSCRIPTION_MODEL` | no | `whisper-1` |
@@ -141,11 +141,11 @@ Two deployment styles exist — pick one:
 
 `deploy/self-update.sh` takes a host-wide lock and records a deploy marker, fetches `origin/<branch>`
 (`SELF_UPDATE_BRANCH`, default `main`), checks out the remote head, reinstalls requirements when
-`requirements.txt` changed, and restarts the OpenRC service detached.
+`requirements.txt` changed, and restarts the OpenRC/systemd service detached.
 `--check` reports without touching anything. The host checkout is
 deploy-only: `git checkout -B` discards local changes on purpose. Admins can
 run it from Telegram with `/update` or preview with `/update check`
-(requires `TELEGRAM_ADMIN_USER_IDS`).
+(admins: `TELEGRAM_ADMIN_USER_IDS`, or `TELEGRAM_ALLOWED_USERS` when unset).
 
 On Alpine, install the bundled cron entry to poll every 15 minutes:
 

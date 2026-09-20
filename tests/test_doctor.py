@@ -68,6 +68,22 @@ def test_env_warns_on_non_v1_devin_key(tmp_path: Path) -> None:
     assert ok.status == "ok"
 
 
+def test_admin_user_ids_fall_back_to_allowed_users(tmp_path: Path) -> None:
+    fallback = settings(
+        tmp_path,
+        telegram_allowed_users="111,222",
+        telegram_admin_user_ids="",
+    )
+    assert fallback.admin_user_ids == frozenset({111, 222})
+
+    explicit = settings(
+        tmp_path,
+        telegram_allowed_users="111,222",
+        telegram_admin_user_ids="42",
+    )
+    assert explicit.admin_user_ids == frozenset({42})
+
+
 def test_load_settings_or_error_empty_int(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
@@ -742,11 +758,39 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     assert sent == [
         (
             "Admins only. Add your Telegram user id (see /whoami) to "
-            "TELEGRAM_ADMIN_USER_IDS and restart the bridge."
+            "TELEGRAM_ADMIN_USER_IDS (or TELEGRAM_ALLOWED_USERS) and restart "
+            "the bridge."
         )
     ]
     assert send_kwargs[-1]["ephemeral"] is True
     assert commands == previous_commands
+
+
+@pytest.mark.asyncio
+async def test_webhook_startup_refreshes_bot_commands(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app import main as main_module
+
+    app = create_app(settings=settings(tmp_path))
+    runtime = app.state.bridge
+    configured: list[object] = []
+
+    async def fake_configure(telegram: object) -> None:
+        configured.append(telegram)
+
+    async def fake_startup() -> None:
+        return None
+
+    async def fake_shutdown() -> None:
+        return None
+
+    monkeypatch.setattr(main_module, "configure_bot", fake_configure)
+    runtime.startup = fake_startup  # type: ignore[method-assign]
+    runtime.shutdown = fake_shutdown  # type: ignore[method-assign]
+    async with app.router.lifespan_context(app):
+        pass
+    assert configured == [runtime.telegram]
 
 
 @pytest.mark.asyncio
