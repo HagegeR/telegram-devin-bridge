@@ -239,7 +239,7 @@ class SessionWatcher:
                     await self.telegram.edit_forum_topic(
                         conv.chat_id, conv.thread_id, title[:128]
                     )
-                except RuntimeError:
+                except (RuntimeError, httpx.HTTPError):
                     logger.warning(
                         "Failed to rename topic chat=%s thread=%s",
                         conv.chat_id,
@@ -254,6 +254,18 @@ class SessionWatcher:
             if stored is None or stored.session_id != conv.session_id:
                 return
             if not stored.title_pending:
+                try:
+                    await self.telegram.edit_forum_topic(
+                        conv.chat_id,
+                        conv.thread_id,
+                        stored.title[:128],
+                    )
+                except (RuntimeError, httpx.HTTPError):
+                    logger.warning(
+                        "Failed to rename topic chat=%s thread=%s",
+                        conv.chat_id,
+                        conv.thread_id,
+                    )
                 self.conversation = stored
                 return
         self.store.update_conversation(

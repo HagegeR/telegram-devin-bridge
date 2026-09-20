@@ -1449,6 +1449,7 @@ async def test_watcher_keeps_manual_rename_during_auto_title(tmp_path: Path) -> 
     assert stored is not None
     assert stored.title == "Manual"
     assert stored.title_pending is False
+    assert telegram.edited_topics[-1] == (222, 7, "Manual")
 
 
 @pytest.mark.asyncio
@@ -1579,6 +1580,58 @@ async def test_watcher_retries_topic_rename_after_failure(tmp_path: Path) -> Non
     assert stored.title == "A useful session title"
     assert stored.title_pending is False
     assert store.list_history("222:7")[0].title == "A useful session title"
+
+
+@pytest.mark.asyncio
+async def test_watcher_tolerates_topic_rename_transport_errors(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+
+    class TransportErrorTelegram(_FakeTelegram):
+        async def edit_forum_topic(
+            self, chat_id: int, thread_id: int, name: str
+        ) -> None:
+            self.edited_topics.append((chat_id, thread_id, name))
+            raise httpx.ReadTimeout("t")
+
+    class ReplyDevin(_FakeDevin):
+        async def get_session(self, _session_id: str) -> SessionState:
+            return SessionState(
+                "finished",
+                "A useful session title",
+                None,
+                [DevinMessage("devin_message", "e1", "reply", None)],
+            )
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = TransportErrorTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        ReplyDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title_pending is True
+    assert len(telegram.edited_topics) == 3
+    assert any(item["text"] == "reply" for item in telegram.sent)
 
 
 @pytest.mark.asyncio
