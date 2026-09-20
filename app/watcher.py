@@ -197,10 +197,8 @@ class SessionWatcher:
                 else:
                     await self._refresh_progress(self.started_at, state)
                     if self.last_chat_action_at is not None:
-                        interval = min(
-                            interval,
-                            self.last_chat_action_at + TYPING_REFRESH_SECONDS - self.clock(),
-                        )
+                        await self._sleep_keeping_typing(interval)
+                        continue
                 await self.sleep(max(interval, 0.001))
             await self._cleanup_transients()
             if not self.delivered:
@@ -291,6 +289,16 @@ class SessionWatcher:
         except (RuntimeError, httpx.HTTPError):
             self.drafts_ok = False
             await self._send_chat_action()
+
+    async def _sleep_keeping_typing(self, interval: float) -> None:
+        remaining = max(interval, 0.001)
+        while remaining > 0:
+            last = self.last_chat_action_at or self.clock()
+            step = min(remaining, max(last + TYPING_REFRESH_SECONDS - self.clock(), 0.001))
+            await self.sleep(step)
+            remaining -= step
+            if remaining > 0:
+                await self._send_chat_action()
 
     async def _send_chat_action(self) -> None:
         now = self.clock()
