@@ -157,11 +157,14 @@ install_service_file() {
 case "$INIT_SYSTEM" in
     openrc)
         install -d /etc/init.d
+        if [ -x /etc/init.d/telegram-devin-bridge ]; then
+            rc-service "$SERVICE_NAME" stop || true
+        fi
         install_service_file \
             "$SOURCE_DIR/deploy/vm/telegram-devin-bridge.initd" \
             /etc/init.d/telegram-devin-bridge
         rc-update add "$SERVICE_NAME" default
-        rc-service "$SERVICE_NAME" restart
+        rc-service "$SERVICE_NAME" start
         ;;
     systemd)
         install -d /etc/systemd/system
