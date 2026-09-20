@@ -132,6 +132,7 @@ class Bridge:
             await asyncio.sleep(delay)
             if await self._announce_update():
                 return
+        await self._announce_update()
 
     async def _announce_update(self) -> bool:
         """Return True once the pending marker is consumed (sent or given up)."""
