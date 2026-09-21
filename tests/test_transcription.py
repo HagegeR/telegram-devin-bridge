@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -246,3 +247,42 @@ def test_whisper_cpp_extra_args_rejected(monkeypatch, extra_args: str) -> None:
     monkeypatch.setenv("WHISPER_CPP_EXTRA_ARGS", extra_args)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_local_returns_none_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transcription._models.clear()
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.05)
+
+    def slow(*_: object, **__: object) -> str:
+        time.sleep(0.5)
+        return "late"
+
+    monkeypatch.setattr(transcription, "_load", lambda _name: object())
+    monkeypatch.setattr(transcription, "_transcribe", slow)
+    assert await transcription.transcribe_local(
+        b"audio",
+        "voice.ogg",
+        "test-timeout",
+        "en",
+    ) is None
+    assert transcription._slots._value == transcription._MAX_CONCURRENT - 1
+    await asyncio.sleep(0.6)
+    assert transcription._slots._value == transcription._MAX_CONCURRENT
+
+
+@pytest.mark.asyncio
+async def test_transcribe_local_rejects_when_slots_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.05)
+    monkeypatch.setattr(transcription, "_slots", asyncio.Semaphore(0))
+    monkeypatch.setattr(transcription, "_load", lambda _name: object())
+    assert await transcription.transcribe_local(
+        b"audio",
+        "voice.ogg",
+        "test-busy",
+        "en",
+    ) is None

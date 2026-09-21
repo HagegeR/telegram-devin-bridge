@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 _models: dict[str, Any] = {}
 _lock = asyncio.Lock()
 _TIMEOUT = 120
+_MAX_CONCURRENT = 2
+_slots = asyncio.Semaphore(_MAX_CONCURRENT)
 _AUDIO_SUFFIXES = frozenset({
     ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".aac", ".wav", ".flac",
 })
@@ -63,23 +65,47 @@ async def transcribe_local(
     model_name: str,
     language: str | None,
 ) -> str | None:
+    if not await _acquire_slot():
+        return None
+    job: asyncio.Future[str] | None = None
     try:
         async with _lock:
             model = _models.get(model_name)
             if model is None:
                 model = await asyncio.to_thread(_load, model_name)
                 _models[model_name] = model
-        text = await asyncio.to_thread(
-            _transcribe,
-            model,
-            content,
-            filename,
-            language,
+        job = asyncio.ensure_future(
+            asyncio.to_thread(_transcribe, model, content, filename, language)
         )
+        text = await asyncio.wait_for(asyncio.shield(job), _TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Local transcription timed out")
+        return None
     except Exception:
         logger.warning("Local transcription failed", exc_info=True)
         return None
+    finally:
+        # The thread cannot be interrupted, so the slot stays held until it exits.
+        if job is not None and not job.done():
+            job.add_done_callback(_release_slot)
+        else:
+            _slots.release()
     return text or None
+
+
+async def _acquire_slot() -> bool:
+    try:
+        await asyncio.wait_for(_slots.acquire(), _TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Transcription rejected: all slots busy")
+        return False
+    return True
+
+
+def _release_slot(job: asyncio.Future[str]) -> None:
+    if not job.cancelled() and job.exception() is not None:
+        logger.warning("Late local transcription failed", exc_info=job.exception())
+    _slots.release()
 
 
 async def _reap(process: asyncio.subprocess.Process) -> None:
@@ -164,6 +190,8 @@ async def transcribe_whispercpp(
     fast: bool = True,
     extra_args: Sequence[str] = (),
 ) -> str | None:
+    if not await _acquire_slot():
+        return None
     try:
         with tempfile.TemporaryDirectory() as directory:
             input_path = Path(directory) / f"input{_suffix(filename)}"
@@ -206,5 +234,7 @@ async def transcribe_whispercpp(
     except OSError:
         logger.warning("whisper.cpp transcription failed", exc_info=True)
         return None
+    finally:
+        _slots.release()
     text = " ".join(stdout.decode(errors="replace").split())
     return text or None
