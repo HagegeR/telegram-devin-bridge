@@ -140,3 +140,6 @@ async def test_transcribe_local_returns_none_on_timeout(
         "test-timeout",
         "en",
     ) is None
+    assert transcription._slots._value == transcription._MAX_CONCURRENT - 1
+    await asyncio.sleep(0.6)
+    assert transcription._slots._value == transcription._MAX_CONCURRENT

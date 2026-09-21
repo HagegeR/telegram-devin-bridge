@@ -53,24 +53,37 @@ async def transcribe_local(
     model_name: str,
     language: str | None,
 ) -> str | None:
+    await _slots.acquire()
+    job: asyncio.Future[str] | None = None
     try:
-        async with _slots:
-            async with _lock:
-                model = _models.get(model_name)
-                if model is None:
-                    model = await asyncio.to_thread(_load, model_name)
-                    _models[model_name] = model
-            text = await asyncio.wait_for(
-                asyncio.to_thread(_transcribe, model, content, filename, language),
-                _TIMEOUT,
-            )
+        async with _lock:
+            model = _models.get(model_name)
+            if model is None:
+                model = await asyncio.to_thread(_load, model_name)
+                _models[model_name] = model
+        job = asyncio.ensure_future(
+            asyncio.to_thread(_transcribe, model, content, filename, language)
+        )
+        text = await asyncio.wait_for(asyncio.shield(job), _TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("Local transcription timed out")
         return None
     except Exception:
         logger.warning("Local transcription failed", exc_info=True)
         return None
+    finally:
+        # The thread cannot be interrupted, so the slot stays held until it exits.
+        if job is not None and not job.done():
+            job.add_done_callback(_release_slot)
+        else:
+            _slots.release()
     return text or None
+
+
+def _release_slot(job: asyncio.Future[str]) -> None:
+    if not job.cancelled() and job.exception() is not None:
+        logger.warning("Late local transcription failed", exc_info=job.exception())
+    _slots.release()
 
 
 async def _reap(process: asyncio.subprocess.Process) -> None:
