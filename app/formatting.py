@@ -66,7 +66,7 @@ def _inline(text: str) -> str:
         return protect(f"[{label}]({url})")
 
     text = re.sub(r"`([^`\n]+)`", code, text)
-    text = re.sub(r"\[([^\]\n]+)\]\(([^)\n]+)\)", link, text)
+    text = re.sub(r"\[([^\[\]\n]+)\]\(([^()\n]+)\)", link, text)
 
     def styled(pattern: str, opening: str, closing: str) -> None:
         nonlocal text
