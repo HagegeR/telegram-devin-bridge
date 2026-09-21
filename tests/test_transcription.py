@@ -1,5 +1,6 @@
 import asyncio
 import io
+import shutil
 import sys
 import wave
 from pathlib import Path
@@ -67,8 +68,46 @@ async def test_transcribe_whispercpp_runs_commands_and_normalizes_output(
         "model.bin",
         None,
     ) == "Hello there"
+    assert calls[0][calls[0].index("-protocol_whitelist") + 1] == "file"
+    assert "hls" not in calls[0][calls[0].index("-format_whitelist") + 1]
+    assert calls[0][calls[0].index("-i") + 1].endswith("input.ogg")
     assert "-l" in calls[1]
     assert calls[1][calls[1].index("-l") + 1] == "auto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_transcribe_whispercpp_rejects_playlist_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    secret = tmp_path / "secret.mp3"
+    secret.write_bytes(b"secret")
+    playlist = (
+        f"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:10,\n{secret.as_uri()}\n"
+        "#EXT-X-ENDLIST\n"
+    ).encode()
+    ffmpeg_ran = False
+    run = transcription._run_whispercpp_command
+
+    async def spy(*args: str) -> bytes | None:
+        nonlocal ffmpeg_ran
+        if args[0] != "ffmpeg":
+            return b"should not reach whisper"
+        ffmpeg_ran = True
+        return await run(*args)
+
+    monkeypatch.setattr(transcription, "_run_whispercpp_command", spy)
+    assert await transcription.transcribe_whispercpp(
+        playlist, "voice.ogg", "whisper-cli", "model.bin", None
+    ) is None
+    assert ffmpeg_ran
+
+
+def test_suffix_ignores_untrusted_extensions() -> None:
+    assert transcription._suffix("voice.OGG") == ".ogg"
+    assert transcription._suffix("evil.m3u8") == ".audio"
+    assert transcription._suffix("noext") == ".audio"
 
 
 @pytest.mark.asyncio
@@ -286,17 +325,18 @@ def test_docker_image_invalid(tmp_path: Path, image: str) -> None:
         )
 
 
-@pytest.mark.parametrize("memory", ["400m", "1g", "512"])
+@pytest.mark.parametrize("memory", ["400m", "1g", "6291456", " 400m "])
 def test_docker_memory_valid(tmp_path: Path, memory: str) -> None:
-    _config(
+    config = _config(
         tmp_path,
         transcription_backend="docker",
         transcription_docker_image="moonshine-asr",
         transcription_docker_memory=memory,
     )
+    assert config.transcription_docker_memory == memory.strip()
 
 
-@pytest.mark.parametrize("memory", ["400mb", "-1m", "1 g"])
+@pytest.mark.parametrize("memory", ["400mb", "-1m", "1 g", "", "512", "5m", "0"])
 def test_docker_memory_invalid(tmp_path: Path, memory: str) -> None:
     with pytest.raises(ValueError, match="docker_memory"):
         _config(
@@ -322,10 +362,46 @@ def test_docker_transcription_command_argv() -> None:
         "never",
         "--network",
         "none",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "64",
         "--memory",
         "400m",
         "moonshine-asr",
     ]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        wav_path.write_bytes(b"RIFF")
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    monkeypatch.setattr(transcription, "_local_slots", None)
+    active = 0
+    peak = 0
+
+    async def fake_run(*args: str, **kwargs: object) -> bytes:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return b"ok"
+
+    monkeypatch.setattr(transcription, "_run_whispercpp_command", fake_run)
+    results = await asyncio.gather(
+        *(
+            transcription.transcribe_command(b"a", "v.ogg", ["x"], None)
+            for _ in range(5)
+        )
+    )
+    assert results == ["ok"] * 5
+    assert peak == 1
 
 
 def test_docker_keys_allowlisted_not_command(tmp_path: Path) -> None:
@@ -333,3 +409,91 @@ def test_docker_keys_allowlisted_not_command(tmp_path: Path) -> None:
     assert "TRANSCRIPTION_DOCKER_IMAGE" in config.admin_env_keys
     assert "TRANSCRIPTION_DOCKER_MEMORY" in config.admin_env_keys
     assert "TRANSCRIPTION_COMMAND" not in config.admin_env_keys
+
+
+def test_whispercpp_args_fast_short_clip() -> None:
+    args = transcription.whispercpp_args(
+        "whisper-cli",
+        "model.bin",
+        Path("audio.wav"),
+        "en",
+        11.0,
+        True,
+        ("-tr", "--foo"),
+    )
+    assert args[args.index("-bs") + 1] == "1"
+    assert args[args.index("-bo") + 1] == "1"
+    # 11s / 30s * 1500 + 128 = 678
+    assert args[args.index("-ac") + 1] == "678"
+    assert args[-2:] == ["-tr", "--foo"]
+
+
+def test_whispercpp_args_fast_long_clip_no_ac() -> None:
+    args = transcription.whispercpp_args(
+        "whisper-cli", "model.bin", Path("audio.wav"), None, 40.0, True, ()
+    )
+    assert "-bs" in args and "-bo" in args
+    assert "-ac" not in args
+
+
+def test_whispercpp_args_fast_unknown_duration_no_ac() -> None:
+    args = transcription.whispercpp_args(
+        "whisper-cli", "model.bin", Path("audio.wav"), None, None, True, ()
+    )
+    assert "-bs" in args and "-bo" in args
+    assert "-ac" not in args
+
+
+def test_whispercpp_args_not_fast() -> None:
+    args = transcription.whispercpp_args(
+        "whisper-cli",
+        "model.bin",
+        Path("audio.wav"),
+        "en",
+        11.0,
+        False,
+        ("-tr",),
+    )
+    assert "-bs" not in args and "-bo" not in args and "-ac" not in args
+    assert args[-1] == "-tr"
+
+
+def test_wav_duration_seconds(tmp_path: Path) -> None:
+    import wave
+
+    wav_path = tmp_path / "clip.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * 16000 * 2)
+    assert transcription._wav_duration_seconds(wav_path) == pytest.approx(2.0)
+
+    bad_path = tmp_path / "clip.bin"
+    bad_path.write_bytes(b"not a wav")
+    assert transcription._wav_duration_seconds(bad_path) is None
+
+
+def test_whisper_cpp_fast_settings(tmp_path: Path, monkeypatch) -> None:
+    from app.config import Settings
+
+    monkeypatch.setenv("WHISPER_CPP_FAST", "false")
+    monkeypatch.setenv("WHISPER_CPP_EXTRA_ARGS", "-tr --foo")
+    config = Settings(_env_file=None)
+    assert config.whisper_cpp_fast is False
+    assert config.whisper_cpp_extra_args == "-tr --foo"
+    assert config.whisper_cpp_extra_argv == ["-tr", "--foo"]
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    ["-tr \"", "-tr -f /etc/passwd", "-m x", "-otxt", "--output-file x"],
+)
+def test_whisper_cpp_extra_args_rejected(monkeypatch, extra_args: str) -> None:
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("WHISPER_CPP_EXTRA_ARGS", extra_args)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

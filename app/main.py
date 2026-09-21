@@ -1867,6 +1867,8 @@ class Bridge:
                 self.settings.whisper_cpp_bin,
                 self.settings.whisper_cpp_model,
                 language,
+                fast=self.settings.whisper_cpp_fast,
+                extra_args=self.settings.whisper_cpp_extra_argv,
             )
         if self.settings.transcription_backend == "command":
             return await transcribe_command(

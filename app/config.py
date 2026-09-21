@@ -11,7 +11,9 @@ _DOCKER_IMAGE_RE = re.compile(
     r"(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?"
     r"(?:@sha256:[a-f0-9]{64})?$"
 )
-_DOCKER_MEMORY_RE = re.compile(r"^[0-9]+[bkmg]?$")
+_DOCKER_MEMORY_RE = re.compile(r"^([0-9]+)([bkmg]?)$")
+_DOCKER_MEMORY_UNITS = {"": 1, "b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+_DOCKER_MEMORY_MIN = 6 * 1024**2  # docker rejects limits below 6 MiB
 
 
 class Settings(BaseSettings):
@@ -56,7 +58,8 @@ class Settings(BaseSettings):
         # vector. The docker backend is the bounded, admin-settable form.
         "TRANSCRIPTION_BACKEND,TRANSCRIPTION_MODEL,TRANSCRIPTION_LANGUAGE,"
         "TRANSCRIPTION_DOCKER_IMAGE,TRANSCRIPTION_DOCKER_MEMORY,"
-        "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,"
+        "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,WHISPER_CPP_FAST,"
+        "WHISPER_CPP_EXTRA_ARGS,"
         "TELEGRAM_NOTIFICATION_MODE,"
         "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
         "TELEGRAM_ALLOWED_USERS,TELEGRAM_DEBOUNCE_SECONDS,"
@@ -81,6 +84,8 @@ class Settings(BaseSettings):
     transcription_command: str = ""
     transcription_docker_image: str = ""
     transcription_docker_memory: str = "400m"
+    whisper_cpp_fast: bool = True
+    whisper_cpp_extra_args: str = ""
     telegram_attach_voice: bool = False
     github_token: str | None = None
     self_update_command: str = "sh deploy/self-update.sh"
@@ -137,17 +142,24 @@ class Settings(BaseSettings):
                 "transcription_docker_image must be set when "
                 "transcription_backend=docker"
             )
-        image = self.transcription_docker_image.strip()
+        image = self.transcription_docker_image = self.transcription_docker_image.strip()
         if image and not _DOCKER_IMAGE_RE.fullmatch(image):
             raise ValueError(
                 "transcription_docker_image is not a valid image reference: "
                 f"{image!r}"
             )
-        memory = self.transcription_docker_memory.strip()
-        if memory and not _DOCKER_MEMORY_RE.fullmatch(memory):
+        memory = self.transcription_docker_memory = (
+            self.transcription_docker_memory.strip()
+        )
+        match = _DOCKER_MEMORY_RE.fullmatch(memory)
+        if match is None:
             raise ValueError(
                 "transcription_docker_memory must look like docker's "
                 f"<number>[b|k|m|g], got {memory!r}"
+            )
+        if int(match[1]) * _DOCKER_MEMORY_UNITS[match[2]] < _DOCKER_MEMORY_MIN:
+            raise ValueError(
+                f"transcription_docker_memory must be at least 6m, got {memory!r}"
             )
         return self
 
@@ -165,6 +177,22 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"{field_name} must be a comma-separated list of integers"
                 ) from exc
+        return self
+
+    @model_validator(mode="after")
+    def validate_whisper_cpp_extra_args(self) -> "Settings":
+        try:
+            tokens = shlex.split(self.whisper_cpp_extra_args)
+        except ValueError:
+            raise ValueError("whisper_cpp_extra_args has unbalanced quotes")
+        for token in tokens:
+            if (
+                token in {"-f", "--file", "-m", "--model"}
+                or token.startswith(("-o", "--output"))
+            ):
+                raise ValueError(
+                    f"whisper_cpp_extra_args may not contain {token}"
+                )
         return self
 
     @staticmethod
@@ -198,6 +226,10 @@ class Settings(BaseSettings):
             for item in self.admin_env_allowlist.split(",")
             if item.strip()
         )
+
+    @property
+    def whisper_cpp_extra_argv(self) -> list[str]:
+        return shlex.split(self.whisper_cpp_extra_args)
 
     @property
     def transcription_enabled(self) -> bool:

@@ -64,6 +64,8 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TRANSCRIPTION_DOCKER_MEMORY` | no | `400m` |
 | `WHISPER_CPP_BIN` | no | `whisper-cli` |
 | `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` |
+| `WHISPER_CPP_FAST` | no | `true` |
+| `WHISPER_CPP_EXTRA_ARGS` | no | unset (input/model/output flags `-f`, `-m`, `-o*` are rejected) |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
 | `GITHUB_TOKEN` | no | unset |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
@@ -264,12 +266,16 @@ pipes it on the child's stdin, reads the transcript from stdout, and exports
 `TRANSCRIPTION_LANGUAGE` into the child's environment. `command` is the
 unrestricted form (any argv; root-only — not settable through the admin API);
 `TRANSCRIPTION_BACKEND=docker` is the bounded form — a fixed
-`docker run --rm -i --pull never --network none --memory <MEM> <IMAGE>` argv
+`docker run --rm -i --pull never --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory <MEM> <IMAGE>` argv
 with a validated image reference and memory limit, both admin-settable via
 `TRANSCRIPTION_DOCKER_IMAGE`/`TRANSCRIPTION_DOCKER_MEMORY`. See
 `deploy/moonshine/` for a Docker sidecar (Moonshine, English-only, zero RAM
 while idle): `TRANSCRIPTION_BACKEND=docker` +
 `TRANSCRIPTION_DOCKER_IMAGE=moonshine-asr`.
+
+`WHISPER_CPP_FAST` (default on) uses greedy decoding and sizes the audio
+context to the clip instead of whisper's fixed 30 s window, roughly 2.5×
+faster on CPU-only hosts; set `WHISPER_CPP_FAST=false` for maximum accuracy.
 Artifact images and documents from Devin are forwarded to Telegram, and GitHub
 pull requests are rendered as compact cards when metadata is available.
 
