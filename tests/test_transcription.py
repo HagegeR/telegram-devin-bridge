@@ -1,4 +1,6 @@
 import asyncio
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +15,7 @@ async def test_transcribe_whispercpp_returns_none_for_missing_binary(
     class Process:
         returncode = 0
 
-        async def communicate(self, _input: bytes | None = None) -> tuple[bytes, bytes]:
+        async def communicate(self) -> tuple[bytes, bytes]:
             return b"", b""
 
     async def create_process(*args: str, **_: object) -> Process:
@@ -44,7 +46,7 @@ async def test_transcribe_whispercpp_runs_commands_and_normalizes_output(
     class Process:
         returncode = 0
 
-        async def communicate(self, _input: bytes | None = None) -> tuple[bytes, bytes]:
+        async def communicate(self) -> tuple[bytes, bytes]:
             return b"  Hello  there\n", b""
 
     async def create_process(*args: str, **_: object) -> Process:
@@ -64,41 +66,39 @@ async def test_transcribe_whispercpp_runs_commands_and_normalizes_output(
         None,
     ) == "Hello there"
     assert calls[0][calls[0].index("-protocol_whitelist") + 1] == "file"
-    assert calls[0][calls[0].index("-f") + 1] == "ogg"
+    assert "hls" not in calls[0][calls[0].index("-format_whitelist") + 1]
     assert calls[0][calls[0].index("-i") + 1].endswith("input.ogg")
     assert "-l" in calls[1]
     assert calls[1][calls[1].index("-l") + 1] == "auto"
 
 
 @pytest.mark.asyncio
-async def test_transcribe_whispercpp_pipes_input_for_unknown_suffix(
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_transcribe_whispercpp_rejects_playlist_input(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    calls: list[tuple[tuple[str, ...], bytes | None]] = []
+    secret = tmp_path / "secret.mp3"
+    secret.write_bytes(b"secret")
+    playlist = (
+        f"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:10,\n{secret.as_uri()}\n"
+        "#EXT-X-ENDLIST\n"
+    ).encode()
+    ffmpeg_ran = False
+    run = transcription._run_whispercpp_command
 
-    class Process:
-        returncode = 0
+    async def spy(*args: str) -> bytes | None:
+        nonlocal ffmpeg_ran
+        if args[0] != "ffmpeg":
+            return b"should not reach whisper"
+        ffmpeg_ran = True
+        return await run(*args)
 
-        async def communicate(self, _input: bytes | None = None) -> tuple[bytes, bytes]:
-            return b"ok", b""
-
-    async def create_process(*args: str, **kwargs: object) -> Process:
-        calls.append((args, kwargs.get("stdin")))
-        return Process()
-
-    monkeypatch.setattr(
-        transcription.asyncio,
-        "create_subprocess_exec",
-        create_process,
-    )
+    monkeypatch.setattr(transcription, "_run_whispercpp_command", spy)
     assert await transcription.transcribe_whispercpp(
-        b"#EXTM3U", "evil.m3u8", "whisper-cli", "model.bin", None
-    ) == "ok"
-    args, stdin = calls[0]
-    assert args[args.index("-protocol_whitelist") + 1] == "pipe"
-    assert args[args.index("-i") + 1] == "pipe:0"
-    assert "-f" not in args[: args.index("-i")]
-    assert stdin is transcription.asyncio.subprocess.PIPE
+        playlist, "voice.ogg", "whisper-cli", "model.bin", None
+    ) is None
+    assert ffmpeg_ran
 
 
 def test_suffix_ignores_untrusted_extensions() -> None:

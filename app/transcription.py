@@ -15,22 +15,17 @@ logger = logging.getLogger(__name__)
 _models: dict[str, Any] = {}
 _lock = asyncio.Lock()
 _TIMEOUT = 120
-_FORMATS = {
-    ".ogg": "ogg",
-    ".oga": "ogg",
-    ".opus": "ogg",
-    ".mp3": "mp3",
-    ".m4a": "mov",
-    ".mp4": "mov",
-    ".aac": "aac",
-    ".wav": "wav",
-    ".flac": "flac",
-}
+_AUDIO_SUFFIXES = frozenset({
+    ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".aac", ".wav", ".flac",
+})
+# Demuxers ffmpeg may pick when probing untrusted media; excludes playlist-like
+# demuxers (hls, concat, ...) that dereference external file:/http: references.
+_FFMPEG_FORMATS = "ogg,mp3,mov,mp4,m4a,aac,wav,flac,matroska,webm"
 
 
 def _suffix(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
-    return suffix if suffix in _FORMATS else ".audio"
+    return suffix if suffix in _AUDIO_SUFFIXES else ".audio"
 
 
 def _load(name: str) -> Any:
@@ -91,14 +86,10 @@ async def _reap(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
-async def _run_whispercpp_command(
-    *args: str,
-    stdin: bytes | None = None,
-) -> bytes | None:
+async def _run_whispercpp_command(*args: str) -> bytes | None:
     try:
         process = await asyncio.create_subprocess_exec(
             *args,
-            stdin=asyncio.subprocess.PIPE if stdin is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -106,7 +97,7 @@ async def _run_whispercpp_command(
         logger.warning("whisper.cpp transcription failed", exc_info=True)
         return None
     try:
-        stdout, _ = await asyncio.wait_for(process.communicate(stdin), _TIMEOUT)
+        stdout, _ = await asyncio.wait_for(process.communicate(), _TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("whisper.cpp transcription timed out: %s", args[0])
         await _reap(process)
@@ -128,31 +119,22 @@ async def transcribe_whispercpp(
     language: str | None,
 ) -> str | None:
     try:
-        suffix = _suffix(filename)
         with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / f"input{_suffix(filename)}"
             wav_path = Path(directory) / "audio.wav"
-            # Untrusted bytes: force the demuxer from the allowlisted suffix so
-            # probing can't pick a playlist demuxer; without a known suffix,
-            # stream over a pipe so nested references can't open local files.
-            stdin: bytes | None = None
-            if suffix in _FORMATS:
-                input_path = Path(directory) / f"input{suffix}"
-                input_path.write_bytes(content)
-                source = (
-                    "-protocol_whitelist", "file",
-                    "-f", _FORMATS[suffix],
-                    "-i", str(input_path),
-                )
-            else:
-                source = ("-protocol_whitelist", "pipe", "-i", "pipe:0")
-                stdin = content
+            input_path.write_bytes(content)
             if await _run_whispercpp_command(
                 "ffmpeg",
                 "-nostdin",
                 "-loglevel",
                 "error",
                 "-y",
-                *source,
+                "-protocol_whitelist",
+                "file",
+                "-format_whitelist",
+                _FFMPEG_FORMATS,
+                "-i",
+                str(input_path),
                 "-ar",
                 "16000",
                 "-ac",
@@ -160,7 +142,6 @@ async def transcribe_whispercpp(
                 "-c:a",
                 "pcm_s16le",
                 str(wav_path),
-                stdin=stdin,
             ) is None:
                 return None
             stdout = await _run_whispercpp_command(
