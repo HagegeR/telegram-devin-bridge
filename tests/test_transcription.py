@@ -459,6 +459,17 @@ async def test_transcribe_command_runs_cleanup_after_failure(
         is None
     )
     assert marker.exists()
+    marker.unlink()
+    task = asyncio.ensure_future(
+        transcription.transcribe_command(
+            b"audio", "voice.ogg", ["sleep", "30"], None, cleanup=["touch", str(marker)]
+        )
+    )
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert marker.exists()
 
 
 @pytest.mark.asyncio

@@ -312,6 +312,8 @@ async def transcribe_command(
     e.g. a daemon-owned docker container."""
     if not command or not await _acquire_slot():
         return None
+    stdout = None
+    started = False
     try:
         with tempfile.TemporaryDirectory() as directory:
             input_path = Path(directory) / f"input{_suffix(filename)}"
@@ -323,19 +325,21 @@ async def transcribe_command(
             env.pop("TRANSCRIPTION_LANGUAGE", None)
             if language:
                 env["TRANSCRIPTION_LANGUAGE"] = language
+            started = True
             stdout = await _run_whispercpp_command(
                 *command,
                 stdin_path=wav_path,
                 env=env,
             )
             if stdout is None:
-                if cleanup:
-                    await _run_whispercpp_command(*cleanup)
                 return None
     except OSError:
         logger.warning("command transcription failed", exc_info=True)
         return None
     finally:
+        if started and stdout is None and cleanup:
+            # Shielded so cancellation (e.g. shutdown) still removes the container.
+            await asyncio.shield(_run_whispercpp_command(*cleanup))
         _slots.release()
     text = " ".join(stdout.decode(errors="replace").split())
     if not text:
