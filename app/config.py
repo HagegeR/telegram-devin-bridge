@@ -42,6 +42,7 @@ class Settings(BaseSettings):
         "DEVIN_POLL_FAST_SECONDS,DEVIN_WATCH_TIMEOUT_SECONDS,"
         "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
         "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_IMAGES_AS_DOCUMENTS,"
+        # TRANSCRIPTION_COMMAND is deliberately excluded: it is an exec vector
         "TRANSCRIPTION_BACKEND,TRANSCRIPTION_MODEL,TRANSCRIPTION_LANGUAGE,"
         "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,"
         "TELEGRAM_NOTIFICATION_MODE,"
@@ -65,6 +66,7 @@ class Settings(BaseSettings):
     transcription_language: str | None = None
     whisper_cpp_bin: str = "whisper-cli"
     whisper_cpp_model: str = "/opt/whisper.cpp/models/ggml-base.en.bin"
+    transcription_command: str = ""
     telegram_attach_voice: bool = False
     github_token: str | None = None
     self_update_command: str = "sh deploy/self-update.sh"
@@ -92,9 +94,22 @@ class Settings(BaseSettings):
                 "telegram_images_as_documents must be auto, true, or false"
             )
         self.transcription_backend = self.transcription_backend.casefold()
-        if self.transcription_backend not in {"api", "local", "whispercpp"}:
+        if self.transcription_backend not in {
+            "api",
+            "local",
+            "whispercpp",
+            "command",
+        }:
             raise ValueError(
-                "transcription_backend must be api, local, or whispercpp"
+                "transcription_backend must be api, local, whispercpp, or command"
+            )
+        if (
+            self.transcription_backend == "command"
+            and not self.transcription_command.strip()
+        ):
+            raise ValueError(
+                "transcription_command must be set when "
+                "transcription_backend=command"
             )
         return self
 
@@ -148,9 +163,11 @@ class Settings(BaseSettings):
 
     @property
     def transcription_enabled(self) -> bool:
-        return self.transcription_backend in {"local", "whispercpp"} or bool(
-            self.transcription_api_key
-        )
+        return self.transcription_backend in {
+            "local",
+            "whispercpp",
+            "command",
+        } or bool(self.transcription_api_key)
 
 
 @lru_cache

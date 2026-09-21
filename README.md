@@ -56,9 +56,10 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_ADMIN_USER_IDS` | no | falls back to `TELEGRAM_ALLOWED_USERS` |
 | `TRANSCRIPTION_API_KEY` | no | unset |
 | `TRANSCRIPTION_BASE_URL` | no | `https://api.openai.com/v1` |
-| `TRANSCRIPTION_BACKEND` | no | `api` (`api`, `local`, or `whispercpp`) |
+| `TRANSCRIPTION_BACKEND` | no | `api` (`api`/`local`/`whispercpp`/`command`) |
 | `TRANSCRIPTION_MODEL` | no | `whisper-1` |
 | `TRANSCRIPTION_LANGUAGE` | no | unset (auto-detect) |
+| `TRANSCRIPTION_COMMAND` | no | unset (required for `command` backend) |
 | `WHISPER_CPP_BIN` | no | `whisper-cli` |
 | `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
@@ -254,6 +255,14 @@ For `TRANSCRIPTION_BACKEND=whispercpp`, build whisper.cpp on the host:
 `git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp && cd /opt/whisper.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2 --target whisper-cli && sh models/download-ggml-model.sh base.en`.
 This also requires `ffmpeg`; set `WHISPER_CPP_BIN=/opt/whisper.cpp/build/bin/whisper-cli`.
 It is the option for musl/Alpine hosts where faster-whisper has no wheels.
+
+For `TRANSCRIPTION_BACKEND=command`, `TRANSCRIPTION_COMMAND` runs any external
+transcriber per request: the bridge converts the clip to 16 kHz mono WAV,
+pipes it on the child's stdin, reads the transcript from stdout, and exports
+`TRANSCRIPTION_LANGUAGE` into the child's environment. See
+`deploy/moonshine/` for a Docker sidecar (Moonshine, English-only, zero RAM
+while idle): `TRANSCRIPTION_COMMAND=docker run --rm -i --memory 400m
+moonshine-asr`.
 Artifact images and documents from Devin are forwarded to Telegram, and GitHub
 pull requests are rendered as compact cards when metadata is available.
 

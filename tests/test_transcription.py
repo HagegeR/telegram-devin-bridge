@@ -1,4 +1,8 @@
 import asyncio
+import io
+import sys
+import wave
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -118,3 +122,106 @@ async def test_run_whispercpp_command_kills_process_on_timeout(
     )
     stdout, _ = await ps.communicate()
     assert b"sleep 30" not in stdout
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_pipes_wav_on_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        with wave.open(str(wav_path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 1600)
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    text = await transcription.transcribe_command(
+        b"audio",
+        "voice.ogg",
+        [sys.executable, "-c", "import sys; print(len(sys.stdin.buffer.read()))"],
+        None,
+    )
+    assert text is not None
+    assert int(text) > 1600 * 2  # wav bytes incl. header reached stdin
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_passes_language_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 160)
+        wav_path.write_bytes(buffer.getvalue())
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    text = await transcription.transcribe_command(
+        b"audio",
+        "voice.ogg",
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os,sys; sys.stdin.buffer.read(); "
+                "print(os.environ.get('TRANSCRIPTION_LANGUAGE',''))"
+            ),
+        ],
+        "en",
+    )
+    assert text == "en"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 160)
+        wav_path.write_bytes(buffer.getvalue())
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    assert await transcription.transcribe_command(
+        b"audio", "voice.ogg", [sys.executable, "-c", "import sys; sys.exit(1)"], None
+    ) is None
+    assert await transcription.transcribe_command(
+        b"audio", "voice.ogg", [sys.executable, "-c", "pass"], None
+    ) is None
+
+
+def test_command_backend_config() -> None:
+    from app.config import Settings
+
+    with pytest.raises(ValueError, match="transcription_command"):
+        Settings(
+            _env_file=None,
+            telegram_bot_token="t",
+            telegram_webhook_secret="s",
+            devin_api_key="k",
+            public_base_url="http://x",
+            transcription_backend="command",
+        )
+    config = Settings(
+        _env_file=None,
+        telegram_bot_token="t",
+        telegram_webhook_secret="s",
+        devin_api_key="k",
+        public_base_url="http://x",
+        transcription_backend="command",
+        transcription_command="docker run --rm -i moonshine-asr",
+    )
+    assert config.transcription_enabled
+    # exec vector: never admin-editable
+    assert "TRANSCRIPTION_COMMAND" not in config.admin_env_keys
