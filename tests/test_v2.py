@@ -4700,6 +4700,7 @@ async def test_whispercpp_transcription_backend(
         _binary: str,
         _model: str,
         _language: str | None,
+        **_: object,
     ) -> str | None:
         return "hello whispercpp"
 
@@ -4730,6 +4731,7 @@ async def test_whispercpp_transcription_backend(
         _binary: str,
         _model: str,
         _language: str | None,
+        **_: object,
     ) -> None:
         return None
 
@@ -4763,6 +4765,7 @@ async def test_per_user_voice_transcription_language(
         _binary: str,
         _model: str,
         language: str | None,
+        **_: object,
     ) -> str:
         languages.append(language)
         return "hello"
