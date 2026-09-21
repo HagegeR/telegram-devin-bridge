@@ -7,6 +7,7 @@ import contextlib
 import io
 import logging
 import os
+import signal
 import tempfile
 import wave
 from collections.abc import Sequence
@@ -19,6 +20,7 @@ _models: dict[str, Any] = {}
 _lock = asyncio.Lock()
 _TIMEOUT = 120
 _MAX_SECONDS = 600
+_MAX_OUTPUT = 1 << 20
 _MAX_CONCURRENT = 2
 _slots = asyncio.Semaphore(_MAX_CONCURRENT)
 _AUDIO_SUFFIXES = frozenset({
@@ -110,9 +112,40 @@ def _release_slot(job: asyncio.Future[str]) -> None:
 
 
 async def _reap(process: asyncio.subprocess.Process) -> None:
+    # Children run in their own session, so this reaches sh -c grandchildren.
     with contextlib.suppress(ProcessLookupError):
-        process.kill()
+        os.killpg(process.pid, signal.SIGKILL)
     await process.wait()
+
+
+async def _read_capped(
+    stream: asyncio.StreamReader, process: asyncio.subprocess.Process
+) -> bytes | None:
+    # Past the cap: kill, but keep draining so the pipe reaches EOF and wait()
+    # can complete.
+    buffer = bytearray()
+    while chunk := await stream.read(65536):
+        if buffer is None:
+            continue
+        buffer += chunk
+        if len(buffer) > _MAX_OUTPUT:
+            buffer = None
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+    return None if buffer is None else bytes(buffer)
+
+
+async def _communicate(
+    process: asyncio.subprocess.Process,
+) -> tuple[bytes, bytes]:
+    assert process.stdout is not None and process.stderr is not None
+    stdout, stderr = await asyncio.gather(
+        _read_capped(process.stdout, process), _read_capped(process.stderr, process)
+    )
+    await process.wait()
+    if stdout is None or stderr is None:
+        raise ValueError("output limit exceeded")
+    return stdout, stderr
 
 
 async def _run_whispercpp_command(
@@ -129,6 +162,7 @@ async def _run_whispercpp_command(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                start_new_session=True,
             )
         finally:
             if stdin is not None:
@@ -137,9 +171,9 @@ async def _run_whispercpp_command(
         logger.warning("command transcription failed", exc_info=True)
         return None
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), _TIMEOUT)
-    except asyncio.TimeoutError:
-        logger.warning("command transcription timed out: %s", args[0])
+        stdout, stderr = await asyncio.wait_for(_communicate(process), _TIMEOUT)
+    except (asyncio.TimeoutError, ValueError) as exc:
+        logger.warning("command transcription aborted (%s): %s", exc, args[0])
         await _reap(process)
         return None
     except asyncio.CancelledError:
@@ -271,7 +305,11 @@ async def transcribe_command(
     filename: str,
     command: Sequence[str],
     language: str | None,
+    cleanup: Sequence[str] = (),
 ) -> str | None:
+    """Run ``command`` with 16 kHz WAV on stdin; ``cleanup`` runs after any failure
+    (timeout, kill, non-zero exit) for work the process group kill cannot reach,
+    e.g. a daemon-owned docker container."""
     if not command or not await _acquire_slot():
         return None
     try:
@@ -291,6 +329,8 @@ async def transcribe_command(
                 env=env,
             )
             if stdout is None:
+                if cleanup:
+                    await _run_whispercpp_command(*cleanup)
                 return None
     except OSError:
         logger.warning("command transcription failed", exc_info=True)
@@ -304,7 +344,7 @@ async def transcribe_command(
     return text
 
 
-def docker_transcription_command(image: str, memory: str) -> list[str]:
+def docker_transcription_command(image: str, memory: str, name: str) -> list[str]:
     # --pull never: only locally built images; --network none: no network;
     # no volume mounts — audio goes in via stdin only; no capabilities, no
     # privilege escalation, bounded process count; --env NAME copies the client's
@@ -328,5 +368,11 @@ def docker_transcription_command(image: str, memory: str) -> list[str]:
         "TRANSCRIPTION_LANGUAGE",
         "--memory",
         memory,
+        "--name",
+        name,
         image,
     ]
+
+
+def docker_cleanup_command(name: str) -> list[str]:
+    return ["docker", "rm", "-f", name]

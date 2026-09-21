@@ -7,6 +7,7 @@ import os
 import secrets
 import shlex
 import time
+import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -44,6 +45,7 @@ from app.store import (
 )
 from app.telegram import TelegramClient
 from app.transcription import (
+    docker_cleanup_command,
     docker_transcription_command,
     transcribe_command,
     transcribe_local,
@@ -1878,14 +1880,17 @@ class Bridge:
                 language,
             )
         if self.settings.transcription_backend == "docker":
+            name = f"transcribe-{uuid.uuid4().hex}"
             return await transcribe_command(
                 content,
                 filename,
                 docker_transcription_command(
                     self.settings.transcription_docker_image,
                     self.settings.transcription_docker_memory,
+                    name,
                 ),
                 language,
+                cleanup=docker_cleanup_command(name),
             )
         if self.settings.transcription_backend == "local":
             model_name = (

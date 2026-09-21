@@ -12,15 +12,24 @@ import pytest
 from app import transcription
 
 
+def _stream(data: bytes) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    reader.feed_data(data)
+    reader.feed_eof()
+    return reader
+
+
 @pytest.mark.asyncio
 async def test_transcribe_whispercpp_returns_none_for_missing_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Process:
         returncode = 0
+        stdout = _stream(b"")
+        stderr = _stream(b"")
 
-        async def communicate(self) -> tuple[bytes, bytes]:
-            return b"", b""
+        async def wait(self) -> int:
+            return 0
 
     async def create_process(*args: str, **_: object) -> Process:
         if args[0] == "ffmpeg":
@@ -50,8 +59,12 @@ async def test_transcribe_whispercpp_runs_commands_and_normalizes_output(
     class Process:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
-            return b"  Hello  there\n", b""
+        def __init__(self) -> None:
+            self.stdout = _stream(b"  Hello  there\n")
+            self.stderr = _stream(b"")
+
+        async def wait(self) -> int:
+            return 0
 
     async def create_process(*args: str, **_: object) -> Process:
         calls.append(args)
@@ -162,6 +175,31 @@ async def test_run_whispercpp_command_kills_process_on_timeout(
     )
     stdout, _ = await ps.communicate()
     assert b"sleep 30" not in stdout
+
+
+@pytest.mark.asyncio
+async def test_run_whispercpp_command_kills_grandchildren_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.1)
+    assert (
+        await transcription._run_whispercpp_command("sh", "-c", "sleep 31; sleep 32")
+        is None
+    )
+    ps = await asyncio.create_subprocess_exec(
+        "ps", "-eo", "args", stdout=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await ps.communicate()
+    assert b"sleep 31" not in stdout
+
+
+@pytest.mark.asyncio
+async def test_run_whispercpp_command_caps_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "_MAX_OUTPUT", 1000)
+    assert await transcription._run_whispercpp_command("yes") is None
+    assert await transcription._run_whispercpp_command("echo", "ok") == b"ok\n"
 
 
 @pytest.mark.asyncio
@@ -371,7 +409,9 @@ def test_docker_backend_requires_image(tmp_path: Path) -> None:
 
 
 def test_docker_transcription_command_argv() -> None:
-    assert transcription.docker_transcription_command("moonshine-asr", "400m") == [
+    assert transcription.docker_transcription_command(
+        "moonshine-asr", "400m", "transcribe-1"
+    ) == [
         "docker",
         "run",
         "--rm",
@@ -390,8 +430,35 @@ def test_docker_transcription_command_argv() -> None:
         "TRANSCRIPTION_LANGUAGE",
         "--memory",
         "400m",
+        "--name",
+        "transcribe-1",
         "moonshine-asr",
     ]
+    assert transcription.docker_cleanup_command("transcribe-1") == [
+        "docker",
+        "rm",
+        "-f",
+        "transcribe-1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_runs_cleanup_after_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        wav_path.write_bytes(b"")
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    marker = tmp_path / "cleaned"
+    assert (
+        await transcription.transcribe_command(
+            b"audio", "voice.ogg", ["false"], None, cleanup=["touch", str(marker)]
+        )
+        is None
+    )
+    assert marker.exists()
 
 
 @pytest.mark.asyncio
