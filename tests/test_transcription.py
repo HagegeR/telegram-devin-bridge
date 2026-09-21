@@ -1,5 +1,7 @@
 import asyncio
+import shutil
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -64,8 +66,46 @@ async def test_transcribe_whispercpp_runs_commands_and_normalizes_output(
         "model.bin",
         None,
     ) == "Hello there"
+    assert calls[0][calls[0].index("-protocol_whitelist") + 1] == "file"
+    assert "hls" not in calls[0][calls[0].index("-format_whitelist") + 1]
+    assert calls[0][calls[0].index("-i") + 1].endswith("input.ogg")
     assert "-l" in calls[1]
     assert calls[1][calls[1].index("-l") + 1] == "auto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_transcribe_whispercpp_rejects_playlist_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    secret = tmp_path / "secret.mp3"
+    secret.write_bytes(b"secret")
+    playlist = (
+        f"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:10,\n{secret.as_uri()}\n"
+        "#EXT-X-ENDLIST\n"
+    ).encode()
+    ffmpeg_ran = False
+    run = transcription._run_whispercpp_command
+
+    async def spy(*args: str) -> bytes | None:
+        nonlocal ffmpeg_ran
+        if args[0] != "ffmpeg":
+            return b"should not reach whisper"
+        ffmpeg_ran = True
+        return await run(*args)
+
+    monkeypatch.setattr(transcription, "_run_whispercpp_command", spy)
+    assert await transcription.transcribe_whispercpp(
+        playlist, "voice.ogg", "whisper-cli", "model.bin", None
+    ) is None
+    assert ffmpeg_ran
+
+
+def test_suffix_ignores_untrusted_extensions() -> None:
+    assert transcription._suffix("voice.OGG") == ".ogg"
+    assert transcription._suffix("evil.m3u8") == ".audio"
+    assert transcription._suffix("noext") == ".audio"
 
 
 @pytest.mark.asyncio
