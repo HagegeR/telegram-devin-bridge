@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -104,3 +105,16 @@ async def test_transcribe_local_joins_segments(
         "test-segments",
         "en",
     ) == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_run_whispercpp_command_kills_process_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.1)
+    assert await transcription._run_whispercpp_command("sleep", "30") is None
+    ps = await asyncio.create_subprocess_exec(
+        "ps", "-eo", "args", stdout=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await ps.communicate()
+    assert b"sleep 30" not in stdout

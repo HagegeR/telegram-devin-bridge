@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _models: dict[str, Any] = {}
 _lock = asyncio.Lock()
+_TIMEOUT = 120
 
 
 def _load(name: str) -> Any:
@@ -70,18 +71,25 @@ async def transcribe_local(
 
 async def _run_whispercpp_command(*args: str) -> bytes | None:
     try:
-        process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            ),
-            120,
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(process.communicate(), 120)
-    except (OSError, asyncio.TimeoutError):
+    except OSError:
         logger.warning("whisper.cpp transcription failed", exc_info=True)
         return None
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), _TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("whisper.cpp transcription timed out: %s", args[0])
+        process.kill()
+        await process.wait()
+        return None
+    except asyncio.CancelledError:
+        process.kill()
+        await process.wait()
+        raise
     if process.returncode != 0:
         logger.warning("whisper.cpp transcription failed")
         return None
