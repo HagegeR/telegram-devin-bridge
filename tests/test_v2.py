@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Mapping
@@ -4610,7 +4611,7 @@ async def test_voice_transcription_success_and_failure_fallback(
     await runtime.handle_message(voice)
     assert "Voice note transcript:" in devin.created[0]
     assert "hello" in devin.created[0]
-    assert "🎙" in telegram.reactions
+    assert "✍" in telegram.reactions
     await runtime.shutdown()
 
     failed_devin = _FakeDevin()
@@ -4658,7 +4659,7 @@ async def test_local_transcription_backend(
     await runtime.handle_message(voice)
     assert "Voice note transcript:" in devin.created[0]
     assert "hello local" in devin.created[0]
-    assert "🎙" in telegram.reactions
+    assert "✍" in telegram.reactions
     await runtime.shutdown()
 
     failed_devin = _FakeDevin()
@@ -4720,7 +4721,7 @@ async def test_whispercpp_transcription_backend(
     await runtime.handle_message(voice)
     assert "Voice note transcript:" in devin.created[0]
     assert "hello whispercpp" in devin.created[0]
-    assert "🎙" in telegram.reactions
+    assert "✍" in telegram.reactions
     await runtime.shutdown()
 
     failed_devin = _FakeDevin()
@@ -5292,3 +5293,89 @@ async def test_edit_pending_debounce_turn_uses_edited_text(tmp_path: Path) -> No
     await runtime._flush_pending("222")
     assert "edited" in devin.created[0]
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_transcription_reaction_failure_is_nonfatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    voice = {**message("caption"), "text": None, "voice": {"file_id": "voice-1"}}
+
+    async def transcribe(
+        _content: bytes,
+        _filename: str,
+        _binary: str,
+        _model: str,
+        _language: str | None,
+        **_: object,
+    ) -> str:
+        return "hello"
+
+    class FailingReactionTelegram(_FakeTelegram):
+        async def set_message_reaction(self, _chat_id, _message_id, emoji):
+            raise RuntimeError("Bad Request: REACTION_INVALID")
+
+    telegram = FailingReactionTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            transcription_backend="whispercpp",
+            telegram_attach_voice=False,
+        ),
+        Store(":memory:"),
+        devin,
+        telegram,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(main_module, "transcribe_whispercpp", transcribe)
+    with caplog.at_level(logging.WARNING):
+        await runtime.handle_message(voice)
+    assert "Voice note transcript:\nhello" in devin.created[0]
+    assert any("REACTION_INVALID" in record.message for record in caplog.records)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_voice_transcription_uses_writing_reaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    voice = {**message("caption"), "text": None, "voice": {"file_id": "voice-1"}}
+
+    async def transcribe(
+        _content: bytes,
+        _filename: str,
+        _binary: str,
+        _model: str,
+        _language: str | None,
+        **_: object,
+    ) -> str:
+        return "hello"
+
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            transcription_backend="whispercpp",
+            telegram_attach_voice=False,
+        ),
+        Store(":memory:"),
+        _FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(main_module, "transcribe_whispercpp", transcribe)
+    await runtime.handle_message(voice)
+    assert "✍" in telegram.reactions
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_react_noops_without_message_id(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path),
+        Store(":memory:"),
+        _FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+    )
+    await runtime._react(222, None, "👀")
+    assert telegram.reactions == []
