@@ -404,10 +404,10 @@ async def test_transcribe_command_is_serialized(monkeypatch: pytest.MonkeyPatch)
     assert peak == 1
 
 
-def test_docker_keys_allowlisted_not_command(tmp_path: Path) -> None:
+def test_admin_allowlist_excludes_exec_vectors(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    assert "TRANSCRIPTION_DOCKER_IMAGE" in config.admin_env_keys
     assert "TRANSCRIPTION_DOCKER_MEMORY" in config.admin_env_keys
+    assert "TRANSCRIPTION_DOCKER_IMAGE" not in config.admin_env_keys
     assert "TRANSCRIPTION_COMMAND" not in config.admin_env_keys
 
 

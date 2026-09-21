@@ -267,8 +267,9 @@ pipes it on the child's stdin, reads the transcript from stdout, and exports
 unrestricted form (any argv; root-only — not settable through the admin API);
 `TRANSCRIPTION_BACKEND=docker` is the bounded form — a fixed
 `docker run --rm -i --pull never --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory <MEM> <IMAGE>` argv
-with a validated image reference and memory limit, both admin-settable via
-`TRANSCRIPTION_DOCKER_IMAGE`/`TRANSCRIPTION_DOCKER_MEMORY`. See
+with a validated image reference (`TRANSCRIPTION_DOCKER_IMAGE`, root-only:
+it picks the code that runs) and memory limit (`TRANSCRIPTION_DOCKER_MEMORY`,
+admin-settable). See
 `deploy/moonshine/` for a Docker sidecar (Moonshine, English-only, zero RAM
 while idle): `TRANSCRIPTION_BACKEND=docker` +
 `TRANSCRIPTION_DOCKER_IMAGE=moonshine-asr`.

@@ -54,10 +54,10 @@ class Settings(BaseSettings):
         "DEVIN_POLL_FAST_SECONDS,DEVIN_WATCH_TIMEOUT_SECONDS,"
         "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
         "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_IMAGES_AS_DOCUMENTS,"
-        # TRANSCRIPTION_COMMAND is deliberately excluded: it is an exec
-        # vector. The docker backend is the bounded, admin-settable form.
+        # TRANSCRIPTION_COMMAND and TRANSCRIPTION_DOCKER_IMAGE are deliberately
+        # excluded: both pick the code that runs (exec vector). Root-only.
         "TRANSCRIPTION_BACKEND,TRANSCRIPTION_MODEL,TRANSCRIPTION_LANGUAGE,"
-        "TRANSCRIPTION_DOCKER_IMAGE,TRANSCRIPTION_DOCKER_MEMORY,"
+        "TRANSCRIPTION_DOCKER_MEMORY,"
         "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,WHISPER_CPP_FAST,"
         "WHISPER_CPP_EXTRA_ARGS,"
         "TELEGRAM_NOTIFICATION_MODE,"
