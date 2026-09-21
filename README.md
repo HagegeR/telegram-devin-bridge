@@ -56,7 +56,9 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_ADMIN_USER_IDS` | no | falls back to `TELEGRAM_ALLOWED_USERS` |
 | `TRANSCRIPTION_API_KEY` | no | unset |
 | `TRANSCRIPTION_BASE_URL` | no | `https://api.openai.com/v1` |
+| `TRANSCRIPTION_BACKEND` | no | `api` (`api` or `local`) |
 | `TRANSCRIPTION_MODEL` | no | `whisper-1` |
+| `TRANSCRIPTION_LANGUAGE` | no | unset (auto-detect) |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
 | `GITHUB_TOKEN` | no | unset |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
@@ -234,8 +236,15 @@ injected secret grants Devin v3 API access for editing automations.
 `DEVIN_SETTLE_SECONDS` keeps a newly started watcher alive while Devin's API
 still reports a stale non-active status after the message is submitted.
 
-`TRANSCRIPTION_API_KEY` enables transcription for voice, audio, and video-note
-messages. `TELEGRAM_ATTACH_VOICE=true` keeps the original audio attached.
+`TRANSCRIPTION_API_KEY` enables API transcription for voice, audio, and
+video-note messages. Set `TRANSCRIPTION_BACKEND=local` for key-free local
+transcription with faster-whisper, then install it with
+`pip install -r requirements-transcription.txt`. Local models include `tiny`
+(about 75 MB), `base` (about 150 MB), `small` (about 500 MB), `medium`, and
+`large-v3`; `base` is recommended on CPU. The first request downloads the
+selected model. Set `TRANSCRIPTION_LANGUAGE=en` to force English instead of
+automatic language detection. `TELEGRAM_ATTACH_VOICE=true` keeps the original
+audio attached.
 Artifact images and documents from Devin are forwarded to Telegram, and GitHub
 pull requests are rendered as compact cards when metadata is available.
 
