@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import sqlite3
 import time
@@ -11,6 +12,7 @@ from typing import Self, cast
 
 import httpx
 import pytest
+from PIL import Image
 
 import app.main as main_module
 from app.access import is_allowed, is_topic_chat, should_respond_in_group
@@ -47,6 +49,12 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
     }
     values.update(overrides)
     return Settings(**values)
+
+
+def _png(width: int, height: int) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def message(
@@ -4045,6 +4053,13 @@ def test_settings_validate_polling_mode(tmp_path: Path) -> None:
         settings(tmp_path, telegram_mode="invalid")
 
 
+def test_settings_validate_image_delivery_mode(tmp_path: Path) -> None:
+    config = settings(tmp_path, telegram_images_as_documents="AUTO")
+    assert config.telegram_images_as_documents == "auto"
+    with pytest.raises(ValueError, match="telegram_images_as_documents"):
+        settings(tmp_path, telegram_images_as_documents="sometimes")
+
+
 @pytest.mark.asyncio
 async def test_get_updates_accepts_list_result() -> None:
     requests: list[dict[str, object]] = []
@@ -4317,8 +4332,10 @@ async def test_access_request_duplicate_does_not_notify_admin(
 async def test_attachment_photo_document_and_download_fallback(tmp_path: Path) -> None:
     class ArtifactDevin(_FakeDevin):
         async def download_attachment(self, url: str) -> tuple[bytes, str] | None:
-            if "image" in url:
-                return b"png", "image/png"
+            if "small" in url:
+                return _png(800, 600), "image/png"
+            if "large" in url:
+                return _png(1650, 3000), "image/png"
             if "missing" in url:
                 return None
             return b"zip", "application/zip"
@@ -4331,29 +4348,52 @@ async def test_attachment_photo_document_and_download_fallback(tmp_path: Path) -
     conversation = store.get_conversation("222")
     assert conversation is not None
     telegram = _FakeTelegram()
-    image_url = "https://app.devin.ai/attachments/1/image.png"
+    small_image_url = "https://app.devin.ai/attachments/1/small.png"
+    large_image_url = "https://app.devin.ai/attachments/2/large.png"
     doc_url = "https://app.devin.ai/attachments/2/archive.zip"
     hd_watcher = SessionWatcher(
         conversation, store, ArtifactDevin(), telegram, settings(tmp_path),  # type: ignore[arg-type]
     )
-    await hd_watcher._deliver(DevinMessage("devin_message", "0", image_url, None), SessionState("finished", "title", None, []))
-    assert telegram.photos == []
-    assert telegram.documents[0]["filename"] == "image.png"
+    await hd_watcher._deliver(
+        DevinMessage("devin_message", "0", small_image_url, None),
+        SessionState("finished", "title", None, []),
+    )
+    assert telegram.photos[0]["filename"] == "small.png"
+    await hd_watcher._deliver(
+        DevinMessage("devin_message", "1", large_image_url, None),
+        SessionState("finished", "title", None, []),
+    )
+    assert telegram.documents[0]["filename"] == "large.png"
+    await hd_watcher._deliver(
+        DevinMessage("devin_message", "2", doc_url, None),
+        SessionState("finished", "title", None, []),
+    )
+    assert telegram.documents[1]["filename"] == "archive.zip"
     watcher = SessionWatcher(
         conversation, store, ArtifactDevin(), telegram,  # type: ignore[arg-type]
-        settings(tmp_path, telegram_images_as_documents=False),
+        settings(tmp_path, telegram_images_as_documents="true"),
     )
-    await watcher._deliver(DevinMessage("devin_message", "1", image_url, None), SessionState("finished", "title", None, []))
-    await watcher._deliver(DevinMessage("devin_message", "2", doc_url, None), SessionState("finished", "title", None, []))
-    assert telegram.photos[0]["filename"] == "image.png"
-    assert telegram.documents[1]["filename"] == "archive.zip"
+    await watcher._deliver(
+        DevinMessage("devin_message", "3", small_image_url, None),
+        SessionState("finished", "title", None, []),
+    )
+    assert telegram.documents[2]["filename"] == "small.png"
+    false_watcher = SessionWatcher(
+        conversation, store, ArtifactDevin(), telegram,  # type: ignore[arg-type]
+        settings(tmp_path, telegram_images_as_documents="false"),
+    )
+    await false_watcher._deliver(
+        DevinMessage("devin_message", "4", large_image_url, None),
+        SessionState("finished", "title", None, []),
+    )
+    assert telegram.photos[1]["filename"] == "large.png"
     assert store.conv_key_for_message(222, 1) == "222"
     sent_before = len(telegram.sent)
     await watcher._deliver(
         DevinMessage(
             "devin_message",
             "attachment-only",
-            image_url,
+            small_image_url,
             None,
         ),
         SessionState("finished", "title", None, []),

@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     telegram_mode: str = "webhook"
     telegram_rich_messages: bool = True
     telegram_drafts: bool = False
-    telegram_images_as_documents: bool = True
+    telegram_images_as_documents: str = "auto"
     telegram_allowed_chat_ids: str = ""
     telegram_allowed_users: str = ""
     telegram_allow_all_users: bool = False
@@ -76,6 +76,15 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "telegram_webhook_secret is required in webhook mode"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_image_delivery_mode(self) -> "Settings":
+        self.telegram_images_as_documents = self.telegram_images_as_documents.casefold()
+        if self.telegram_images_as_documents not in {"auto", "true", "false"}:
+            raise ValueError(
+                "telegram_images_as_documents must be auto, true, or false"
+            )
         return self
 
     @model_validator(mode="after")

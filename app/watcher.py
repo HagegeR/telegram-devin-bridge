@@ -20,10 +20,19 @@ from app.formatting import (
     extract_options,
     split_long_text,
 )
+from app.images import photo_fits_unchanged
 from app.store import Conversation, Store
 from app.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
+
+
+def _send_as_photo(mode: str, content: bytes) -> bool:
+    if mode == "false":
+        return True
+    if mode == "true":
+        return False
+    return photo_fits_unchanged(content)
 
 TYPING_REFRESH_SECONDS = 4
 
@@ -462,7 +471,10 @@ class SessionWatcher:
             try:
                 if (
                     content_type.startswith("image/")
-                    and not self.settings.telegram_images_as_documents
+                    and _send_as_photo(
+                        self.settings.telegram_images_as_documents,
+                        content,
+                    )
                 ):
                     result = await self.telegram.send_photo(
                         self.conversation.chat_id,
