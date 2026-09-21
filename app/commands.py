@@ -228,6 +228,29 @@ async def handle_command(
             )
     elif command == "settings":
         await runtime.settings_menu(message)
+    elif command == "lang":
+        user_id = _int(_mapping(message.get("from")).get("id"))
+        key = f"lang:{user_id}"
+        value = args.casefold()
+        if not user_id:
+            text = "/lang needs a sender; not available for channel posts."
+        elif not value:
+            configured = runtime.store.get_setting(key)
+            default = runtime.settings.transcription_language or "auto"
+            text = (
+                f"Voice language: {configured}"
+                if configured is not None
+                else f"Voice language: default ({default})"
+            )
+        elif value in {"off", "default"}:
+            runtime.store.delete_setting(key)
+            text = "Voice language reset to default."
+        elif re.fullmatch(r"[a-z]{2,3}|auto", value):
+            runtime.store.set_setting(key, value)
+            text = f"Voice language set to {value}."
+        else:
+            text = "Usage: /lang <code|auto|off> (e.g. /lang he)"
+        await runtime.send_text(message, text, ephemeral=True)
     elif command == "usage":
         await runtime.usage(message)
     elif command == "users":
@@ -519,7 +542,7 @@ def _help_text() -> str:
     return (
         "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
         "/resume <n>\n/status\n/stop (/cancel)\n/playbook [n] [text]\n/retry\n"
-        "/steer <text>\n/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n"
+        "/steer <text>\n/lang [code]\n/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n"
         "/update [check]\n/help"
     )
 

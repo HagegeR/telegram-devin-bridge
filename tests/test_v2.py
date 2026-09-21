@@ -4751,6 +4751,64 @@ async def test_whispercpp_transcription_backend(
 
 
 @pytest.mark.asyncio
+async def test_per_user_voice_transcription_language(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    voice = {**message("caption"), "text": None, "voice": {"file_id": "voice-1"}}
+    languages: list[str | None] = []
+
+    async def transcribe(
+        _content: bytes,
+        _filename: str,
+        _binary: str,
+        _model: str,
+        language: str | None,
+    ) -> str:
+        languages.append(language)
+        return "hello"
+
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            transcription_backend="whispercpp",
+            transcription_language="en",
+            telegram_attach_voice=False,
+        ),
+        store,
+        _FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(main_module, "transcribe_whispercpp", transcribe)
+
+    await handle_command(runtime, message("/lang he"), "/lang he")
+    assert store.get_setting("lang:111") == "he"
+    assert telegram.sent[-1]["text"] == "Voice language set to he."
+    await runtime.handle_message(voice)
+    assert languages[-1] == "he"
+
+    await handle_command(runtime, message("/lang"), "/lang")
+    assert telegram.sent[-1]["text"] == "Voice language: he"
+
+    await handle_command(runtime, message("/lang auto"), "/lang auto")
+    await runtime.handle_message(voice)
+    assert languages[-1] is None
+
+    await handle_command(runtime, message("/lang off"), "/lang off")
+    assert store.get_setting("lang:111") is None
+    await runtime.handle_message(voice)
+    assert languages[-1] == "en"
+
+    await handle_command(runtime, message("/lang english!"), "/lang english!")
+    assert telegram.sent[-1]["text"] == (
+        "Usage: /lang <code|auto|off> (e.g. /lang he)"
+    )
+    assert store.get_setting("lang:111") is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_usage_formatting_missing_org_and_forbidden(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "usage.sqlite3"))
     store.save_conversation(

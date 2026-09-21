@@ -1847,13 +1847,21 @@ class Bridge:
             "video_note",
         )):
             return None
+        user_id = _int(_mapping(message.get("from")).get("id"))
+        language = (
+            (self.store.get_setting(f"lang:{user_id}") if user_id else None)
+            or self.settings.transcription_language
+            or None
+        )
+        if language == "auto":
+            language = None
         if self.settings.transcription_backend == "whispercpp":
             return await transcribe_whispercpp(
                 content,
                 filename,
                 self.settings.whisper_cpp_bin,
                 self.settings.whisper_cpp_model,
-                self.settings.transcription_language or None,
+                language,
             )
         if self.settings.transcription_backend == "local":
             model_name = (
@@ -1865,9 +1873,12 @@ class Bridge:
                 content,
                 filename,
                 model_name,
-                self.settings.transcription_language or None,
+                language,
             )
         try:
+            data = {"model": self.settings.transcription_model}
+            if language is not None:
+                data["language"] = language
             async with httpx.AsyncClient(
                 base_url=self.settings.transcription_base_url.rstrip("/"),
                 headers={
@@ -1877,7 +1888,7 @@ class Bridge:
             ) as client:
                 response = await client.post(
                     "/audio/transcriptions",
-                    data={"model": self.settings.transcription_model},
+                    data=data,
                     files={"file": (filename, content, content_type)},
                 )
                 response.raise_for_status()
