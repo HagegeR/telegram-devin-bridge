@@ -15,6 +15,14 @@ logger = logging.getLogger(__name__)
 _models: dict[str, Any] = {}
 _lock = asyncio.Lock()
 _TIMEOUT = 120
+_AUDIO_SUFFIXES = frozenset({
+    ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".aac", ".wav", ".flac", ".mp4",
+})
+
+
+def _suffix(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    return suffix if suffix in _AUDIO_SUFFIXES else ".audio"
 
 
 def _load(name: str) -> Any:
@@ -37,8 +45,7 @@ def _transcribe(
     try:
         segments, _ = model.transcribe(io.BytesIO(content), **options)
     except Exception:  # noqa: BLE001
-        suffix = Path(filename).suffix or ".audio"
-        with tempfile.NamedTemporaryFile(suffix=suffix) as handle:
+        with tempfile.NamedTemporaryFile(suffix=_suffix(filename)) as handle:
             handle.write(content)
             handle.flush()
             segments, _ = model.transcribe(handle.name, **options)
@@ -109,9 +116,8 @@ async def transcribe_whispercpp(
     language: str | None,
 ) -> str | None:
     try:
-        suffix = Path(filename).suffix or ".audio"
         with tempfile.TemporaryDirectory() as directory:
-            input_path = Path(directory) / f"input{suffix}"
+            input_path = Path(directory) / f"input{_suffix(filename)}"
             wav_path = Path(directory) / "audio.wav"
             input_path.write_bytes(content)
             if await _run_whispercpp_command(
@@ -120,6 +126,8 @@ async def transcribe_whispercpp(
                 "-loglevel",
                 "error",
                 "-y",
+                "-protocol_whitelist",
+                "file",
                 "-i",
                 str(input_path),
                 "-ar",

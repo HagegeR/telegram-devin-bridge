@@ -63,8 +63,16 @@ async def test_transcribe_whispercpp_runs_commands_and_normalizes_output(
         "model.bin",
         None,
     ) == "Hello there"
+    assert calls[0][calls[0].index("-protocol_whitelist") + 1] == "file"
+    assert calls[0][calls[0].index("-i") + 1].endswith("input.ogg")
     assert "-l" in calls[1]
     assert calls[1][calls[1].index("-l") + 1] == "auto"
+
+
+def test_suffix_ignores_untrusted_extensions() -> None:
+    assert transcription._suffix("voice.OGG") == ".ogg"
+    assert transcription._suffix("evil.m3u8") == ".audio"
+    assert transcription._suffix("noext") == ".audio"
 
 
 @pytest.mark.asyncio
