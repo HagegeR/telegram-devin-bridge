@@ -1857,7 +1857,7 @@ class Bridge:
                 content,
                 filename,
                 model_name,
-                self.settings.transcription_language,
+                self.settings.transcription_language or None,
             )
         try:
             async with httpx.AsyncClient(
