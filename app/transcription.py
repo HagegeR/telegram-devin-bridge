@@ -337,10 +337,13 @@ async def transcribe_command(
         logger.warning("command transcription failed", exc_info=True)
         return None
     finally:
-        if started and stdout is None and cleanup:
-            # Shielded so cancellation (e.g. shutdown) still removes the container.
-            await asyncio.shield(_run_whispercpp_command(*cleanup))
-        _slots.release()
+        try:
+            if started and stdout is None and cleanup:
+                # Shielded so cancellation (e.g. shutdown) still removes the
+                # container.
+                await asyncio.shield(_run_whispercpp_command(*cleanup))
+        finally:
+            _slots.release()
     text = " ".join(stdout.decode(errors="replace").split())
     if not text:
         logger.warning("command transcription produced no output")
