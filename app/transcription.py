@@ -211,3 +211,21 @@ async def transcribe_command(
         logger.warning("command transcription produced no output")
         return None
     return text
+
+
+def docker_transcription_command(image: str, memory: str) -> list[str]:
+    # --pull never: only locally built images; --network none: no network;
+    # no volume mounts — audio goes in via stdin only.
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--memory",
+        memory,
+        image,
+    ]

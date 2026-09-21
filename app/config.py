@@ -1,7 +1,16 @@
+import re
 from functools import lru_cache
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DOCKER_IMAGE_RE = re.compile(
+    r"^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?/)?"
+    r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?"
+    r"(?:@sha256:[a-f0-9]{64})?$"
+)
+_DOCKER_MEMORY_RE = re.compile(r"^[0-9]+[bkmg]?$")
 
 
 class Settings(BaseSettings):
@@ -42,8 +51,10 @@ class Settings(BaseSettings):
         "DEVIN_POLL_FAST_SECONDS,DEVIN_WATCH_TIMEOUT_SECONDS,"
         "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
         "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_IMAGES_AS_DOCUMENTS,"
-        # TRANSCRIPTION_COMMAND is deliberately excluded: it is an exec vector
+        # TRANSCRIPTION_COMMAND is deliberately excluded: it is an exec
+        # vector. The docker backend is the bounded, admin-settable form.
         "TRANSCRIPTION_BACKEND,TRANSCRIPTION_MODEL,TRANSCRIPTION_LANGUAGE,"
+        "TRANSCRIPTION_DOCKER_IMAGE,TRANSCRIPTION_DOCKER_MEMORY,"
         "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,"
         "TELEGRAM_NOTIFICATION_MODE,"
         "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
@@ -67,6 +78,8 @@ class Settings(BaseSettings):
     whisper_cpp_bin: str = "whisper-cli"
     whisper_cpp_model: str = "/opt/whisper.cpp/models/ggml-base.en.bin"
     transcription_command: str = ""
+    transcription_docker_image: str = ""
+    transcription_docker_memory: str = "400m"
     telegram_attach_voice: bool = False
     github_token: str | None = None
     self_update_command: str = "sh deploy/self-update.sh"
@@ -99,9 +112,11 @@ class Settings(BaseSettings):
             "local",
             "whispercpp",
             "command",
+            "docker",
         }:
             raise ValueError(
-                "transcription_backend must be api, local, whispercpp, or command"
+                "transcription_backend must be api, local, whispercpp, "
+                "command, or docker"
             )
         if (
             self.transcription_backend == "command"
@@ -110,6 +125,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 "transcription_command must be set when "
                 "transcription_backend=command"
+            )
+        if (
+            self.transcription_backend == "docker"
+            and not self.transcription_docker_image.strip()
+        ):
+            raise ValueError(
+                "transcription_docker_image must be set when "
+                "transcription_backend=docker"
+            )
+        image = self.transcription_docker_image.strip()
+        if image and not _DOCKER_IMAGE_RE.fullmatch(image):
+            raise ValueError(
+                "transcription_docker_image is not a valid image reference: "
+                f"{image!r}"
+            )
+        memory = self.transcription_docker_memory.strip()
+        if memory and not _DOCKER_MEMORY_RE.fullmatch(memory):
+            raise ValueError(
+                "transcription_docker_memory must look like docker's "
+                f"<number>[b|k|m|g], got {memory!r}"
             )
         return self
 
@@ -167,6 +202,7 @@ class Settings(BaseSettings):
             "local",
             "whispercpp",
             "command",
+            "docker",
         } or bool(self.transcription_api_key)
 
 

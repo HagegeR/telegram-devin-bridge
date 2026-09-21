@@ -56,10 +56,12 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_ADMIN_USER_IDS` | no | falls back to `TELEGRAM_ALLOWED_USERS` |
 | `TRANSCRIPTION_API_KEY` | no | unset |
 | `TRANSCRIPTION_BASE_URL` | no | `https://api.openai.com/v1` |
-| `TRANSCRIPTION_BACKEND` | no | `api` (`api`/`local`/`whispercpp`/`command`) |
+| `TRANSCRIPTION_BACKEND` | no | `api` (`api`/`local`/`whispercpp`/`command`/`docker`) |
 | `TRANSCRIPTION_MODEL` | no | `whisper-1` |
 | `TRANSCRIPTION_LANGUAGE` | no | unset (auto-detect) |
 | `TRANSCRIPTION_COMMAND` | no | unset (required for `command` backend) |
+| `TRANSCRIPTION_DOCKER_IMAGE` | no | unset (required for `docker` backend) |
+| `TRANSCRIPTION_DOCKER_MEMORY` | no | `400m` |
 | `WHISPER_CPP_BIN` | no | `whisper-cli` |
 | `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
@@ -259,10 +261,15 @@ It is the option for musl/Alpine hosts where faster-whisper has no wheels.
 For `TRANSCRIPTION_BACKEND=command`, `TRANSCRIPTION_COMMAND` runs any external
 transcriber per request: the bridge converts the clip to 16 kHz mono WAV,
 pipes it on the child's stdin, reads the transcript from stdout, and exports
-`TRANSCRIPTION_LANGUAGE` into the child's environment. See
+`TRANSCRIPTION_LANGUAGE` into the child's environment. `command` is the
+unrestricted form (any argv; root-only — not settable through the admin API);
+`TRANSCRIPTION_BACKEND=docker` is the bounded form — a fixed
+`docker run --rm -i --pull never --network none --memory <MEM> <IMAGE>` argv
+with a validated image reference and memory limit, both admin-settable via
+`TRANSCRIPTION_DOCKER_IMAGE`/`TRANSCRIPTION_DOCKER_MEMORY`. See
 `deploy/moonshine/` for a Docker sidecar (Moonshine, English-only, zero RAM
-while idle): `TRANSCRIPTION_COMMAND=docker run --rm -i --memory 400m
-moonshine-asr`.
+while idle): `TRANSCRIPTION_BACKEND=docker` +
+`TRANSCRIPTION_DOCKER_IMAGE=moonshine-asr`.
 Artifact images and documents from Devin are forwarded to Telegram, and GitHub
 pull requests are rendered as compact cards when metadata is available.
 

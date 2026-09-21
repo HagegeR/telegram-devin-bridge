@@ -44,6 +44,7 @@ from app.store import (
 )
 from app.telegram import TelegramClient
 from app.transcription import (
+    docker_transcription_command,
     transcribe_command,
     transcribe_local,
     transcribe_whispercpp,
@@ -1872,6 +1873,16 @@ class Bridge:
                 content,
                 filename,
                 shlex.split(self.settings.transcription_command),
+                language,
+            )
+        if self.settings.transcription_backend == "docker":
+            return await transcribe_command(
+                content,
+                filename,
+                docker_transcription_command(
+                    self.settings.transcription_docker_image,
+                    self.settings.transcription_docker_memory,
+                ),
                 language,
             )
         if self.settings.transcription_backend == "local":

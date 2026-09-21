@@ -225,3 +225,97 @@ def test_command_backend_config() -> None:
     assert config.transcription_enabled
     # exec vector: never admin-editable
     assert "TRANSCRIPTION_COMMAND" not in config.admin_env_keys
+
+
+def _config(tmp_path: Path, **overrides: object):
+    from app.config import Settings
+
+    values = {
+        "telegram_bot_token": "t",
+        "telegram_webhook_secret": "s",
+        "devin_api_key": "k",
+        "public_base_url": "http://x",
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "moonshine-asr",
+        "moonshine-asr:v2",
+        "ghcr.io/org/img:1.2",
+        "localhost:5000/img",
+        "img@sha256:" + "a" * 64,
+    ],
+)
+def test_docker_image_valid(tmp_path: Path, image: str) -> None:
+    config = _config(
+        tmp_path,
+        transcription_backend="docker",
+        transcription_docker_image=image,
+    )
+    assert config.transcription_enabled
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["Moonshine", "img; rm -rf /", "img rm", "-img", "img:tag with space"],
+)
+def test_docker_image_invalid(tmp_path: Path, image: str) -> None:
+    with pytest.raises(ValueError, match="docker_image"):
+        _config(
+            tmp_path,
+            transcription_backend="docker",
+            transcription_docker_image=image,
+        )
+
+
+@pytest.mark.parametrize("memory", ["400m", "1g", "512"])
+def test_docker_memory_valid(tmp_path: Path, memory: str) -> None:
+    _config(
+        tmp_path,
+        transcription_backend="docker",
+        transcription_docker_image="moonshine-asr",
+        transcription_docker_memory=memory,
+    )
+
+
+@pytest.mark.parametrize("memory", ["400mb", "-1m", "1 g"])
+def test_docker_memory_invalid(tmp_path: Path, memory: str) -> None:
+    with pytest.raises(ValueError, match="docker_memory"):
+        _config(
+            tmp_path,
+            transcription_backend="docker",
+            transcription_docker_image="moonshine-asr",
+            transcription_docker_memory=memory,
+        )
+
+
+def test_docker_backend_requires_image(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="docker_image"):
+        _config(tmp_path, transcription_backend="docker")
+
+
+def test_docker_transcription_command_argv() -> None:
+    assert transcription.docker_transcription_command("moonshine-asr", "400m") == [
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--memory",
+        "400m",
+        "moonshine-asr",
+    ]
+
+
+def test_docker_keys_allowlisted_not_command(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert "TRANSCRIPTION_DOCKER_IMAGE" in config.admin_env_keys
+    assert "TRANSCRIPTION_DOCKER_MEMORY" in config.admin_env_keys
+    assert "TRANSCRIPTION_COMMAND" not in config.admin_env_keys
