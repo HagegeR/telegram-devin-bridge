@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -118,3 +119,24 @@ async def test_run_whispercpp_command_kills_process_on_timeout(
     )
     stdout, _ = await ps.communicate()
     assert b"sleep 30" not in stdout
+
+
+@pytest.mark.asyncio
+async def test_transcribe_local_returns_none_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transcription._models.clear()
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.05)
+
+    def slow(*_: object, **__: object) -> str:
+        time.sleep(0.5)
+        return "late"
+
+    monkeypatch.setattr(transcription, "_load", lambda _name: object())
+    monkeypatch.setattr(transcription, "_transcribe", slow)
+    assert await transcription.transcribe_local(
+        b"audio",
+        "voice.ogg",
+        "test-timeout",
+        "en",
+    ) is None

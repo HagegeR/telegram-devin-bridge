@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 _models: dict[str, Any] = {}
 _lock = asyncio.Lock()
 _TIMEOUT = 120
+_MAX_CONCURRENT = 2
+_slots = asyncio.Semaphore(_MAX_CONCURRENT)
 
 
 def _load(name: str) -> Any:
@@ -52,18 +54,19 @@ async def transcribe_local(
     language: str | None,
 ) -> str | None:
     try:
-        async with _lock:
-            model = _models.get(model_name)
-            if model is None:
-                model = await asyncio.to_thread(_load, model_name)
-                _models[model_name] = model
-        text = await asyncio.to_thread(
-            _transcribe,
-            model,
-            content,
-            filename,
-            language,
-        )
+        async with _slots:
+            async with _lock:
+                model = _models.get(model_name)
+                if model is None:
+                    model = await asyncio.to_thread(_load, model_name)
+                    _models[model_name] = model
+            text = await asyncio.wait_for(
+                asyncio.to_thread(_transcribe, model, content, filename, language),
+                _TIMEOUT,
+            )
+    except asyncio.TimeoutError:
+        logger.warning("Local transcription timed out")
+        return None
     except Exception:
         logger.warning("Local transcription failed", exc_info=True)
         return None
@@ -110,40 +113,41 @@ async def transcribe_whispercpp(
 ) -> str | None:
     try:
         suffix = Path(filename).suffix or ".audio"
-        with tempfile.TemporaryDirectory() as directory:
-            input_path = Path(directory) / f"input{suffix}"
-            wav_path = Path(directory) / "audio.wav"
-            input_path.write_bytes(content)
-            if await _run_whispercpp_command(
-                "ffmpeg",
-                "-nostdin",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(input_path),
-                "-ar",
-                "16000",
-                "-ac",
-                "1",
-                "-c:a",
-                "pcm_s16le",
-                str(wav_path),
-            ) is None:
-                return None
-            stdout = await _run_whispercpp_command(
-                binary,
-                "-m",
-                model_path,
-                "-f",
-                str(wav_path),
-                "-nt",
-                "-np",
-                "-l",
-                language or "auto",
-            )
-            if stdout is None:
-                return None
+        async with _slots:
+            with tempfile.TemporaryDirectory() as directory:
+                input_path = Path(directory) / f"input{suffix}"
+                wav_path = Path(directory) / "audio.wav"
+                input_path.write_bytes(content)
+                if await _run_whispercpp_command(
+                    "ffmpeg",
+                    "-nostdin",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(input_path),
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(wav_path),
+                ) is None:
+                    return None
+                stdout = await _run_whispercpp_command(
+                    binary,
+                    "-m",
+                    model_path,
+                    "-f",
+                    str(wav_path),
+                    "-nt",
+                    "-np",
+                    "-l",
+                    language or "auto",
+                )
+                if stdout is None:
+                    return None
     except OSError:
         logger.warning("whisper.cpp transcription failed", exc_info=True)
         return None
