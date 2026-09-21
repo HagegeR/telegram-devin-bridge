@@ -43,7 +43,7 @@ from app.store import (
     Store,
 )
 from app.telegram import TelegramClient
-from app.transcription import transcribe_local
+from app.transcription import transcribe_local, transcribe_whispercpp
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
 
 logging.basicConfig(level=logging.INFO)
@@ -1847,6 +1847,14 @@ class Bridge:
             "video_note",
         )):
             return None
+        if self.settings.transcription_backend == "whispercpp":
+            return await transcribe_whispercpp(
+                content,
+                filename,
+                self.settings.whisper_cpp_bin,
+                self.settings.whisper_cpp_model,
+                self.settings.transcription_language or None,
+            )
         if self.settings.transcription_backend == "local":
             model_name = (
                 "base"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 import tempfile
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _models: dict[str, Any] = {}
 _lock = asyncio.Lock()
+_TIMEOUT = 120
 
 
 def _load(name: str) -> Any:
@@ -65,4 +67,85 @@ async def transcribe_local(
     except Exception:
         logger.warning("Local transcription failed", exc_info=True)
         return None
+    return text or None
+
+
+async def _reap(process: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
+    await process.wait()
+
+
+async def _run_whispercpp_command(*args: str) -> bytes | None:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError:
+        logger.warning("whisper.cpp transcription failed", exc_info=True)
+        return None
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), _TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("whisper.cpp transcription timed out: %s", args[0])
+        await _reap(process)
+        return None
+    except asyncio.CancelledError:
+        await _reap(process)
+        raise
+    if process.returncode != 0:
+        logger.warning("whisper.cpp transcription failed")
+        return None
+    return stdout
+
+
+async def transcribe_whispercpp(
+    content: bytes,
+    filename: str,
+    binary: str,
+    model_path: str,
+    language: str | None,
+) -> str | None:
+    try:
+        suffix = Path(filename).suffix or ".audio"
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / f"input{suffix}"
+            wav_path = Path(directory) / "audio.wav"
+            input_path.write_bytes(content)
+            if await _run_whispercpp_command(
+                "ffmpeg",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(input_path),
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                str(wav_path),
+            ) is None:
+                return None
+            stdout = await _run_whispercpp_command(
+                binary,
+                "-m",
+                model_path,
+                "-f",
+                str(wav_path),
+                "-nt",
+                "-np",
+                "-l",
+                language or "auto",
+            )
+            if stdout is None:
+                return None
+    except OSError:
+        logger.warning("whisper.cpp transcription failed", exc_info=True)
+        return None
+    text = " ".join(stdout.decode(errors="replace").split())
     return text or None
