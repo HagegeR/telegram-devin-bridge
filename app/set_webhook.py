@@ -23,6 +23,7 @@ COMMANDS = [
     ("stop", "Terminate the active session"),
     ("cancel", "Cancel the active session"),
     ("settings", "Conversation settings"),
+    ("lang", "Set your voice note language"),
     ("usage", "Show Devin usage"),
     ("playbook", "List or run a Devin playbook"),
     ("retry", "Retry the last user message"),
@@ -49,6 +50,7 @@ GROUP_COMMANDS = {
     "whoami",
     "help",
     "settings",
+    "lang",
     "usage",
 }
 

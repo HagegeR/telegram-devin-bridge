@@ -1849,7 +1849,7 @@ class Bridge:
             return None
         user_id = _int(_mapping(message.get("from")).get("id"))
         language = (
-            self.store.get_setting(f"lang:{user_id}")
+            (self.store.get_setting(f"lang:{user_id}") if user_id else None)
             or self.settings.transcription_language
             or None
         )

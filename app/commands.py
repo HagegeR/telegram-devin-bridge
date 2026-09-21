@@ -232,7 +232,9 @@ async def handle_command(
         user_id = _int(_mapping(message.get("from")).get("id"))
         key = f"lang:{user_id}"
         value = args.casefold()
-        if not value:
+        if not user_id:
+            text = "/lang needs a sender; not available for channel posts."
+        elif not value:
             configured = runtime.store.get_setting(key)
             default = runtime.settings.transcription_language or "auto"
             text = (
