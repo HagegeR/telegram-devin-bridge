@@ -18,25 +18,15 @@ logger = logging.getLogger(__name__)
 _models: dict[str, Any] = {}
 _lock = asyncio.Lock()
 _TIMEOUT = 120
+_MAX_SECONDS = 600
+_MAX_CONCURRENT = 2
+_slots = asyncio.Semaphore(_MAX_CONCURRENT)
 _AUDIO_SUFFIXES = frozenset({
     ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".aac", ".wav", ".flac",
 })
 # Demuxers ffmpeg may pick when probing untrusted media; excludes playlist-like
 # demuxers (hls, concat, ...) that dereference external file:/http: references.
 _FFMPEG_FORMATS = "ogg,mp3,mov,mp4,m4a,aac,wav,flac,matroska,webm"
-
-# ponytail: one local transcription (ffmpeg + model process/container) at a
-# time, process-wide; a burst of voice notes queues instead of forking N
-# memory-heavy children. Make it a setting if a beefier host ever needs more.
-_local_slots: asyncio.Semaphore | None = None
-
-
-def _slot() -> asyncio.Semaphore:
-    global _local_slots
-    if _local_slots is None:
-        _local_slots = asyncio.Semaphore(1)
-    return _local_slots
-
 
 def _suffix(filename: str) -> str:
     suffix = Path(filename).suffix.lower()
@@ -76,23 +66,47 @@ async def transcribe_local(
     model_name: str,
     language: str | None,
 ) -> str | None:
+    if not await _acquire_slot():
+        return None
+    job: asyncio.Future[str] | None = None
     try:
         async with _lock:
             model = _models.get(model_name)
             if model is None:
                 model = await asyncio.to_thread(_load, model_name)
                 _models[model_name] = model
-        text = await asyncio.to_thread(
-            _transcribe,
-            model,
-            content,
-            filename,
-            language,
+        job = asyncio.ensure_future(
+            asyncio.to_thread(_transcribe, model, content, filename, language)
         )
+        text = await asyncio.wait_for(asyncio.shield(job), _TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Local transcription timed out")
+        return None
     except Exception:
         logger.warning("Local transcription failed", exc_info=True)
         return None
+    finally:
+        # The thread cannot be interrupted, so the slot stays held until it exits.
+        if job is not None and not job.done():
+            job.add_done_callback(_release_slot)
+        else:
+            _slots.release()
     return text or None
+
+
+async def _acquire_slot() -> bool:
+    try:
+        await asyncio.wait_for(_slots.acquire(), _TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Transcription rejected: all slots busy")
+        return False
+    return True
+
+
+def _release_slot(job: asyncio.Future[str]) -> None:
+    if not job.cancelled() and job.exception() is not None:
+        logger.warning("Late local transcription failed", exc_info=job.exception())
+    _slots.release()
 
 
 async def _reap(process: asyncio.subprocess.Process) -> None:
@@ -103,29 +117,27 @@ async def _reap(process: asyncio.subprocess.Process) -> None:
 
 async def _run_whispercpp_command(
     *args: str,
-    stdin_data: bytes | None = None,
+    stdin_path: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> bytes | None:
     try:
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=(
-                asyncio.subprocess.PIPE if stdin_data is not None else None
-            ),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
+        stdin = os.open(stdin_path, os.O_RDONLY) if stdin_path is not None else None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=stdin,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+        finally:
+            if stdin is not None:
+                os.close(stdin)
     except OSError:
         logger.warning("command transcription failed", exc_info=True)
         return None
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(stdin_data)
-            if stdin_data is not None
-            else process.communicate(),
-            _TIMEOUT,
-        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), _TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("command transcription timed out: %s", args[0])
         await _reap(process)
@@ -144,6 +156,7 @@ async def _run_whispercpp_command(
 
 
 async def _to_wav16k(input_path: Path, wav_path: Path) -> bool:
+    # -t caps decoded PCM at 32 kB/s * _MAX_SECONDS regardless of input bitrate.
     return (
         await _run_whispercpp_command(
             "ffmpeg",
@@ -151,6 +164,8 @@ async def _to_wav16k(input_path: Path, wav_path: Path) -> bool:
             "-loglevel",
             "error",
             "-y",
+            "-t",
+            str(_MAX_SECONDS),
             "-protocol_whitelist",
             "file",
             "-format_whitelist",
@@ -220,30 +235,33 @@ async def transcribe_whispercpp(
     fast: bool = True,
     extra_args: Sequence[str] = (),
 ) -> str | None:
+    if not await _acquire_slot():
+        return None
     try:
-        async with _slot():
-            with tempfile.TemporaryDirectory() as directory:
-                input_path = Path(directory) / f"input{_suffix(filename)}"
-                wav_path = Path(directory) / "audio.wav"
-                input_path.write_bytes(content)
-                if not await _to_wav16k(input_path, wav_path):
-                    return None
-                stdout = await _run_whispercpp_command(
-                    *whispercpp_args(
-                        binary,
-                        model_path,
-                        wav_path,
-                        language,
-                        _wav_duration_seconds(wav_path),
-                        fast,
-                        extra_args,
-                    )
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / f"input{_suffix(filename)}"
+            wav_path = Path(directory) / "audio.wav"
+            input_path.write_bytes(content)
+            if not await _to_wav16k(input_path, wav_path):
+                return None
+            stdout = await _run_whispercpp_command(
+                *whispercpp_args(
+                    binary,
+                    model_path,
+                    wav_path,
+                    language,
+                    _wav_duration_seconds(wav_path),
+                    fast,
+                    extra_args,
                 )
-                if stdout is None:
-                    return None
+            )
+            if stdout is None:
+                return None
     except OSError:
         logger.warning("whisper.cpp transcription failed", exc_info=True)
         return None
+    finally:
+        _slots.release()
     text = " ".join(stdout.decode(errors="replace").split())
     return text or None
 
@@ -254,30 +272,31 @@ async def transcribe_command(
     command: Sequence[str],
     language: str | None,
 ) -> str | None:
-    if not command:
+    if not command or not await _acquire_slot():
         return None
     try:
-        async with _slot():
-            with tempfile.TemporaryDirectory() as directory:
-                input_path = Path(directory) / f"input{_suffix(filename)}"
-                wav_path = Path(directory) / "audio.wav"
-                input_path.write_bytes(content)
-                if not await _to_wav16k(input_path, wav_path):
-                    return None
-                env = dict(os.environ)
-                env.pop("TRANSCRIPTION_LANGUAGE", None)
-                if language:
-                    env["TRANSCRIPTION_LANGUAGE"] = language
-                stdout = await _run_whispercpp_command(
-                    *command,
-                    stdin_data=wav_path.read_bytes(),
-                    env=env,
-                )
-                if stdout is None:
-                    return None
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / f"input{_suffix(filename)}"
+            wav_path = Path(directory) / "audio.wav"
+            input_path.write_bytes(content)
+            if not await _to_wav16k(input_path, wav_path):
+                return None
+            env = dict(os.environ)
+            env.pop("TRANSCRIPTION_LANGUAGE", None)
+            if language:
+                env["TRANSCRIPTION_LANGUAGE"] = language
+            stdout = await _run_whispercpp_command(
+                *command,
+                stdin_path=wav_path,
+                env=env,
+            )
+            if stdout is None:
+                return None
     except OSError:
         logger.warning("command transcription failed", exc_info=True)
         return None
+    finally:
+        _slots.release()
     text = " ".join(stdout.decode(errors="replace").split())
     if not text:
         logger.warning("command transcription produced no output")
@@ -288,7 +307,8 @@ async def transcribe_command(
 def docker_transcription_command(image: str, memory: str) -> list[str]:
     # --pull never: only locally built images; --network none: no network;
     # no volume mounts — audio goes in via stdin only; no capabilities, no
-    # privilege escalation, bounded process count.
+    # privilege escalation, bounded process count; --env NAME copies the client's
+    # TRANSCRIPTION_LANGUAGE only when set (unset for auto).
     return [
         "docker",
         "run",
@@ -304,6 +324,8 @@ def docker_transcription_command(image: str, memory: str) -> list[str]:
         "no-new-privileges",
         "--pids-limit",
         "64",
+        "--env",
+        "TRANSCRIPTION_LANGUAGE",
         "--memory",
         memory,
         image,

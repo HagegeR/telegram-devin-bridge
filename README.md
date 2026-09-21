@@ -266,7 +266,7 @@ pipes it on the child's stdin, reads the transcript from stdout, and exports
 `TRANSCRIPTION_LANGUAGE` into the child's environment. `command` is the
 unrestricted form (any argv; root-only — not settable through the admin API);
 `TRANSCRIPTION_BACKEND=docker` is the bounded form — a fixed
-`docker run --rm -i --pull never --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory <MEM> <IMAGE>` argv
+`docker run --rm -i --pull never --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --env TRANSCRIPTION_LANGUAGE --memory <MEM> <IMAGE>` argv
 with a validated image reference (`TRANSCRIPTION_DOCKER_IMAGE`, root-only:
 it picks the code that runs) and memory limit (`TRANSCRIPTION_DOCKER_MEMORY`,
 admin-settable). See

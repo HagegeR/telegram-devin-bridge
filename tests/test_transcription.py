@@ -2,6 +2,7 @@ import asyncio
 import io
 import shutil
 import sys
+import time
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -187,6 +188,23 @@ async def test_transcribe_command_pipes_wav_on_stdin(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_to_wav16k_caps_duration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(transcription, "_MAX_SECONDS", 1)
+    src = tmp_path / "long.wav"
+    with wave.open(str(src), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8000)
+        wav.writeframes(b"\x00\x00" * 8000 * 5)
+    out = tmp_path / "out.wav"
+    assert await transcription._to_wav16k(src, out)
+    assert transcription._wav_duration_seconds(out) == pytest.approx(1.0, abs=0.05)
+
+
+@pytest.mark.asyncio
 async def test_transcribe_command_passes_language_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -368,6 +386,8 @@ def test_docker_transcription_command_argv() -> None:
         "no-new-privileges",
         "--pids-limit",
         "64",
+        "--env",
+        "TRANSCRIPTION_LANGUAGE",
         "--memory",
         "400m",
         "moonshine-asr",
@@ -381,7 +401,7 @@ async def test_transcribe_command_is_serialized(monkeypatch: pytest.MonkeyPatch)
         return True
 
     monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
-    monkeypatch.setattr(transcription, "_local_slots", None)
+    monkeypatch.setattr(transcription, "_slots", asyncio.Semaphore(1))
     active = 0
     peak = 0
 
@@ -497,3 +517,42 @@ def test_whisper_cpp_extra_args_rejected(monkeypatch, extra_args: str) -> None:
     monkeypatch.setenv("WHISPER_CPP_EXTRA_ARGS", extra_args)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_local_returns_none_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transcription._models.clear()
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.05)
+
+    def slow(*_: object, **__: object) -> str:
+        time.sleep(0.5)
+        return "late"
+
+    monkeypatch.setattr(transcription, "_load", lambda _name: object())
+    monkeypatch.setattr(transcription, "_transcribe", slow)
+    assert await transcription.transcribe_local(
+        b"audio",
+        "voice.ogg",
+        "test-timeout",
+        "en",
+    ) is None
+    assert transcription._slots._value == transcription._MAX_CONCURRENT - 1
+    await asyncio.sleep(0.6)
+    assert transcription._slots._value == transcription._MAX_CONCURRENT
+
+
+@pytest.mark.asyncio
+async def test_transcribe_local_rejects_when_slots_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.05)
+    monkeypatch.setattr(transcription, "_slots", asyncio.Semaphore(0))
+    monkeypatch.setattr(transcription, "_load", lambda _name: object())
+    assert await transcription.transcribe_local(
+        b"audio",
+        "voice.ogg",
+        "test-busy",
+        "en",
+    ) is None
