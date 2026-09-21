@@ -869,6 +869,13 @@ class Store:
                 (key, value),
             )
 
+    def delete_setting(self, key: str) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM settings WHERE key = ?",
+                (key,),
+            )
+
     @staticmethod
     def _conversation(row: sqlite3.Row | None) -> Conversation | None:
         if row is None:

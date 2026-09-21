@@ -81,7 +81,7 @@ must mention `@BOT_USERNAME`, reply to a bot message, or come from a
 
 `/start`, `/help`, `/new [title]`, `/topic <name>`, `/close`, `/rename <name>`,
 `/sessions`, `/resume <n>`, `/status`, `/stop` (`/cancel`), `/playbook [n] [text]`, `/retry`,
-`/whoami`, `/sethome`, `/settings`, `/usage`, `/users`, and `/revoke <id>` are
+`/lang [code]`, `/whoami`, `/sethome`, `/settings`, `/usage`, `/users`, and `/revoke <id>` are
 available. `/new` creates a fresh active session without deleting history.
 `/topic <name>` creates a Telegram topic with its own Devin session and posts
 an instructional seed message into it. Private-chat topics must first be
@@ -95,6 +95,8 @@ playbooks or starts one. `/retry` resends the last user message.
 behavior for the current chat or topic. `/usage` reports Devin ACUs when an
 organization ID is configured. Administrators can approve private-chat access
 requests and manage approved users with `/users` and `/revoke`.
+`/lang [code]` sets a per-user voice transcription language, accepts `auto`, and
+resets to the configured default with `off`.
 
 ## Notifications
 
