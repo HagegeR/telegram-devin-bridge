@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 import tempfile
@@ -69,6 +70,12 @@ async def transcribe_local(
     return text or None
 
 
+async def _reap(process: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
+    await process.wait()
+
+
 async def _run_whispercpp_command(*args: str) -> bytes | None:
     try:
         process = await asyncio.create_subprocess_exec(
@@ -83,12 +90,10 @@ async def _run_whispercpp_command(*args: str) -> bytes | None:
         stdout, _ = await asyncio.wait_for(process.communicate(), _TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning("whisper.cpp transcription timed out: %s", args[0])
-        process.kill()
-        await process.wait()
+        await _reap(process)
         return None
     except asyncio.CancelledError:
-        process.kill()
-        await process.wait()
+        await _reap(process)
         raise
     if process.returncode != 0:
         logger.warning("whisper.cpp transcription failed")
