@@ -4064,6 +4064,9 @@ def test_settings_validate_transcription_backend(tmp_path: Path) -> None:
     local = settings(tmp_path, transcription_backend="LOCAL")
     assert local.transcription_backend == "local"
     assert local.transcription_enabled
+    whispercpp = settings(tmp_path, transcription_backend="WHISPERCPP")
+    assert whispercpp.transcription_backend == "whispercpp"
+    assert whispercpp.transcription_enabled
     assert not settings(tmp_path, transcription_backend="api").transcription_enabled
     with pytest.raises(ValueError, match="transcription_backend"):
         settings(tmp_path, transcription_backend="foo")
@@ -4677,6 +4680,68 @@ async def test_local_transcription_backend(
             database_path=str(tmp_path / "local-failure.sqlite3"),
         ),
         Store(str(tmp_path / "local-failure.sqlite3")),
+        failed_devin,
+        _FakeTelegram(),  # type: ignore[arg-type]
+    )
+    await failed_runtime.handle_message(voice)
+    assert "Attached file" in failed_devin.created[0]
+    await failed_runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_whispercpp_transcription_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    voice = {**message("caption"), "text": None, "voice": {"file_id": "voice-1"}}
+
+    async def transcribe(
+        _content: bytes,
+        _filename: str,
+        _binary: str,
+        _model: str,
+        _language: str | None,
+    ) -> str | None:
+        return "hello whispercpp"
+
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            transcription_backend="whispercpp",
+            telegram_attach_voice=False,
+        ),
+        Store(":memory:"),
+        devin,
+        telegram,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(main_module, "transcribe_whispercpp", transcribe)
+    await runtime.handle_message(voice)
+    assert "Voice note transcript:" in devin.created[0]
+    assert "hello whispercpp" in devin.created[0]
+    assert "🎙" in telegram.reactions
+    await runtime.shutdown()
+
+    failed_devin = _FakeDevin()
+
+    async def unavailable(
+        _content: bytes,
+        _filename: str,
+        _binary: str,
+        _model: str,
+        _language: str | None,
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(main_module, "transcribe_whispercpp", unavailable)
+    failed_runtime = Bridge(
+        settings(
+            tmp_path,
+            transcription_backend="whispercpp",
+            telegram_attach_voice=False,
+            database_path=str(tmp_path / "whispercpp-failure.sqlite3"),
+        ),
+        Store(str(tmp_path / "whispercpp-failure.sqlite3")),
         failed_devin,
         _FakeTelegram(),  # type: ignore[arg-type]
     )

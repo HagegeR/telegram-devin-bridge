@@ -56,9 +56,11 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_ADMIN_USER_IDS` | no | falls back to `TELEGRAM_ALLOWED_USERS` |
 | `TRANSCRIPTION_API_KEY` | no | unset |
 | `TRANSCRIPTION_BASE_URL` | no | `https://api.openai.com/v1` |
-| `TRANSCRIPTION_BACKEND` | no | `api` (`api` or `local`) |
+| `TRANSCRIPTION_BACKEND` | no | `api` (`api`, `local`, or `whispercpp`) |
 | `TRANSCRIPTION_MODEL` | no | `whisper-1` |
 | `TRANSCRIPTION_LANGUAGE` | no | unset (auto-detect) |
+| `WHISPER_CPP_BIN` | no | `whisper-cli` |
+| `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
 | `GITHUB_TOKEN` | no | unset |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
@@ -245,6 +247,11 @@ transcription with faster-whisper, then install it with
 selected model. Set `TRANSCRIPTION_LANGUAGE=en` to force English instead of
 automatic language detection. `TELEGRAM_ATTACH_VOICE=true` keeps the original
 audio attached.
+
+For `TRANSCRIPTION_BACKEND=whispercpp`, build whisper.cpp on the host:
+`git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp && cd /opt/whisper.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2 --target whisper-cli && sh models/download-ggml-model.sh base.en`.
+This also requires `ffmpeg`; set `WHISPER_CPP_BIN=/opt/whisper.cpp/build/bin/whisper-cli`.
+It is the option for musl/Alpine hosts where faster-whisper has no wheels.
 Artifact images and documents from Devin are forwarded to Telegram, and GitHub
 pull requests are rendered as compact cards when metadata is available.
 
