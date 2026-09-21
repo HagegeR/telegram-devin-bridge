@@ -65,7 +65,8 @@ async def transcribe_local(
     model_name: str,
     language: str | None,
 ) -> str | None:
-    await _slots.acquire()
+    if not await _acquire_slot():
+        return None
     job: asyncio.Future[str] | None = None
     try:
         async with _lock:
@@ -90,6 +91,15 @@ async def transcribe_local(
         else:
             _slots.release()
     return text or None
+
+
+async def _acquire_slot() -> bool:
+    try:
+        await asyncio.wait_for(_slots.acquire(), _TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("Transcription rejected: all slots busy")
+        return False
+    return True
 
 
 def _release_slot(job: asyncio.Future[str]) -> None:
@@ -180,48 +190,51 @@ async def transcribe_whispercpp(
     fast: bool = True,
     extra_args: Sequence[str] = (),
 ) -> str | None:
+    if not await _acquire_slot():
+        return None
     try:
-        async with _slots:
-            with tempfile.TemporaryDirectory() as directory:
-                input_path = Path(directory) / f"input{_suffix(filename)}"
-                wav_path = Path(directory) / "audio.wav"
-                input_path.write_bytes(content)
-                if await _run_whispercpp_command(
-                    "ffmpeg",
-                    "-nostdin",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-protocol_whitelist",
-                    "file",
-                    "-format_whitelist",
-                    _FFMPEG_FORMATS,
-                    "-i",
-                    str(input_path),
-                    "-ar",
-                    "16000",
-                    "-ac",
-                    "1",
-                    "-c:a",
-                    "pcm_s16le",
-                    str(wav_path),
-                ) is None:
-                    return None
-                stdout = await _run_whispercpp_command(
-                    *whispercpp_args(
-                        binary,
-                        model_path,
-                        wav_path,
-                        language,
-                        _wav_duration_seconds(wav_path),
-                        fast,
-                        extra_args,
-                    )
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / f"input{_suffix(filename)}"
+            wav_path = Path(directory) / "audio.wav"
+            input_path.write_bytes(content)
+            if await _run_whispercpp_command(
+                "ffmpeg",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-y",
+                "-protocol_whitelist",
+                "file",
+                "-format_whitelist",
+                _FFMPEG_FORMATS,
+                "-i",
+                str(input_path),
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                str(wav_path),
+            ) is None:
+                return None
+            stdout = await _run_whispercpp_command(
+                *whispercpp_args(
+                    binary,
+                    model_path,
+                    wav_path,
+                    language,
+                    _wav_duration_seconds(wav_path),
+                    fast,
+                    extra_args,
                 )
-                if stdout is None:
-                    return None
+            )
+            if stdout is None:
+                return None
     except OSError:
         logger.warning("whisper.cpp transcription failed", exc_info=True)
         return None
+    finally:
+        _slots.release()
     text = " ".join(stdout.decode(errors="replace").split())
     return text or None

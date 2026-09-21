@@ -271,3 +271,18 @@ async def test_transcribe_local_returns_none_on_timeout(
     assert transcription._slots._value == transcription._MAX_CONCURRENT - 1
     await asyncio.sleep(0.6)
     assert transcription._slots._value == transcription._MAX_CONCURRENT
+
+
+@pytest.mark.asyncio
+async def test_transcribe_local_rejects_when_slots_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.05)
+    monkeypatch.setattr(transcription, "_slots", asyncio.Semaphore(0))
+    monkeypatch.setattr(transcription, "_load", lambda _name: object())
+    assert await transcription.transcribe_local(
+        b"audio",
+        "voice.ogg",
+        "test-busy",
+        "en",
+    ) is None
