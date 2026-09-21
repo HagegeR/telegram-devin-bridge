@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -118,3 +119,76 @@ async def test_run_whispercpp_command_kills_process_on_timeout(
     )
     stdout, _ = await ps.communicate()
     assert b"sleep 30" not in stdout
+
+
+def test_whispercpp_args_fast_short_clip() -> None:
+    args = transcription.whispercpp_args(
+        "whisper-cli",
+        "model.bin",
+        Path("audio.wav"),
+        "en",
+        11.0,
+        True,
+        ("-tr", "--foo"),
+    )
+    assert args[args.index("-bs") + 1] == "1"
+    assert args[args.index("-bo") + 1] == "1"
+    # 11s / 30s * 1500 + 128 = 678
+    assert args[args.index("-ac") + 1] == "678"
+    assert args[-2:] == ["-tr", "--foo"]
+
+
+def test_whispercpp_args_fast_long_clip_no_ac() -> None:
+    args = transcription.whispercpp_args(
+        "whisper-cli", "model.bin", Path("audio.wav"), None, 40.0, True, ()
+    )
+    assert "-bs" in args and "-bo" in args
+    assert "-ac" not in args
+
+
+def test_whispercpp_args_fast_unknown_duration_no_ac() -> None:
+    args = transcription.whispercpp_args(
+        "whisper-cli", "model.bin", Path("audio.wav"), None, None, True, ()
+    )
+    assert "-bs" in args and "-bo" in args
+    assert "-ac" not in args
+
+
+def test_whispercpp_args_not_fast() -> None:
+    args = transcription.whispercpp_args(
+        "whisper-cli",
+        "model.bin",
+        Path("audio.wav"),
+        "en",
+        11.0,
+        False,
+        ("-tr",),
+    )
+    assert "-bs" not in args and "-bo" not in args and "-ac" not in args
+    assert args[-1] == "-tr"
+
+
+def test_wav_duration_seconds(tmp_path: Path) -> None:
+    import wave
+
+    wav_path = tmp_path / "clip.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * 16000 * 2)
+    assert transcription._wav_duration_seconds(wav_path) == pytest.approx(2.0)
+
+    bad_path = tmp_path / "clip.bin"
+    bad_path.write_bytes(b"not a wav")
+    assert transcription._wav_duration_seconds(bad_path) is None
+
+
+def test_whisper_cpp_fast_settings(tmp_path: Path, monkeypatch) -> None:
+    from app.config import Settings
+
+    monkeypatch.setenv("WHISPER_CPP_FAST", "false")
+    monkeypatch.setenv("WHISPER_CPP_EXTRA_ARGS", "-tr --foo")
+    config = Settings(_env_file=None)
+    assert config.whisper_cpp_fast is False
+    assert config.whisper_cpp_extra_args == "-tr --foo"

@@ -43,7 +43,8 @@ class Settings(BaseSettings):
         "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
         "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_IMAGES_AS_DOCUMENTS,"
         "TRANSCRIPTION_BACKEND,TRANSCRIPTION_MODEL,TRANSCRIPTION_LANGUAGE,"
-        "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,"
+        "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,WHISPER_CPP_FAST,"
+        "WHISPER_CPP_EXTRA_ARGS,"
         "TELEGRAM_NOTIFICATION_MODE,"
         "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
         "TELEGRAM_ALLOWED_USERS,TELEGRAM_DEBOUNCE_SECONDS,"
@@ -65,6 +66,8 @@ class Settings(BaseSettings):
     transcription_language: str | None = None
     whisper_cpp_bin: str = "whisper-cli"
     whisper_cpp_model: str = "/opt/whisper.cpp/models/ggml-base.en.bin"
+    whisper_cpp_fast: bool = True
+    whisper_cpp_extra_args: str = ""
     telegram_attach_voice: bool = False
     github_token: str | None = None
     self_update_command: str = "sh deploy/self-update.sh"
