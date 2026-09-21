@@ -56,9 +56,12 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_ADMIN_USER_IDS` | no | falls back to `TELEGRAM_ALLOWED_USERS` |
 | `TRANSCRIPTION_API_KEY` | no | unset |
 | `TRANSCRIPTION_BASE_URL` | no | `https://api.openai.com/v1` |
-| `TRANSCRIPTION_BACKEND` | no | `api` (`api`, `local`, or `whispercpp`) |
+| `TRANSCRIPTION_BACKEND` | no | `api` (`api`/`local`/`whispercpp`/`command`/`docker`) |
 | `TRANSCRIPTION_MODEL` | no | `whisper-1` |
 | `TRANSCRIPTION_LANGUAGE` | no | unset (auto-detect) |
+| `TRANSCRIPTION_COMMAND` | no | unset (required for `command` backend) |
+| `TRANSCRIPTION_DOCKER_IMAGE` | no | unset (required for `docker` backend) |
+| `TRANSCRIPTION_DOCKER_MEMORY` | no | `400m` |
 | `WHISPER_CPP_BIN` | no | `whisper-cli` |
 | `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` |
 | `WHISPER_CPP_FAST` | no | `true` |
@@ -256,6 +259,21 @@ For `TRANSCRIPTION_BACKEND=whispercpp`, build whisper.cpp on the host:
 `git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp && cd /opt/whisper.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2 --target whisper-cli && sh models/download-ggml-model.sh base.en`.
 This also requires `ffmpeg`; set `WHISPER_CPP_BIN=/opt/whisper.cpp/build/bin/whisper-cli`.
 It is the option for musl/Alpine hosts where faster-whisper has no wheels.
+
+For `TRANSCRIPTION_BACKEND=command`, `TRANSCRIPTION_COMMAND` runs any external
+transcriber per request: the bridge converts the clip to 16 kHz mono WAV,
+pipes it on the child's stdin, reads the transcript from stdout, and exports
+`TRANSCRIPTION_LANGUAGE` into the child's environment. `command` is the
+unrestricted form (any argv; root-only — not settable through the admin API);
+`TRANSCRIPTION_BACKEND=docker` is the bounded form — a fixed
+`docker run --rm -i --pull never --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --env TRANSCRIPTION_LANGUAGE --memory <MEM> --name <NAME> <IMAGE>` argv (`docker rm -f <NAME>` on timeout or failure, so a stuck container never outlives the request)
+with a validated image reference (`TRANSCRIPTION_DOCKER_IMAGE`, root-only:
+it picks the code that runs) and memory limit (`TRANSCRIPTION_DOCKER_MEMORY`,
+admin-settable). See
+`deploy/moonshine/` for a Docker sidecar (Moonshine, English-only, zero RAM
+while idle): `TRANSCRIPTION_BACKEND=docker` +
+`TRANSCRIPTION_DOCKER_IMAGE=moonshine-asr`.
+
 `WHISPER_CPP_FAST` (default on) uses greedy decoding and sizes the audio
 context to the clip instead of whisper's fixed 30 s window, roughly 2.5×
 faster on CPU-only hosts; set `WHISPER_CPP_FAST=false` for maximum accuracy.

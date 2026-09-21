@@ -1,8 +1,19 @@
+import re
 import shlex
 from functools import lru_cache
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DOCKER_IMAGE_RE = re.compile(
+    r"^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?/)?"
+    r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?"
+    r"(?:@sha256:[a-f0-9]{64})?$"
+)
+_DOCKER_MEMORY_RE = re.compile(r"^([0-9]+)([bkmg]?)$")
+_DOCKER_MEMORY_UNITS = {"": 1, "b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+_DOCKER_MEMORY_MIN = 6 * 1024**2  # docker rejects limits below 6 MiB
 
 
 class Settings(BaseSettings):
@@ -43,7 +54,10 @@ class Settings(BaseSettings):
         "DEVIN_POLL_FAST_SECONDS,DEVIN_WATCH_TIMEOUT_SECONDS,"
         "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
         "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_IMAGES_AS_DOCUMENTS,"
+        # TRANSCRIPTION_COMMAND and TRANSCRIPTION_DOCKER_IMAGE are deliberately
+        # excluded: both pick the code that runs (exec vector). Root-only.
         "TRANSCRIPTION_BACKEND,TRANSCRIPTION_MODEL,TRANSCRIPTION_LANGUAGE,"
+        "TRANSCRIPTION_DOCKER_MEMORY,"
         "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,WHISPER_CPP_FAST,"
         "WHISPER_CPP_EXTRA_ARGS,"
         "TELEGRAM_NOTIFICATION_MODE,"
@@ -67,6 +81,9 @@ class Settings(BaseSettings):
     transcription_language: str | None = None
     whisper_cpp_bin: str = "whisper-cli"
     whisper_cpp_model: str = "/opt/whisper.cpp/models/ggml-base.en.bin"
+    transcription_command: str = ""
+    transcription_docker_image: str = ""
+    transcription_docker_memory: str = "400m"
     whisper_cpp_fast: bool = True
     whisper_cpp_extra_args: str = ""
     telegram_attach_voice: bool = False
@@ -96,9 +113,53 @@ class Settings(BaseSettings):
                 "telegram_images_as_documents must be auto, true, or false"
             )
         self.transcription_backend = self.transcription_backend.casefold()
-        if self.transcription_backend not in {"api", "local", "whispercpp"}:
+        if self.transcription_backend not in {
+            "api",
+            "local",
+            "whispercpp",
+            "command",
+            "docker",
+        }:
             raise ValueError(
-                "transcription_backend must be api, local, or whispercpp"
+                "transcription_backend must be api, local, whispercpp, "
+                "command, or docker"
+            )
+        if self.transcription_backend == "command":
+            try:
+                argv = shlex.split(self.transcription_command)
+            except ValueError as exc:
+                raise ValueError(f"transcription_command is malformed: {exc}") from exc
+            if not argv:
+                raise ValueError(
+                    "transcription_command must be set when "
+                    "transcription_backend=command"
+                )
+        if (
+            self.transcription_backend == "docker"
+            and not self.transcription_docker_image.strip()
+        ):
+            raise ValueError(
+                "transcription_docker_image must be set when "
+                "transcription_backend=docker"
+            )
+        image = self.transcription_docker_image = self.transcription_docker_image.strip()
+        if image and not _DOCKER_IMAGE_RE.fullmatch(image):
+            raise ValueError(
+                "transcription_docker_image is not a valid image reference: "
+                f"{image!r}"
+            )
+        memory = self.transcription_docker_memory = (
+            self.transcription_docker_memory.strip()
+        )
+        match = _DOCKER_MEMORY_RE.fullmatch(memory)
+        if match is None:
+            raise ValueError(
+                "transcription_docker_memory must look like docker's "
+                f"<number>[b|k|m|g], got {memory!r}"
+            )
+        if int(match[1]) * _DOCKER_MEMORY_UNITS[match[2]] < _DOCKER_MEMORY_MIN:
+            raise ValueError(
+                f"transcription_docker_memory must be at least 6m, got {memory!r}"
             )
         return self
 
@@ -172,9 +233,12 @@ class Settings(BaseSettings):
 
     @property
     def transcription_enabled(self) -> bool:
-        return self.transcription_backend in {"local", "whispercpp"} or bool(
-            self.transcription_api_key
-        )
+        return self.transcription_backend in {
+            "local",
+            "whispercpp",
+            "command",
+            "docker",
+        } or bool(self.transcription_api_key)
 
 
 @lru_cache

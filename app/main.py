@@ -7,6 +7,7 @@ import os
 import secrets
 import shlex
 import time
+import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -43,7 +44,13 @@ from app.store import (
     Store,
 )
 from app.telegram import TelegramClient
-from app.transcription import transcribe_local, transcribe_whispercpp
+from app.transcription import (
+    docker_cleanup_command,
+    docker_transcription_command,
+    transcribe_command,
+    transcribe_local,
+    transcribe_whispercpp,
+)
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
 
 logging.basicConfig(level=logging.INFO)
@@ -1864,6 +1871,26 @@ class Bridge:
                 language,
                 fast=self.settings.whisper_cpp_fast,
                 extra_args=self.settings.whisper_cpp_extra_argv,
+            )
+        if self.settings.transcription_backend == "command":
+            return await transcribe_command(
+                content,
+                filename,
+                shlex.split(self.settings.transcription_command),
+                language,
+            )
+        if self.settings.transcription_backend == "docker":
+            name = f"transcribe-{uuid.uuid4().hex}"
+            return await transcribe_command(
+                content,
+                filename,
+                docker_transcription_command(
+                    self.settings.transcription_docker_image,
+                    self.settings.transcription_docker_memory,
+                    name,
+                ),
+                language,
+                cleanup=docker_cleanup_command(name),
             )
         if self.settings.transcription_backend == "local":
             model_name = (

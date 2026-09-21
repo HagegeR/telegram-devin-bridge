@@ -1,6 +1,9 @@
 import asyncio
+import io
 import shutil
+import sys
 import time
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,15 +12,24 @@ import pytest
 from app import transcription
 
 
+def _stream(data: bytes) -> asyncio.StreamReader:
+    reader = asyncio.StreamReader()
+    reader.feed_data(data)
+    reader.feed_eof()
+    return reader
+
+
 @pytest.mark.asyncio
 async def test_transcribe_whispercpp_returns_none_for_missing_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Process:
         returncode = 0
+        stdout = _stream(b"")
+        stderr = _stream(b"")
 
-        async def communicate(self) -> tuple[bytes, bytes]:
-            return b"", b""
+        async def wait(self) -> int:
+            return 0
 
     async def create_process(*args: str, **_: object) -> Process:
         if args[0] == "ffmpeg":
@@ -47,8 +59,12 @@ async def test_transcribe_whispercpp_runs_commands_and_normalizes_output(
     class Process:
         returncode = 0
 
-        async def communicate(self) -> tuple[bytes, bytes]:
-            return b"  Hello  there\n", b""
+        def __init__(self) -> None:
+            self.stdout = _stream(b"  Hello  there\n")
+            self.stderr = _stream(b"")
+
+        async def wait(self) -> int:
+            return 0
 
     async def create_process(*args: str, **_: object) -> Process:
         calls.append(args)
@@ -159,6 +175,338 @@ async def test_run_whispercpp_command_kills_process_on_timeout(
     )
     stdout, _ = await ps.communicate()
     assert b"sleep 30" not in stdout
+
+
+@pytest.mark.asyncio
+async def test_run_whispercpp_command_kills_grandchildren_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.1)
+    assert (
+        await transcription._run_whispercpp_command("sh", "-c", "sleep 31; sleep 32")
+        is None
+    )
+    ps = await asyncio.create_subprocess_exec(
+        "ps", "-eo", "args", stdout=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await ps.communicate()
+    assert b"sleep 31" not in stdout
+
+
+@pytest.mark.asyncio
+async def test_run_whispercpp_command_caps_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(transcription, "_MAX_OUTPUT", 1000)
+    assert await transcription._run_whispercpp_command("yes") is None
+    assert await transcription._run_whispercpp_command("echo", "ok") == b"ok\n"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_pipes_wav_on_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        with wave.open(str(wav_path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 1600)
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    text = await transcription.transcribe_command(
+        b"audio",
+        "voice.ogg",
+        [sys.executable, "-c", "import sys; print(len(sys.stdin.buffer.read()))"],
+        None,
+    )
+    assert text is not None
+    assert int(text) > 1600 * 2  # wav bytes incl. header reached stdin
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+async def test_to_wav16k_caps_duration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(transcription, "_MAX_SECONDS", 1)
+    src = tmp_path / "long.wav"
+    with wave.open(str(src), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8000)
+        wav.writeframes(b"\x00\x00" * 8000 * 5)
+    out = tmp_path / "out.wav"
+    assert await transcription._to_wav16k(src, out)
+    assert transcription._wav_duration_seconds(out) == pytest.approx(1.0, abs=0.05)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_passes_language_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 160)
+        wav_path.write_bytes(buffer.getvalue())
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    monkeypatch.setenv("TRANSCRIPTION_LANGUAGE", "fr")
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import os,sys; sys.stdin.buffer.read(); "
+            "print(os.environ.get('TRANSCRIPTION_LANGUAGE','unset'))"
+        ),
+    ]
+    assert (
+        await transcription.transcribe_command(b"audio", "voice.ogg", command, "en")
+        == "en"
+    )
+    # /lang auto must not leak the deployment default to the child
+    assert (
+        await transcription.transcribe_command(b"audio", "voice.ogg", command, None)
+        == "unset"
+    )
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 160)
+        wav_path.write_bytes(buffer.getvalue())
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    assert await transcription.transcribe_command(
+        b"audio", "voice.ogg", [sys.executable, "-c", "import sys; sys.exit(1)"], None
+    ) is None
+    assert await transcription.transcribe_command(
+        b"audio", "voice.ogg", [sys.executable, "-c", "pass"], None
+    ) is None
+
+
+def test_command_backend_config() -> None:
+    from app.config import Settings
+
+    with pytest.raises(ValueError, match="transcription_command"):
+        Settings(
+            _env_file=None,
+            telegram_bot_token="t",
+            telegram_webhook_secret="s",
+            devin_api_key="k",
+            public_base_url="http://x",
+            transcription_backend="command",
+        )
+    with pytest.raises(ValueError, match="malformed"):
+        Settings(
+            _env_file=None,
+            telegram_bot_token="t",
+            telegram_webhook_secret="s",
+            devin_api_key="k",
+            public_base_url="http://x",
+            transcription_backend="command",
+            transcription_command="docker run 'moonshine-asr",
+        )
+    config = Settings(
+        _env_file=None,
+        telegram_bot_token="t",
+        telegram_webhook_secret="s",
+        devin_api_key="k",
+        public_base_url="http://x",
+        transcription_backend="command",
+        transcription_command="docker run --rm -i moonshine-asr",
+    )
+    assert config.transcription_enabled
+    # exec vector: never admin-editable
+    assert "TRANSCRIPTION_COMMAND" not in config.admin_env_keys
+
+
+def _config(tmp_path: Path, **overrides: object):
+    from app.config import Settings
+
+    values = {
+        "telegram_bot_token": "t",
+        "telegram_webhook_secret": "s",
+        "devin_api_key": "k",
+        "public_base_url": "http://x",
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "moonshine-asr",
+        "moonshine-asr:v2",
+        "ghcr.io/org/img:1.2",
+        "localhost:5000/img",
+        "img@sha256:" + "a" * 64,
+    ],
+)
+def test_docker_image_valid(tmp_path: Path, image: str) -> None:
+    config = _config(
+        tmp_path,
+        transcription_backend="docker",
+        transcription_docker_image=image,
+    )
+    assert config.transcription_enabled
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["Moonshine", "img; rm -rf /", "img rm", "-img", "img:tag with space"],
+)
+def test_docker_image_invalid(tmp_path: Path, image: str) -> None:
+    with pytest.raises(ValueError, match="docker_image"):
+        _config(
+            tmp_path,
+            transcription_backend="docker",
+            transcription_docker_image=image,
+        )
+
+
+@pytest.mark.parametrize("memory", ["400m", "1g", "6291456", " 400m "])
+def test_docker_memory_valid(tmp_path: Path, memory: str) -> None:
+    config = _config(
+        tmp_path,
+        transcription_backend="docker",
+        transcription_docker_image="moonshine-asr",
+        transcription_docker_memory=memory,
+    )
+    assert config.transcription_docker_memory == memory.strip()
+
+
+@pytest.mark.parametrize("memory", ["400mb", "-1m", "1 g", "", "512", "5m", "0"])
+def test_docker_memory_invalid(tmp_path: Path, memory: str) -> None:
+    with pytest.raises(ValueError, match="docker_memory"):
+        _config(
+            tmp_path,
+            transcription_backend="docker",
+            transcription_docker_image="moonshine-asr",
+            transcription_docker_memory=memory,
+        )
+
+
+def test_docker_backend_requires_image(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="docker_image"):
+        _config(tmp_path, transcription_backend="docker")
+
+
+def test_docker_transcription_command_argv() -> None:
+    assert transcription.docker_transcription_command(
+        "moonshine-asr", "400m", "transcribe-1"
+    ) == [
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--pull",
+        "never",
+        "--network",
+        "none",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "64",
+        "--env",
+        "TRANSCRIPTION_LANGUAGE",
+        "--memory",
+        "400m",
+        "--name",
+        "transcribe-1",
+        "moonshine-asr",
+    ]
+    assert transcription.docker_cleanup_command("transcribe-1") == [
+        "docker",
+        "rm",
+        "-f",
+        "transcribe-1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_runs_cleanup_after_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        wav_path.write_bytes(b"")
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    marker = tmp_path / "cleaned"
+    assert (
+        await transcription.transcribe_command(
+            b"audio", "voice.ogg", ["false"], None, cleanup=["touch", str(marker)]
+        )
+        is None
+    )
+    assert marker.exists()
+    marker.unlink()
+    task = asyncio.ensure_future(
+        transcription.transcribe_command(
+            b"audio", "voice.ogg", ["sleep", "30"], None, cleanup=["touch", str(marker)]
+        )
+    )
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_command_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_ffmpeg(input_path: Path, wav_path: Path) -> bool:
+        wav_path.write_bytes(b"RIFF")
+        return True
+
+    monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
+    monkeypatch.setattr(transcription, "_slots", asyncio.Semaphore(1))
+    active = 0
+    peak = 0
+
+    async def fake_run(*args: str, **kwargs: object) -> bytes:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return b"ok"
+
+    monkeypatch.setattr(transcription, "_run_whispercpp_command", fake_run)
+    results = await asyncio.gather(
+        *(
+            transcription.transcribe_command(b"a", "v.ogg", ["x"], None)
+            for _ in range(5)
+        )
+    )
+    assert results == ["ok"] * 5
+    assert peak == 1
+
+
+def test_admin_allowlist_excludes_exec_vectors(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert "TRANSCRIPTION_DOCKER_MEMORY" in config.admin_env_keys
+    assert "TRANSCRIPTION_DOCKER_IMAGE" not in config.admin_env_keys
+    assert "TRANSCRIPTION_COMMAND" not in config.admin_env_keys
 
 
 def test_whispercpp_args_fast_short_clip() -> None:

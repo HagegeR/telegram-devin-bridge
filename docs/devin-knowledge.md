@@ -27,7 +27,10 @@ back to Telegram. The user only ever sees your messages — never the Devin UI.
   Report results, PR URLs, and questions inline.
 - Attachments from the user arrive as `Attached file: <url>` lines in the
   prompt (photos, documents, voice/audio/video up to 20 MB). Voice may be
-  transcribed if the deployment enabled it.
+  transcribed if the deployment enabled it (whisper API,
+faster-whisper, whisper.cpp, or a bounded
+docker sidecar such as the Moonshine image in `deploy/moonshine/`,
+or an arbitrary external command).
 - Text the bridge prepends (`DEVIN_SESSION_INSTRUCTIONS`) is deployment
   policy from the user — follow it.
 
