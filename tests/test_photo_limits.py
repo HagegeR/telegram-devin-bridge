@@ -7,7 +7,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from app.clients import CAPTION_LIMIT, TelegramClient, _caption
-from app.images import PHOTO_MAX_DIMENSION_SUM, fit_photo
+from app.images import PHOTO_MAX_DIMENSION_SUM, fit_photo, photo_fits_unchanged
 
 
 def png(width: int, height: int) -> bytes:
@@ -19,6 +19,15 @@ def png(width: int, height: int) -> bytes:
 def test_fit_photo_keeps_small_images_untouched() -> None:
     content = png(200, 100)
     assert fit_photo(content) == (content, "image/png")
+
+
+def test_photo_fits_unchanged_uses_telegram_photo_limits() -> None:
+    assert photo_fits_unchanged(png(800, 600))
+    assert not photo_fits_unchanged(png(1600, 900))
+    assert photo_fits_unchanged(png(1280, 1280))
+    assert not photo_fits_unchanged(png(4000, 200))
+    assert not photo_fits_unchanged(png(200, 4200))
+    assert not photo_fits_unchanged(b"not an image")
 
 
 def test_fit_photo_downscales_tall_pages() -> None:
