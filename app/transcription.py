@@ -62,9 +62,6 @@ async def transcribe_local(
             filename,
             language,
         )
-    except ImportError:
-        logger.warning("Local transcription failed", exc_info=True)
-        return None
     except Exception:
         logger.warning("Local transcription failed", exc_info=True)
         return None
