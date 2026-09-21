@@ -61,6 +61,8 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TRANSCRIPTION_LANGUAGE` | no | unset (auto-detect) |
 | `WHISPER_CPP_BIN` | no | `whisper-cli` |
 | `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` |
+| `WHISPER_CPP_FAST` | no | `true` |
+| `WHISPER_CPP_EXTRA_ARGS` | no | unset (input/model/output flags `-f`, `-m`, `-o*` are rejected) |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
 | `GITHUB_TOKEN` | no | unset |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
@@ -254,6 +256,9 @@ For `TRANSCRIPTION_BACKEND=whispercpp`, build whisper.cpp on the host:
 `git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp && cd /opt/whisper.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2 --target whisper-cli && sh models/download-ggml-model.sh base.en`.
 This also requires `ffmpeg`; set `WHISPER_CPP_BIN=/opt/whisper.cpp/build/bin/whisper-cli`.
 It is the option for musl/Alpine hosts where faster-whisper has no wheels.
+`WHISPER_CPP_FAST` (default on) uses greedy decoding and sizes the audio
+context to the clip instead of whisper's fixed 30 s window, roughly 2.5×
+faster on CPU-only hosts; set `WHISPER_CPP_FAST=false` for maximum accuracy.
 Artifact images and documents from Devin are forwarded to Telegram, and GitHub
 pull requests are rendered as compact cards when metadata is available.
 

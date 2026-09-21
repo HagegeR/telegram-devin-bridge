@@ -7,6 +7,8 @@ import contextlib
 import io
 import logging
 import tempfile
+import wave
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -127,12 +129,56 @@ async def _run_whispercpp_command(*args: str) -> bytes | None:
     return stdout
 
 
+def _wav_duration_seconds(path: Path) -> float | None:
+    try:
+        with wave.open(str(path), "rb") as wav:
+            return wav.getnframes() / wav.getframerate()
+    except (wave.Error, OSError, EOFError, ZeroDivisionError):
+        return None
+
+
+def whispercpp_args(
+    binary: str,
+    model_path: str,
+    wav_path: Path,
+    language: str | None,
+    duration_seconds: float | None,
+    fast: bool,
+    extra_args: Sequence[str],
+) -> list[str]:
+    args = [
+        binary,
+        "-m",
+        model_path,
+        "-f",
+        str(wav_path),
+        "-nt",
+        "-np",
+        "-l",
+        language or "auto",
+    ]
+    if fast:
+        args += ["-bs", "1", "-bo", "1"]
+        # the encoder always processes a 30 s window (audio ctx 1500);
+        # shrink it proportionally to the clip so short voice notes
+        # skip decoding silence
+        if duration_seconds is not None:
+            ctx = min(1500, int(duration_seconds / 30 * 1500) + 128)
+            if ctx < 1500:
+                args += ["-ac", str(ctx)]
+    args += list(extra_args)
+    return args
+
+
 async def transcribe_whispercpp(
     content: bytes,
     filename: str,
     binary: str,
     model_path: str,
     language: str | None,
+    *,
+    fast: bool = True,
+    extra_args: Sequence[str] = (),
 ) -> str | None:
     try:
         async with _slots:
@@ -162,15 +208,15 @@ async def transcribe_whispercpp(
                 ) is None:
                     return None
                 stdout = await _run_whispercpp_command(
-                    binary,
-                    "-m",
-                    model_path,
-                    "-f",
-                    str(wav_path),
-                    "-nt",
-                    "-np",
-                    "-l",
-                    language or "auto",
+                    *whispercpp_args(
+                        binary,
+                        model_path,
+                        wav_path,
+                        language,
+                        _wav_duration_seconds(wav_path),
+                        fast,
+                        extra_args,
+                    )
                 )
                 if stdout is None:
                     return None

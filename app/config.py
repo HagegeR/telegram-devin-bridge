@@ -1,3 +1,4 @@
+import shlex
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -43,7 +44,8 @@ class Settings(BaseSettings):
         "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
         "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_IMAGES_AS_DOCUMENTS,"
         "TRANSCRIPTION_BACKEND,TRANSCRIPTION_MODEL,TRANSCRIPTION_LANGUAGE,"
-        "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,"
+        "WHISPER_CPP_BIN,WHISPER_CPP_MODEL,WHISPER_CPP_FAST,"
+        "WHISPER_CPP_EXTRA_ARGS,"
         "TELEGRAM_NOTIFICATION_MODE,"
         "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
         "TELEGRAM_ALLOWED_USERS,TELEGRAM_DEBOUNCE_SECONDS,"
@@ -65,6 +67,8 @@ class Settings(BaseSettings):
     transcription_language: str | None = None
     whisper_cpp_bin: str = "whisper-cli"
     whisper_cpp_model: str = "/opt/whisper.cpp/models/ggml-base.en.bin"
+    whisper_cpp_fast: bool = True
+    whisper_cpp_extra_args: str = ""
     telegram_attach_voice: bool = False
     github_token: str | None = None
     self_update_command: str = "sh deploy/self-update.sh"
@@ -114,6 +118,22 @@ class Settings(BaseSettings):
                 ) from exc
         return self
 
+    @model_validator(mode="after")
+    def validate_whisper_cpp_extra_args(self) -> "Settings":
+        try:
+            tokens = shlex.split(self.whisper_cpp_extra_args)
+        except ValueError:
+            raise ValueError("whisper_cpp_extra_args has unbalanced quotes")
+        for token in tokens:
+            if (
+                token in {"-f", "--file", "-m", "--model"}
+                or token.startswith(("-o", "--output"))
+            ):
+                raise ValueError(
+                    f"whisper_cpp_extra_args may not contain {token}"
+                )
+        return self
+
     @staticmethod
     def _csv_ints(value: str) -> frozenset[int]:
         return frozenset(
@@ -145,6 +165,10 @@ class Settings(BaseSettings):
             for item in self.admin_env_allowlist.split(",")
             if item.strip()
         )
+
+    @property
+    def whisper_cpp_extra_argv(self) -> list[str]:
+        return shlex.split(self.whisper_cpp_extra_args)
 
     @property
     def transcription_enabled(self) -> bool:
