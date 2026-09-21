@@ -194,6 +194,7 @@ async def transcribe_command(
             if not await _to_wav16k(input_path, wav_path):
                 return None
             env = dict(os.environ)
+            env.pop("TRANSCRIPTION_LANGUAGE", None)
             if language:
                 env["TRANSCRIPTION_LANGUAGE"] = language
             stdout = await _run_whispercpp_command(

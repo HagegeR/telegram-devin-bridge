@@ -1,4 +1,5 @@
 import re
+import shlex
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -118,14 +119,16 @@ class Settings(BaseSettings):
                 "transcription_backend must be api, local, whispercpp, "
                 "command, or docker"
             )
-        if (
-            self.transcription_backend == "command"
-            and not self.transcription_command.strip()
-        ):
-            raise ValueError(
-                "transcription_command must be set when "
-                "transcription_backend=command"
-            )
+        if self.transcription_backend == "command":
+            try:
+                argv = shlex.split(self.transcription_command)
+            except ValueError as exc:
+                raise ValueError(f"transcription_command is malformed: {exc}") from exc
+            if not argv:
+                raise ValueError(
+                    "transcription_command must be set when "
+                    "transcription_backend=command"
+                )
         if (
             self.transcription_backend == "docker"
             and not self.transcription_docker_image.strip()

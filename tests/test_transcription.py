@@ -162,20 +162,24 @@ async def test_transcribe_command_passes_language_env(
         return True
 
     monkeypatch.setattr(transcription, "_to_wav16k", fake_ffmpeg)
-    text = await transcription.transcribe_command(
-        b"audio",
-        "voice.ogg",
-        [
-            sys.executable,
-            "-c",
-            (
-                "import os,sys; sys.stdin.buffer.read(); "
-                "print(os.environ.get('TRANSCRIPTION_LANGUAGE',''))"
-            ),
-        ],
-        "en",
+    monkeypatch.setenv("TRANSCRIPTION_LANGUAGE", "fr")
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import os,sys; sys.stdin.buffer.read(); "
+            "print(os.environ.get('TRANSCRIPTION_LANGUAGE','unset'))"
+        ),
+    ]
+    assert (
+        await transcription.transcribe_command(b"audio", "voice.ogg", command, "en")
+        == "en"
     )
-    assert text == "en"
+    # /lang auto must not leak the deployment default to the child
+    assert (
+        await transcription.transcribe_command(b"audio", "voice.ogg", command, None)
+        == "unset"
+    )
 
 
 @pytest.mark.asyncio
@@ -212,6 +216,16 @@ def test_command_backend_config() -> None:
             devin_api_key="k",
             public_base_url="http://x",
             transcription_backend="command",
+        )
+    with pytest.raises(ValueError, match="malformed"):
+        Settings(
+            _env_file=None,
+            telegram_bot_token="t",
+            telegram_webhook_secret="s",
+            devin_api_key="k",
+            public_base_url="http://x",
+            transcription_backend="command",
+            transcription_command="docker run 'moonshine-asr",
         )
     config = Settings(
         _env_file=None,
