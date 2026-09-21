@@ -1,3 +1,4 @@
+import shlex
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -117,6 +118,22 @@ class Settings(BaseSettings):
                 ) from exc
         return self
 
+    @model_validator(mode="after")
+    def validate_whisper_cpp_extra_args(self) -> "Settings":
+        try:
+            tokens = shlex.split(self.whisper_cpp_extra_args)
+        except ValueError:
+            raise ValueError("whisper_cpp_extra_args has unbalanced quotes")
+        for token in tokens:
+            if (
+                token in {"-f", "--file", "-m", "--model"}
+                or token.startswith(("-o", "--output"))
+            ):
+                raise ValueError(
+                    f"whisper_cpp_extra_args may not contain {token}"
+                )
+        return self
+
     @staticmethod
     def _csv_ints(value: str) -> frozenset[int]:
         return frozenset(
@@ -148,6 +165,10 @@ class Settings(BaseSettings):
             for item in self.admin_env_allowlist.split(",")
             if item.strip()
         )
+
+    @property
+    def whisper_cpp_extra_argv(self) -> list[str]:
+        return shlex.split(self.whisper_cpp_extra_args)
 
     @property
     def transcription_enabled(self) -> bool:

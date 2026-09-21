@@ -1863,7 +1863,7 @@ class Bridge:
                 self.settings.whisper_cpp_model,
                 language,
                 fast=self.settings.whisper_cpp_fast,
-                extra_args=shlex.split(self.settings.whisper_cpp_extra_args),
+                extra_args=self.settings.whisper_cpp_extra_argv,
             )
         if self.settings.transcription_backend == "local":
             model_name = (

@@ -62,7 +62,7 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `WHISPER_CPP_BIN` | no | `whisper-cli` |
 | `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` |
 | `WHISPER_CPP_FAST` | no | `true` |
-| `WHISPER_CPP_EXTRA_ARGS` | no | unset |
+| `WHISPER_CPP_EXTRA_ARGS` | no | unset (input/model/output flags `-f`, `-m`, `-o*` are rejected) |
 | `TELEGRAM_ATTACH_VOICE` | no | `false` |
 | `GITHUB_TOKEN` | no | unset |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |

@@ -192,3 +192,18 @@ def test_whisper_cpp_fast_settings(tmp_path: Path, monkeypatch) -> None:
     config = Settings(_env_file=None)
     assert config.whisper_cpp_fast is False
     assert config.whisper_cpp_extra_args == "-tr --foo"
+    assert config.whisper_cpp_extra_argv == ["-tr", "--foo"]
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    ["-tr \"", "-tr -f /etc/passwd", "-m x", "-otxt", "--output-file x"],
+)
+def test_whisper_cpp_extra_args_rejected(monkeypatch, extra_args: str) -> None:
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("WHISPER_CPP_EXTRA_ARGS", extra_args)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
