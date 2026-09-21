@@ -42,6 +42,7 @@ class Settings(BaseSettings):
         "DEVIN_POLL_FAST_SECONDS,DEVIN_WATCH_TIMEOUT_SECONDS,"
         "DEVIN_SETTLE_SECONDS,DEVIN_STATUS_AFTER_SECONDS,"
         "TELEGRAM_RICH_MESSAGES,TELEGRAM_DRAFTS,TELEGRAM_IMAGES_AS_DOCUMENTS,"
+        "TRANSCRIPTION_BACKEND,TRANSCRIPTION_MODEL,TRANSCRIPTION_LANGUAGE,"
         "TELEGRAM_NOTIFICATION_MODE,"
         "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
         "TELEGRAM_ALLOWED_USERS,TELEGRAM_DEBOUNCE_SECONDS,"
@@ -58,7 +59,9 @@ class Settings(BaseSettings):
     telegram_admin_user_ids: str = ""
     transcription_api_key: str | None = None
     transcription_base_url: str = "https://api.openai.com/v1"
+    transcription_backend: str = "api"
     transcription_model: str = "whisper-1"
+    transcription_language: str | None = None
     telegram_attach_voice: bool = False
     github_token: str | None = None
     self_update_command: str = "sh deploy/self-update.sh"
@@ -85,6 +88,9 @@ class Settings(BaseSettings):
             raise ValueError(
                 "telegram_images_as_documents must be auto, true, or false"
             )
+        self.transcription_backend = self.transcription_backend.casefold()
+        if self.transcription_backend not in {"api", "local"}:
+            raise ValueError("transcription_backend must be api or local")
         return self
 
     @model_validator(mode="after")
@@ -133,6 +139,12 @@ class Settings(BaseSettings):
             item.strip().upper()
             for item in self.admin_env_allowlist.split(",")
             if item.strip()
+        )
+
+    @property
+    def transcription_enabled(self) -> bool:
+        return self.transcription_backend == "local" or bool(
+            self.transcription_api_key
         )
 
 

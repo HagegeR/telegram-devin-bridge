@@ -43,6 +43,13 @@ if [ -z "$PREV" ] || ! git cat-file -e "$PREV^{commit}" 2>/dev/null; then
 elif ! git diff --quiet "$PREV" "$REMOTE" -- requirements.txt; then
   .venv/bin/pip install -q -r requirements.txt
 fi
+if [ -f requirements-transcription.txt ] \
+  && .venv/bin/python -c "import faster_whisper" >/dev/null 2>&1 \
+  && [ -n "$PREV" ] \
+  && git cat-file -e "$PREV^{commit}" 2>/dev/null \
+  && ! git diff --quiet "$PREV" "$REMOTE" -- requirements-transcription.txt; then
+  .venv/bin/pip install -q -r requirements-transcription.txt
+fi
 echo "$REMOTE" > "$MARKER"
 # restart detached so a caller running inside the service (the /update
 # command) can still reply before the process is recycled. Close the lock fd

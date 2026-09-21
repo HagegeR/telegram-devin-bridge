@@ -43,6 +43,7 @@ from app.store import (
     Store,
 )
 from app.telegram import TelegramClient
+from app.transcription import transcribe_local
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
 
 logging.basicConfig(level=logging.INFO)
@@ -366,7 +367,7 @@ class Bridge:
                 )
             return
         attachment = await self._attachment(message)
-        if attachment is not None and self.settings.transcription_api_key:
+        if attachment is not None and self.settings.transcription_enabled:
             transcript = await self._transcribe(message, attachment)
             if transcript is not None:
                 text = (
@@ -1846,6 +1847,18 @@ class Bridge:
             "video_note",
         )):
             return None
+        if self.settings.transcription_backend == "local":
+            model_name = (
+                "base"
+                if self.settings.transcription_model == "whisper-1"
+                else self.settings.transcription_model
+            )
+            return await transcribe_local(
+                content,
+                filename,
+                model_name,
+                self.settings.transcription_language or None,
+            )
         try:
             async with httpx.AsyncClient(
                 base_url=self.settings.transcription_base_url.rstrip("/"),
