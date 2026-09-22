@@ -124,9 +124,9 @@ elif [ -n "${INVOCATION_ID:-}" ]; then
   # only TERM the caller when it is the service's own main process:
   # INVOCATION_ID leaks into every shell on systemd hosts, so a manual
   # run (or a test subprocess) would otherwise kill the caller's shell
-  MAINPID=$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true)
-  [ -n "$MAINPID" ] || MAINPID=$(systemctl --user show -p MainPID --value "$SERVICE" 2>/dev/null || true)
-  if [ "${MAINPID:-0}" = "$PPID" ]; then
+  SYSTEM_MAINPID=$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true)
+  USER_MAINPID=$(systemctl --user show -p MainPID --value "$SERVICE" 2>/dev/null || true)
+  if [ "${SYSTEM_MAINPID:-0}" = "$PPID" ] || [ "${USER_MAINPID:-0}" = "$PPID" ]; then
     write_pending
     nohup sh -c "sleep 2; kill -TERM $PPID" >/dev/null 2>&1 9>&- &
     echo "restarting $SERVICE (supervisor respawn)"
