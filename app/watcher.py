@@ -27,12 +27,12 @@ from app.telegram import TelegramClient
 logger = logging.getLogger(__name__)
 
 
-def _send_as_photo(mode: str, content: bytes) -> bool:
+async def _send_as_photo(mode: str, content: bytes) -> bool:
     if mode == "false":
         return True
     if mode == "true":
         return False
-    return photo_fits_unchanged(content)
+    return await asyncio.to_thread(photo_fits_unchanged, content)
 
 TYPING_REFRESH_SECONDS = 4
 
@@ -158,7 +158,10 @@ class SessionWatcher:
                     if self.generation != gen:
                         continue
                     return
-                state = await self.devin.get_session(self.conversation.session_id)
+                state = await self.devin.get_session(
+                    self.conversation.session_id,
+                    since_event_id=last_event_id,
+                )
                 if self.generation != gen:
                     await self.sleep(interval)
                     continue
@@ -496,8 +499,10 @@ class SessionWatcher:
             for url in bare_attachment_urls
             if url.rstrip(".,;:!?") not in attachment_urls
         )
-        for url in attachment_urls:
-            downloaded = await self.devin.download_attachment(url)
+        downloads = await asyncio.gather(
+            *(self.devin.download_attachment(url) for url in attachment_urls)
+        )
+        for url, downloaded in zip(attachment_urls, downloads, strict=True):
             if downloaded is None:
                 if url in metadata_urls and url not in body:
                     body = f"{body}\n\n{url}".strip()
@@ -507,7 +512,7 @@ class SessionWatcher:
             try:
                 if (
                     content_type.startswith("image/")
-                    and _send_as_photo(
+                    and await _send_as_photo(
                         self.settings.telegram_images_as_documents,
                         content,
                     )
@@ -545,11 +550,17 @@ class SessionWatcher:
         )
         if state.pr_url and state.pr_url.startswith("https://github.com/"):
             pr_urls.append(state.pr_url)
-        for pr_url in dict.fromkeys(pr_urls):
-            metadata = await self.devin.fetch_github_pr(
-                pr_url,
-                self.settings.github_token,
+        pr_url_list = list(dict.fromkeys(pr_urls))
+        pr_metadata = await asyncio.gather(
+            *(
+                self.devin.fetch_github_pr(
+                    pr_url,
+                    self.settings.github_token,
+                )
+                for pr_url in pr_url_list
             )
+        )
+        for metadata in pr_metadata:
             if metadata is None:
                 continue
             number = metadata.get("number")

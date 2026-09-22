@@ -70,6 +70,7 @@ class Store:
         self.connection = sqlite3.connect(database_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.RLock()
+        self._last_processed_prune = 0.0
         self._initialize()
 
     @staticmethod
@@ -246,6 +247,26 @@ class Store:
             self.connection.execute(
                 "DELETE FROM message_index WHERE created_at < ?",
                 (time.time() - 30 * 86400,),
+            )
+            # Indexed after the column migrations above: some keys live on
+            # columns added by ALTER TABLE on legacy databases.
+            self.connection.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_conversations_chat_updated
+                    ON conversations(chat_id, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_conversations_updated
+                    ON conversations(updated_at);
+                CREATE INDEX IF NOT EXISTS idx_history_conv_id
+                    ON session_history(conv_key, id);
+                CREATE INDEX IF NOT EXISTS idx_choices_conv_message
+                    ON pending_choices(conv_key, message_id);
+                CREATE INDEX IF NOT EXISTS idx_long_texts_created
+                    ON long_texts(created_at);
+                CREATE INDEX IF NOT EXISTS idx_processed_updates_seen
+                    ON processed_updates(seen_at);
+                CREATE INDEX IF NOT EXISTS idx_message_index_created
+                    ON message_index(created_at);
+                """
             )
 
     def _migrate_legacy_sessions(self) -> None:
@@ -738,20 +759,29 @@ class Store:
         ]
 
     def mark_update_seen(self, update_id: int) -> bool:
-        cutoff = time.time() - 86400
+        now = time.time()
         with self.lock, self.connection:
-            self.connection.execute(
-                "DELETE FROM processed_updates WHERE seen_at < ?",
-                (cutoff,),
-            )
+            if now - self._last_processed_prune >= 3600:
+                self._last_processed_prune = now
+                self.connection.execute(
+                    "DELETE FROM processed_updates WHERE seen_at < ?",
+                    (now - 86400,),
+                )
             try:
                 self.connection.execute(
                     "INSERT INTO processed_updates(update_id, seen_at) VALUES (?, ?)",
-                    (update_id, time.time()),
+                    (update_id, now),
                 )
             except sqlite3.IntegrityError:
                 return False
         return True
+
+    def unmark_update_seen(self, update_id: int) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM processed_updates WHERE update_id = ?",
+                (update_id,),
+            )
 
     def add_choice(
         self,

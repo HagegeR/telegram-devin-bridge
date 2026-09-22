@@ -350,8 +350,22 @@ async def test_telegram_parse_fallback_preserves_then_drops_markup() -> None:
         nonlocal attempts
         attempts += 1
         bodies.append(json.loads(request.content))
-        if attempts < 3:
-            return httpx.Response(400, json={"ok": False})
+        if attempts == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "ok": False,
+                    "description": "Bad Request: can't parse entities",
+                },
+            )
+        if attempts == 2:
+            return httpx.Response(
+                400,
+                json={
+                    "ok": False,
+                    "description": "Bad Request: can't parse inline keyboard button",
+                },
+            )
         return httpx.Response(200, json={"ok": True, "result": {}})
 
     telegram = TelegramClient(
@@ -377,7 +391,9 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        async def get_session(self, _: str) -> SessionState:
+        async def get_session(
+            self, _: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             messages = (
                 [
@@ -487,7 +503,9 @@ async def test_watcher_skips_finish_notice_when_turns_queued(
     status: str, tmp_path: Path
 ) -> None:
     class QueuedDevin(_FakeDevin):
-        async def get_session(self, _: str) -> SessionState:
+        async def get_session(
+            self, _: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 status,
                 "title",
@@ -936,7 +954,9 @@ class _FakeDevin:
     ) -> str:
         return f"https://files.test/{filename}"
 
-    async def get_session(self, _session_id: str) -> SessionState:
+    async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
         return SessionState("working", "title", None, [])
 
     async def terminate(self, session_id: str) -> None:
@@ -972,7 +992,9 @@ class _FakeDevin:
 async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "lock.sqlite3"))
     class UntitledDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("working", None, None, [])
 
     devin = UntitledDevin()
@@ -1001,7 +1023,9 @@ async def test_follow_up_reuses_idle_session(
     tmp_path: Path, status: str, new_sessions: int
 ) -> None:
     class StatusDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(status, "title", None, [])
 
     devin = StatusDevin()
@@ -1019,7 +1043,9 @@ async def test_gone_session_starts_new_one_keeping_queue(
     tmp_path: Path, status_code: int
 ) -> None:
     class RejectingDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("finished", "title", None, [])
 
         async def send_message(self, session_id: str, text: str) -> None:
@@ -1216,7 +1242,9 @@ async def test_option_only_reply_and_pr_url_are_persisted(tmp_path: Path) -> Non
     class WatchDevin:
         calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             return SessionState(
                 "finished",
@@ -1476,7 +1504,9 @@ async def test_private_watcher_draft_falls_back_to_typing(tmp_path: Path) -> Non
     class DraftDevin:
         calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             return SessionState("working" if self.calls == 1 else "finished", "title", None, [])
 
@@ -1566,7 +1596,9 @@ async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
 
     class TitledDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
     await SessionWatcher(
@@ -1608,7 +1640,9 @@ async def test_watcher_keeps_manual_rename_during_auto_title(tmp_path: Path) -> 
             )
 
     class TitledDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
     telegram = ManualTelegram()
@@ -1660,7 +1694,9 @@ async def test_watcher_retries_manual_title_after_failed_reconcile(
             super().__init__()
             self.calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             return SessionState(
                 "working" if self.calls == 1 else "finished",
@@ -1712,7 +1748,9 @@ async def test_watcher_retries_topic_rename_on_terminal_poll(tmp_path: Path) -> 
                 raise httpx.ReadTimeout("temporary failure")
 
     class FinishedDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
     async def no_sleep(_: float) -> None:
@@ -1827,7 +1865,9 @@ async def test_watcher_preserves_manual_topic_title(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
 
     class TitledDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
     await SessionWatcher(
@@ -1861,7 +1901,9 @@ async def test_watcher_persists_session_title_without_topic(tmp_path: Path) -> N
     telegram = _FakeTelegram()
 
     class TitledDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
     await SessionWatcher(
@@ -1955,7 +1997,9 @@ async def test_watcher_retries_title_past_finished_status(tmp_path: Path) -> Non
             super().__init__()
             self.calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             return SessionState("finished", "A useful session title", None, [])
 
@@ -2009,7 +2053,9 @@ async def test_watcher_exits_after_bounded_title_retries(tmp_path: Path) -> None
             super().__init__()
             self.calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             return SessionState("finished", "A useful session title", None, [])
 
@@ -2059,7 +2105,9 @@ async def test_watcher_terminal_cleanup_after_title_retry_deadline(
             raise httpx.ReadTimeout("t")
 
     class FinishedDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
     now = 0.0
@@ -2122,7 +2170,9 @@ async def test_watcher_retries_topic_rename_after_failure(tmp_path: Path) -> Non
             super().__init__()
             self.calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             return SessionState(
                 "working" if self.calls == 1 else "finished",
@@ -2179,7 +2229,9 @@ async def test_watcher_tolerates_topic_rename_transport_errors(
             raise httpx.ReadTimeout("t")
 
     class ReplyDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 "finished",
                 "A useful session title",
@@ -2319,7 +2371,9 @@ async def test_second_options_message_clears_first_keyboard(tmp_path: Path) -> N
     class OptionsDevin:
         calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             messages = [
                 DevinMessage(
@@ -2684,6 +2738,107 @@ async def test_github_pr_fetch_rejects_invalid_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_session_since_event_id_skips_seen_messages() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status_enum": "working",
+                "title": "one",
+                "pull_request": None,
+                "messages": [
+                    {"type": "devin_message", "event_id": "e1", "message": "old"},
+                    {"type": "devin_message", "event_id": "e2", "message": "new"},
+                    {"type": "user_message", "event_id": "e3", "message": "hi"},
+                ],
+            },
+        )
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    state = await devin.get_session("s1", since_event_id="e1")
+    assert [m.event_id for m in state.messages] == ["e2", "e3"]
+    state = await devin.get_session("s1", since_event_id="gone")
+    assert [m.event_id for m in state.messages] == ["e1", "e2", "e3"]
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_github_pr_fetch_caches_within_ttl() -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"number": 1, "title": "PR"})
+
+    devin = DevinClient(
+        "fake-key",
+        "https://devin.test",
+        3,
+        transport=httpx.MockTransport(handler),
+    )
+    url = "https://github.com/org/repo/pull/1"
+    assert await devin.fetch_github_pr(url) == {"number": 1, "title": "PR"}
+    assert await devin.fetch_github_pr(url) == {"number": 1, "title": "PR"}
+    assert calls == 1
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_telegram_non_parse_400_does_not_retry() -> None:
+    attempts = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(
+            400,
+            json={"ok": False, "description": "Bad Request: chat not found"},
+        )
+
+    telegram = TelegramClient(
+        "fake-token",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(RuntimeError, match="chat not found"):
+        await telegram.send_message(222, "*hello*", parse_mode="MarkdownV2")
+    assert attempts == 1
+    await telegram.close()
+
+
+def test_text_link_expansion_multiple_entities() -> None:
+    from app.main import _expand_text_links
+
+    value = {
+        "text": "😀a link and another one😀",
+        "entities": [
+            {
+                "type": "text_link",
+                "offset": 4,
+                "length": 4,
+                "url": "https://one.test",
+            },
+            {
+                "type": "text_link",
+                "offset": 21,
+                "length": 3,
+                "url": "https://two.test",
+            },
+        ],
+    }
+    assert _expand_text_links(value, "text") == (
+        "😀a link (https://one.test) and another "
+        "one (https://two.test)😀"
+    )
+
+
+@pytest.mark.asyncio
 async def test_github_pr_fetch_does_not_send_devin_token() -> None:
     observed: dict[str, str] = {}
 
@@ -2774,7 +2929,9 @@ async def test_watcher_adaptive_polling_resets_after_delivery(tmp_path: Path) ->
     ]
 
     class AdaptiveDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return states.pop(0)
 
     sleeps: list[float] = []
@@ -2830,7 +2987,9 @@ async def test_watcher_status_callback_runs_after_delivery_and_persist(
     class FinishedDevin(_FakeDevin):
         calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             if self.calls == 1:
                 return SessionState("working", "title", None, [])
@@ -2881,7 +3040,9 @@ async def test_blocked_status_does_not_drain_until_watcher_finishes(
             super().__init__()
             self.calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             status = (
                 "working"
@@ -2957,7 +3118,9 @@ async def test_watcher_generation_change_uses_new_reply_anchor(
     class TriggerDuringPollDevin(_FakeDevin):
         calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             if self.calls == 1:
                 watcher.set_trigger(22)
@@ -3033,7 +3196,9 @@ async def test_watcher_status_and_cleanup(tmp_path: Path) -> None:
     ]
 
     class StatusDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return states.pop(0) if states else SessionState("finished", "title", None, [])
 
     telegram = _FakeTelegram()
@@ -3087,7 +3252,9 @@ async def test_cancelled_watcher_cleans_transient_status_messages(
     release_sleep = asyncio.Event()
 
     class WorkingDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("working", "title", None, [])
 
     async def sleep(_seconds: float) -> None:
@@ -3136,7 +3303,9 @@ async def test_watcher_private_draft_uses_status_text(tmp_path: Path) -> None:
     now = 0.0
 
     class DraftDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return (
                 SessionState("working", "title", None, [])
                     if now <= 10
@@ -3242,7 +3411,9 @@ async def test_startup_resumes_watchers_for_recent_conversations(
     tmp_path: Path,
 ) -> None:
     class BlockedDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 "blocked",
                 "title",
@@ -3300,7 +3471,9 @@ async def test_startup_resumes_watcher_without_cursor_delivers_downtime_reply(
     ).isoformat()
 
     class BlockedDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 "blocked",
                 "title",
@@ -3645,7 +3818,9 @@ async def test_resume_survives_failed_topic_edit(tmp_path: Path) -> None:
                 raise httpx.ReadTimeout("t")
 
     class FinishedDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState("finished", "Generated", "https://gh.test/pr/1", [])
 
     telegram = FailingTelegram()
@@ -3719,7 +3894,9 @@ async def test_watcher_anchors_only_first_reply_and_cleans_transient(
     assert conversation is not None
 
     class TwoMessageDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 "finished",
                 "title",
@@ -3760,7 +3937,9 @@ async def test_options_reply_does_not_paginate(tmp_path: Path) -> None:
     assert conversation is not None
 
     class OptionsDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 "finished",
                 "title",
@@ -3809,7 +3988,9 @@ async def test_queue_drains_when_watcher_status_becomes_blocked(
             super().__init__()
             self.calls = 0
 
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             self.calls += 1
             status = "working" if self.calls == 1 else "blocked"
             return SessionState(status, "title", None, [])
@@ -4135,7 +4316,9 @@ async def test_long_reply_extracts_document_and_pages(tmp_path: Path) -> None:
     assert conversation is not None
 
     class LongDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 "finished",
                 "title",
@@ -4752,6 +4935,8 @@ async def test_voice_transcription_success_and_failure_fallback(
             return None
         async def post(self, *_: object, **__: object) -> httpx.Response:
             return self.response
+        async def aclose(self) -> None:
+            return None
 
     voice = {**message("caption"), "text": None, "voice": {"file_id": "voice-1"}}
     telegram = _FakeTelegram()
@@ -5356,7 +5541,9 @@ async def test_forum_reaction_resolves_document_message_index(tmp_path: Path) ->
     telegram = _FakeTelegram()
 
     class DocumentDevin(_FakeDevin):
-        async def get_session(self, _session_id: str) -> SessionState:
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 "finished", "title", None,
                 [DevinMessage("devin_message", "e1", "```python\n" + "x" * 1600 + "\n```", None)],
@@ -5601,7 +5788,9 @@ async def test_watcher_finish_reaction_failure_is_not_reported_as_devin_error(
     tmp_path: Path,
 ) -> None:
     class FakeDevin:
-        async def get_session(self, _: str) -> SessionState:
+        async def get_session(
+            self, _: str, since_event_id: str | None = None
+        ) -> SessionState:
             return SessionState(
                 "finished",
                 "title",
