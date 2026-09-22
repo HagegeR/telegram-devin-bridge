@@ -543,7 +543,7 @@ def _help_text() -> str:
         "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
         "/resume <n>\n/status\n/stop (/cancel)\n/playbook [n] [text]\n/retry\n"
         "/steer <text>\n/lang [code]\n/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n"
-        "/update [check]\n/help"
+        "/update [check] [channel]\n/help"
     )
 
 

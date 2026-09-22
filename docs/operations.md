@@ -105,7 +105,10 @@ bump rules and release flow.
 
 Admins can run it from Telegram with `/update` or preview with
 `/update check` (`TELEGRAM_ADMIN_USER_IDS`, or `TELEGRAM_ALLOWED_USERS` when
-unset). `/update` acknowledges immediately with "Checking for updates…", and
+no admin list is set). `/update <channel>` (`/update stable`, `/update v1.2`)
+runs a one-shot jump to that channel's latest — it does not change the
+host's configured channel, so the next cron/service update reverts to it.
+`/update` acknowledges immediately with "Checking for updates…", and
 after the restart the bridge posts "Bridge updated … and back online" (plus a
 short changelog) to the chat that triggered it; cron updates post to the home
 chat set with `/sethome`, if any.

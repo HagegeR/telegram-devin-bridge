@@ -175,8 +175,8 @@ resolves the update channel (`SELF_UPDATE_CHANNEL`: a branch like `main`,
 checkout is deploy-only and local changes are discarded on purpose —
 reinstalls requirements if `requirements.txt` changed, and restarts the
 service detached. Admins can trigger it from Telegram with
-`/update` (or `/update check` for a dry run; requires
-`TELEGRAM_ADMIN_USER_IDS`).
+`/update` (or `/update check` for a dry run, `/update <channel>` for a
+one-shot switch; requires `TELEGRAM_ADMIN_USER_IDS`).
 
 Cron install (busybox run-parts requires NO file extension):
 

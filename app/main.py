@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import logging
 import os
+import re
 import secrets
 import shlex
 import time
@@ -1510,8 +1511,20 @@ class Bridge:
                 "Self-update is unavailable on this install (not a git checkout).",
             )
             return
-        if args.strip() == "check":
+        tokens = args.split()
+        if "check" in tokens:
             argv.append("--check")
+            tokens.remove("check")
+        if len(tokens) > 1 or (tokens and not re.fullmatch(r"[A-Za-z0-9][\w./-]*", tokens[0])):
+            await self.send_text(
+                message,
+                "Usage: /update [check] [channel] — channel is a branch, "
+                "stable, vN, vN.N, or vN.N.N.",
+                ephemeral=True,
+            )
+            return
+        if tokens:
+            argv.append(tokens[0])
         await self.send_text(message, "→ Checking for updates…")
         chat_id = _int(_mapping(message.get("chat")).get("id"))
         notify_target = str(chat_id)
