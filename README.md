@@ -1,367 +1,148 @@
+<div align="center">
+
+![Telegram–Devin Bridge](docs/assets/banner.jpg)
+
 # Telegram–Devin Bridge
 
-A FastAPI bridge that forwards Telegram conversations to Devin v1 sessions.
-Each direct chat or forum topic has an active Devin session, with SQLite
-history for switching between sessions.
+**Run Devin AI sessions from a Telegram chat.**
+Each DM or forum topic gets its own Devin session; replies stream back as rich Telegram messages.
 
-## Setup
+[![Python](https://img.shields.io/badge/python-%E2%89%A5%203.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Code style: Ruff](https://img.shields.io/badge/code%20style-Ruff-261230?logo=ruff&logoColor=white)](https://docs.astral.sh/ruff/)
+
+</div>
+
+---
+
+## Features
+
+- **Session per conversation** — every DM or forum topic maps to an active Devin session, with SQLite history to `/resume` older ones.
+- **Rich replies** — Devin's answers arrive as Telegram rich Markdown with inline `OPTIONS:` buttons, PR cards, and image/document attachments.
+- **Media in both directions** — photos, documents, voice, audio, and video up to 20 MB are uploaded to Devin; artifacts come back as photos or files.
+- **Voice transcription** — Whisper API, faster-whisper, whisper.cpp, an external command, or a bounded Docker sidecar (e.g. Moonshine).
+- **Chat-app behavior** — turn debounce, per-user rate limiting, typing indicators and drafts, queued turns while Devin is busy.
+- **Access control** — user/chat allowlists, admin approval flow, per-chat free-response mode.
+- **Ops built in** — diagnostics endpoint, narrow HTTP admin API, notifications webhook, and `/update` self-updates from Telegram.
+- **Deploy anywhere** — webhook behind Tailscale Funnel/HTTPS, or long polling with no public URL at all; OpenRC, systemd, and Fly.io supported.
+
+## How it works
+
+```mermaid
+flowchart LR
+    U([Telegram user]) -->|message| B[FastAPI bridge]
+    B -->|"create / message session"| D[(Devin API)]
+    D -->|"status + replies"| B
+    B -->|"rich Markdown + buttons"| U
+    B <--> S[("SQLite store")]
+```
+
+A single FastAPI process receives Telegram updates (webhook or long polling),
+creates or resumes the Devin session for that conversation, and a per-session
+watcher streams each new `devin_message` back to Telegram while it works.
+
+## Quick start
+
+Requires Python ≥ 3.12, a Telegram bot token, and a Devin **v1** API key
+(`apk_user_…` or `apk_…` — see [docs/configuration.md](docs/configuration.md)).
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-python -m app.set_webhook
-# Or run long polling without FastAPI:
+cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN + DEVIN_API_KEY
+```
+
+Then pick one of two modes:
+
+**Polling** — simplest; no public URL needed:
+
+```bash
+# .env: TELEGRAM_MODE=polling
 python -m app.poll
 ```
 
-The deployment must expose HTTPS and route the configured public URL to port
-8000. `GET /health` returns `{"status":"ok"}` without configuration values.
+**Webhook** — needs HTTPS routing your `PUBLIC_BASE_URL` to port 8000:
 
-## Configuration
+```bash
+# .env: TELEGRAM_MODE=webhook, PUBLIC_BASE_URL=https://<host>
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m app.set_webhook
+```
 
-| Variable | Required | Default |
-| --- | --- | --- |
-| `TELEGRAM_BOT_TOKEN` | yes | — |
-| `TELEGRAM_WEBHOOK_SECRET` | webhook only | — |
-| `DEVIN_API_KEY` | yes | — |
-| `DEVIN_SERVICE_USER_API_KEY` | no | unset |
-| `DEVIN_ORG_ID` | no | unset |
-| `TELEGRAM_MODE` | no | `webhook` (`webhook` or `polling`) |
-| `PUBLIC_BASE_URL` | webhook only | — |
-| `DATABASE_PATH` | no | `./bridge.sqlite3` |
-| `DEVIN_API_BASE_URL` | no | `https://api.devin.ai` |
-| `DEVIN_MAX_ACU_LIMIT` | no | `3` |
-| `DEVIN_POLL_FAST_SECONDS` | no | `1.0` |
-| `DEVIN_POLL_SECONDS` | no | `5` |
-| `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` |
-| `DEVIN_SETTLE_SECONDS` | no | `30` |
-| `DEVIN_STATUS_AFTER_SECONDS` | no | `8` |
-| `DEVIN_SESSION_INSTRUCTIONS` | no | empty |
-| `TELEGRAM_DEBOUNCE_SECONDS` | no | `1.5` |
-| `TELEGRAM_QUEUE_WHILE_BUSY` | no | `true` |
-| `TELEGRAM_LONG_REPLY_CHARS` | no | `3500` |
-| `TELEGRAM_RATE_LIMIT_PER_MINUTE` | no | `20` (`0` disables) |
-| `TELEGRAM_RICH_MESSAGES` | no | `true` |
-| `TELEGRAM_DRAFTS` | no | `false` |
-| `TELEGRAM_IMAGES_AS_DOCUMENTS` | no | `auto` (`sendPhoto` when the image fits unchanged; `true` = always `sendDocument`; `false` = always `sendPhoto`) |
-| `TELEGRAM_ALLOWED_USERS` | no | empty (`id` or `id:label`, e.g. `123:Ruben,456:Sarah`; labels show in `/users`) |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | no | empty |
-| `TELEGRAM_ALLOW_ALL_USERS` | no | `false` |
-| `TELEGRAM_FREE_RESPONSE_CHATS` | no | empty |
-| `TELEGRAM_HOME_CHANNEL` | no | unset |
-| `TELEGRAM_NOTIFICATION_MODE` | no | `important` |
-| `TELEGRAM_ADMIN_USER_IDS` | no | falls back to `TELEGRAM_ALLOWED_USERS` |
-| `TRANSCRIPTION_API_KEY` | no | unset |
-| `TRANSCRIPTION_BASE_URL` | no | `https://api.openai.com/v1` |
-| `TRANSCRIPTION_BACKEND` | no | `api` (`api`/`local`/`whispercpp`/`command`/`docker`) |
-| `TRANSCRIPTION_MODEL` | no | `whisper-1` |
-| `TRANSCRIPTION_LANGUAGE` | no | unset (auto-detect) |
-| `TRANSCRIPTION_COMMAND` | no | unset (required for `command` backend) |
-| `TRANSCRIPTION_DOCKER_IMAGE` | no | unset (required for `docker` backend) |
-| `TRANSCRIPTION_DOCKER_MEMORY` | no | `400m` |
-| `WHISPER_CPP_BIN` | no | `whisper-cli` |
-| `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` |
-| `WHISPER_CPP_FAST` | no | `true` |
-| `WHISPER_CPP_EXTRA_ARGS` | no | unset (input/model/output flags `-f`, `-m`, `-o*` are rejected) |
-| `TELEGRAM_ATTACH_VOICE` | no | `false` |
-| `GITHUB_TOKEN` | no | unset |
-| `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` |
-| `NOTIFY_SECRET` | no | unset (`/notify` disabled) |
-| `DOCTOR_SECRET` | no | unset (`/doctor` disabled) |
-| `ADMIN_SECRET` | no | unset (`/admin` disabled) |
-| `ADMIN_ENV_ALLOWLIST` | no | built-in non-secret key list |
-| `ADMIN_LOG_PATH` | no | `/var/log/telegram-devin-bridge.log` |
-| `ADMIN_RESTART_COMMAND` | no | OpenRC `rc-service` restart |
-| `BOT_USERNAME` | no | fetched from Telegram at startup |
-
-With allow-all disabled, an empty user/chat allowlist denies access and sends
-the requester their user ID once for onboarding. Group and supergroup messages
-must mention `@BOT_USERNAME`, reply to a bot message, or come from a
-`TELEGRAM_FREE_RESPONSE_CHATS` chat.
+`GET /health` returns `{"status":"ok"}`; `python -m app.doctor` runs the full
+deployment check list.
 
 ## Commands
 
-`/start`, `/help`, `/new [title]`, `/topic <name>`, `/close`, `/rename <name>`,
-`/sessions`, `/resume <n>`, `/status`, `/stop` (`/cancel`), `/playbook [n] [text]`, `/retry`,
-`/lang [code]`, `/whoami`, `/sethome`, `/settings`, `/usage`, `/users`, and `/revoke <id>` are
-available. `/new` creates a fresh active session without deleting history.
-`/topic <name>` creates a Telegram topic with its own Devin session and posts
-an instructional seed message into it. Private-chat topics must first be
-enabled from the chat's bot settings; groups must have Topics enabled.
-`/close` and `/rename` manage the current forum topic. React 🔁 to retry the
-last user message or 🛑 to stop the active session. Topics are renamed to the
-Devin session title once it is generated; `/rename <name>` overrides it.
-`/stop` asks for inline confirmation. `/playbook` lists available Devin
-playbooks or starts one. `/retry` resends the last user message.
-`/settings` controls notification, draft, status timer, and default playbook
-behavior for the current chat or topic. `/usage` reports Devin ACUs when an
-organization ID is configured. Administrators can approve private-chat access
-requests and manage approved users with `/users` and `/revoke`.
-`/lang [code]` sets a per-user voice transcription language, accepts `auto`, and
-resets to the configured default with `off`.
+| Command | What it does |
+| --- | --- |
+| `/new [title]` | Start a fresh session (history is kept) |
+| `/topic <name>` · `/close` · `/rename <name>` | Create and manage a forum topic with its own session |
+| `/sessions` · `/resume <n>` | List recent sessions; switch the active one |
+| `/status` | Title, status, and PR link of the active session |
+| `/stop` (`/cancel`) | Terminate the active session (asks for confirmation) |
+| `/steer <text>` | Inject a message into the running session immediately |
+| `/retry` | Resend the last user message |
+| `/playbook [n] [text]` | List or start a Devin playbook |
+| `/settings` | Notification, draft, status-timer, and default-playbook settings |
+| `/usage` | Devin ACU usage (needs `DEVIN_ORG_ID` + service-user key) |
+| `/lang [code]` | Per-user voice-transcription language (`auto`, `off`) |
+| `/whoami` · `/sethome` | Show IDs; set the notification target chat |
+| `/users` · `/revoke <id>` | Admin: manage approved users |
+| `/update [check]` | Admin: pull latest `main` and restart, or preview |
 
-## Notifications
+Reactions work too: 🔁 on your message retries it, 🛑 stops the session. Topics
+are renamed to the Devin session title once generated.
 
-When `NOTIFY_SECRET` is set, send a notification with:
+## Configuration
 
-```bash
-curl -X POST http://localhost:8000/notify \
-  -H 'Authorization: Bearer replace-with-notify-secret' \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"Deployment finished","silent":true}'
-```
+Only a handful of variables are required; the rest tune behavior. The full,
+grouped reference — including transcription backends, access control, and
+message-formatting knobs — lives in
+[docs/configuration.md](docs/configuration.md).
 
-The target is `chat_id`/`thread_id` in the request, the `/sethome` target, or
-`TELEGRAM_HOME_CHANNEL`. Notifications can set `markdown` to `false`.
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | yes | Bot token from @BotFather |
+| `DEVIN_API_KEY` | yes | Devin **v1** API key |
+| `TELEGRAM_MODE` | no | `webhook` (default) or `polling` |
+| `PUBLIC_BASE_URL` | webhook | Public HTTPS base URL |
+| `TELEGRAM_WEBHOOK_SECRET` | webhook | Random token verifying updates |
+| `DATABASE_PATH` | no | SQLite path (default `./bridge.sqlite3`) |
 
-`GET /doctor` requires `DOCTOR_SECRET` (Bearer auth, separate from
-`NOTIFY_SECRET`, 30 s cooldown between runs) and runs the deployment
-diagnostics, returning `{"results": [...], "ok": bool}`.
+With allow-all disabled and empty allowlists, the bot denies access and replies
+once with the requester's user ID for easy onboarding.
 
-## Diagnostics
+## HTTP API
 
-```bash
-python -m app.doctor                # human-readable check list
-python -m app.doctor --json         # machine-readable
-python -m app.doctor --attempts 10  # more DNS samples
-```
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /health` | — | Liveness probe |
+| `POST /telegram/webhook` | secret header | Telegram update receiver |
+| `POST /notify` | `NOTIFY_SECRET` | Push a message to a chat (used by Devin sessions) |
+| `GET /doctor` | `DOCTOR_SECRET` | Deployment diagnostics report |
+| `POST /admin` | `ADMIN_SECRET` | Narrow remote control: `doctor`, `logs`, `get-env`, `set-env`, `restart`, `update` |
 
-Connection failures to the Telegram and Devin APIs (DNS blips, dropped
-routes) are retried 5 times with exponential backoff (~15 s total);
-mid-flight failures are retried only for idempotent GETs so mutations are
-never duplicated. Longer outages still drop the reply and are logged as
-`Failed to process Telegram update`.
-
-The doctor verifies `.env` completeness, DNS reliability, `/etc/resolv.conf`
-hijacking, default routes and MTU, Tailscale funnel state, the Telegram and
-Devin APIs, the webhook registration, and local/public `/health`. Exit code is
-1 when any check fails.
+Details and curl examples: [docs/operations.md](docs/operations.md).
 
 ## Deployment
 
-See [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md)
-for the Alpine + Tailscale Funnel runbook (OpenRC unit in `deploy/openrc`,
-dnsmasq cache config in `deploy/dnsmasq`), including the network pitfalls hit
-in production (MagicDNS resolv.conf takeover, dead second NIC, jumbo MTU).
+| Style | When to pick it | Guide |
+| --- | --- | --- |
+| Webhook + Tailscale Funnel | Dedicated host, production | [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md) + `deploy/openrc/` |
+| Polling service | No public URL available | `deploy/vm/install.sh` (OpenRC/systemd) |
+| Fly.io | Managed container | `fly.toml`, SQLite volume at `/data` |
 
-Two deployment styles exist — pick one:
+Self-updates: `deploy/self-update.sh` pulls `origin/main`, reinstalls
+requirements when they changed, and restarts — triggerable by cron or `/update`.
 
-- `deploy/openrc/telegram-devin-bridge`: **webhook + Tailscale Funnel** unit —
-  uvicorn as root from `/root/telegram-devin-bridge`, supervise-daemon respawn.
-- `deploy/vm/install.sh`: **polling-mode** installer — `TELEGRAM_MODE=polling`,
-  service account under `/opt`, `python -m app.poll`; needs no public URL.
-
-## Admin API
-
-`POST /admin` with `Authorization: Bearer $ADMIN_SECRET` — a narrow,
-no-shell remote control for cloud sessions:
-
-| body | effect |
-| --- | --- |
-| `{"action":"doctor"}` | run the diagnostics, return the check list |
-| `{"action":"logs","lines":200}` | tail of the service log (secrets redacted; max 500) |
-| `{"action":"get-env"}` | values of the allowlisted non-secret `.env` keys |
-| `{"action":"set-env","key":"DEVIN_MAX_ACU_LIMIT","value":"5"}` | rewrite one allowlisted `.env` key (applies after `restart`) |
-| `{"action":"restart"}` | restart the service (detached) |
-| `{"action":"update"}` | run the self-updater |
+## Development
 
 ```bash
-curl -X POST https://<host>.<tailnet>.ts.net/admin   -H "Authorization: Bearer $ADMIN_SECRET"   -H 'Content-Type: application/json'   -d '{"action":"doctor"}'
-```
-
-Security: separate `ADMIN_SECRET`, `ADMIN_ENV_ALLOWLIST` whitelists only
-non-secret keys (tokens/keys are never readable or writable), every call is
-audit-logged and posts a Telegram notification, 10 req/min rate limit, and
-log output is secret-redacted. Failed auth attempts are tarpitted one at a
-time (1 s delay); while one is in flight every request gets 429 (≈60
-guesses/min cap), so a flood of bad tokens can temporarily block valid ones —
-use Tailscale SSH as fallback. Command and path keys can never be set via the
-API.
-
-## Self-update
-
-`deploy/self-update.sh` takes a host-wide lock and records a deploy marker, fetches `origin/<branch>`
-(`SELF_UPDATE_BRANCH`, default `main`), checks out the remote head, reinstalls requirements when
-`requirements.txt` changed, and restarts the OpenRC/systemd service detached. VM installs keep the
-source git checkout under `BRIDGE_HOME` so `/update` works; unprivileged services exit and let
-supervise-daemon or systemd respawn them.
-`--check` reports without touching anything. The host checkout is
-deploy-only: `git checkout -B` discards local changes on purpose. Admins can
-run it from Telegram with `/update` or preview with `/update check`
-(admins: `TELEGRAM_ADMIN_USER_IDS`, or `TELEGRAM_ALLOWED_USERS` when unset).
-
-`/update` acknowledges immediately with "Checking for updates…", and after the
-restart the bridge posts "Bridge updated … and back online" (plus a short
-changelog) to the chat that triggered it; cron updates post to the home chat
-set with `/sethome`, if any.
-
-On Alpine, install the bundled cron entry to poll every 15 minutes:
-
-```sh
-cp deploy/openrc/telegram-devin-bridge-update /etc/periodic/15min/
-chmod +x /etc/periodic/15min/telegram-devin-bridge-update
-```
-
-## Devin Knowledge
-
-`docs/devin-knowledge.md` is published to the Devin Knowledge API with:
-
-```bash
-python -m app.publish_knowledge            # create or update by name
-python -m app.publish_knowledge --dry-run  # print the payload only
-```
-
-## Media, topics, and formatting
-
-Photos, documents, voice messages, audio, video, and video notes up to
-Telegram's 20 MB download limit are uploaded to Devin and referenced in the
-user prompt. Telegram hidden `text_link` entities are expanded to
-`visible text (URL)` before the prompt is sent, including links following
-emoji. Devin replies use Telegram 10.3 rich Markdown messages when enabled, with
-MarkdownV2 formatting and 4096-character chunking as a fallback. Rich delivery
-normalizes hard line breaks while preserving fenced code and pipe tables. A
-final `OPTIONS: one | two` line becomes inline buttons (up to eight options,
-each at most 60 characters); selected choices are marked with a disabled
-button. Stop confirmations use the Bot API 10.3 danger and primary button
-styles. Unknown rich-message methods disable rich delivery for the process and
-continue with MarkdownV2.
-
-When `TELEGRAM_DRAFTS=true`, private chats receive a Telegram draft while Devin
-is working. Groups continue to receive typing actions. If drafts are rejected,
-the watcher falls back to typing for that session.
-
-Bot API 10.3 topic creation and implicit-topic renaming are supported. The
-first message in an implicitly named topic renames it from its first line.
-`/help`, `/sessions`, `/status`, and `/whoami` use ephemeral group replies
-when Telegram accepts them, and retry as normal messages if it does not.
-
-`DEVIN_SESSION_INSTRUCTIONS` is prepended verbatim to the prompt of every
-session the bridge starts — use it for org-specific guidance such as which
-injected secret grants Devin v3 API access for editing automations.
-
-`DEVIN_SETTLE_SECONDS` keeps a newly started watcher alive while Devin's API
-still reports a stale non-active status after the message is submitted.
-
-`TRANSCRIPTION_API_KEY` enables API transcription for voice, audio, and
-video-note messages. Set `TRANSCRIPTION_BACKEND=local` for key-free local
-transcription with faster-whisper, then install it with
-`pip install -r requirements-transcription.txt`. Local models include `tiny`
-(about 75 MB), `base` (about 150 MB), `small` (about 500 MB), `medium`, and
-`large-v3`; `base` is recommended on CPU. The first request downloads the
-selected model. Set `TRANSCRIPTION_LANGUAGE=en` to force English instead of
-automatic language detection. `TELEGRAM_ATTACH_VOICE=true` keeps the original
-audio attached.
-
-For `TRANSCRIPTION_BACKEND=whispercpp`, build whisper.cpp on the host:
-`git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp && cd /opt/whisper.cpp && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2 --target whisper-cli && sh models/download-ggml-model.sh base.en`.
-This also requires `ffmpeg`; set `WHISPER_CPP_BIN=/opt/whisper.cpp/build/bin/whisper-cli`.
-It is the option for musl/Alpine hosts where faster-whisper has no wheels.
-
-For `TRANSCRIPTION_BACKEND=command`, `TRANSCRIPTION_COMMAND` runs any external
-transcriber per request: the bridge converts the clip to 16 kHz mono WAV,
-pipes it on the child's stdin, reads the transcript from stdout, and exports
-`TRANSCRIPTION_LANGUAGE` into the child's environment. `command` is the
-unrestricted form (any argv; root-only — not settable through the admin API);
-`TRANSCRIPTION_BACKEND=docker` is the bounded form — a fixed
-`docker run --rm -i --pull never --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --env TRANSCRIPTION_LANGUAGE --memory <MEM> --name <NAME> <IMAGE>` argv (`docker rm -f <NAME>` on timeout or failure, so a stuck container never outlives the request)
-with a validated image reference (`TRANSCRIPTION_DOCKER_IMAGE`, root-only:
-it picks the code that runs) and memory limit (`TRANSCRIPTION_DOCKER_MEMORY`,
-admin-settable). See
-`deploy/moonshine/` for a Docker sidecar (Moonshine, English-only, zero RAM
-while idle): `TRANSCRIPTION_BACKEND=docker` +
-`TRANSCRIPTION_DOCKER_IMAGE=moonshine-asr`.
-
-`WHISPER_CPP_FAST` (default on) uses greedy decoding and sizes the audio
-context to the clip instead of whisper's fixed 30 s window, roughly 2.5×
-faster on CPU-only hosts; set `WHISPER_CPP_FAST=false` for maximum accuracy.
-Artifact images and documents from Devin are forwarded to Telegram, and GitHub
-pull requests are rendered as compact cards when metadata is available.
-
-Rapid text and file messages are debounced per chat/topic and joined into one
-Devin turn. When a session is working, later turns are queued and drained in
-order after it finishes; `/status` shows the queued count. Replies extract
-large fenced code blocks as `snippet-*` documents and paginate long text with
-a `Show more` button. Very large replies are sent as `reply.md` with a preview.
-Reply and forward context is included in prompts. The per-user sliding-window
-rate limit sends at most one warning per minute; set it to zero to disable it.
-
-Forum and private-chat topics use independent sessions whenever Telegram
-provides `message_thread_id` with either `chat.is_forum` or
-`is_topic_message`; ordinary DMs and groups use the chat ID.
-`message_thread_id` is preserved for replies and notifications.
-
-Polling mode calls `deleteWebhook` without dropping pending updates, then uses
-50-second Telegram long polling. The VM installer in `deploy/vm` runs
-`python -m app.poll` on Alpine (OpenRC) or any systemd Linux. Fly stores the
-SQLite database at `/data/bridge.sqlite3`; migrate it with:
-
-```bash
-flyctl ssh sftp get /data/bridge.sqlite3
-```
-
-## VM deployment
-
-From a checked-out repository, install or upgrade the bridge with:
-
-```bash
-sh deploy/vm/install.sh
-```
-
-The installer detects `apk`, `apt-get`, `dnf`, `yum`, or `pacman`, creates the
-`telegram-devin` service account, installs the bridge under
-`/opt/telegram-devin-bridge`, and configures polling with the database at
-`/var/lib/telegram-devin-bridge/bridge.sqlite3`. It is safe to rerun: pull
-the new revision and run the same command to upgrade in place. Use
-`BRIDGE_HOME=/some/path` to choose another installation directory. Inspect
-the detected package manager, init system, and Python version without making
-changes:
-
-```bash
-sh deploy/vm/install.sh --dry-run
-```
-
-When run from a git checkout, the installer preserves `.git` under
-`BRIDGE_HOME` so `/update` is available; a non-git source prints a note and
-does not support `/update`. The OpenRC service uses `supervise-daemon`, and
-unprivileged updates restart by exiting so OpenRC or systemd can respawn it.
-
-On Alpine/OpenRC:
-
-```bash
-rc-service telegram-devin-bridge status
-rc-service telegram-devin-bridge restart
-tail -f /var/log/telegram-devin-bridge.log
-tail -f /var/log/telegram-devin-bridge.err
-```
-
-On systemd Linux:
-
-```bash
-systemctl status telegram-devin-bridge
-systemctl restart telegram-devin-bridge
-journalctl -u telegram-devin-bridge -f
-```
-
-The installer creates `.env` from `.env.example` only when it does not exist,
-and preserves it during upgrades. Fill in `TELEGRAM_BOT_TOKEN`,
-`DEVIN_API_KEY`, and, when used, `DEVIN_SERVICE_USER_API_KEY`, `DEVIN_ORG_ID`,
-`TELEGRAM_ADMIN_USER_IDS`, `TELEGRAM_ALLOWED_USERS`,
-`TELEGRAM_ALLOWED_CHAT_IDS`, and `NOTIFY_SECRET`. Add any optional
-transcription or GitHub values needed by the deployment. `TELEGRAM_MODE` and
-`DATABASE_PATH` are set automatically for VM polling and should not contain
-real values in documentation.
-
-To migrate the SQLite database from Fly, download it and install it at the VM
-data path before starting the service:
-
-```bash
-flyctl ssh sftp get /data/bridge.sqlite3
-sudo install -o telegram-devin -g telegram-devin -m 0640 \
-  bridge.sqlite3 /var/lib/telegram-devin-bridge/bridge.sqlite3
-flyctl scale count 0
+pip install -r requirements-dev.txt
+pytest          # test suite
+ruff check .    # lint
 ```
 
 ## Safety
@@ -370,13 +151,21 @@ flyctl scale count 0
 - Keep the webhook behind HTTPS and use a random webhook secret.
 - Use a dedicated Devin API key with the smallest available scope.
 
+## Documentation
+
+- [docs/configuration.md](docs/configuration.md) — every environment variable, grouped by domain; access control; transcription backends; message-format behavior.
+- [docs/operations.md](docs/operations.md) — `/notify`, `/doctor`, `/admin`, self-update, VM service management, Fly DB migration, Devin Knowledge publishing.
+- [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md) — full Alpine + Tailscale Funnel runbook with real-world network pitfalls.
+- [docs/v2-design.md](docs/v2-design.md) — architecture and implementation brief (module map, inbound flow, watcher).
+- [docs/devin-knowledge.md](docs/devin-knowledge.md) — the knowledge note published to Devin itself.
+
 ## `OPTIONS:` convention
 
-Ask Devin to end a response with exactly one line such as:
+To offer the user buttons, Devin ends a reply with exactly one line:
 
 ```text
 OPTIONS: Run it | Explain it | Cancel
 ```
 
-The bridge removes that line from the message and renders one button per
-choice. The selected text is sent back to the same Devin session.
+The bridge strips that line and renders one button per choice (max 8, ≤ 60
+chars each); the picked text is sent back into the same Devin session.
