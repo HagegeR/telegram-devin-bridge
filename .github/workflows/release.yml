@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the main-ancestry gate needs full history
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -21,6 +23,11 @@ jobs:
           # numeric vX.Y.Z tags, so gate on the same contract
           echo "$GITHUB_REF_NAME" | grep -qE '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
             || { echo "tag '$GITHUB_REF_NAME' is not a strict vX.Y.Z semver"; exit 1; }
+          # tag channels only see tags reachable from main
+          # (self-update resolves with `git tag --merged origin/main`)
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD \
+            || { echo "tag '$GITHUB_REF_NAME' is not on main; tag channels would ignore this release"; exit 1; }
           # release body = the tag's CHANGELOG section + GitHub generated notes
           VER=${GITHUB_REF_NAME#v}
           awk -v ver="$VER" '
