@@ -1,5 +1,7 @@
 <div align="center">
 
+![Telegram–Devin Bridge](docs/assets/banner.jpg)
+
 # Telegram–Devin Bridge
 
 **Run Devin AI sessions from a Telegram chat.**

@@ -1,8 +1,11 @@
 # Deployment: Alpine Linux + Tailscale Funnel
 
+![The bridge host reaches Telegram through a Tailscale Funnel](assets/deployment-funnel.jpg)
+
 Runbook for hosting the bridge on a small Alpine host, exposed to Telegram via
-Tailscale Funnel. Tested on Alpine 3.23, kernel 6.18, x86_64. Docker is **not**
-required.
+Tailscale Funnel — the VM keeps no open inbound ports; the Funnel terminates
+TLS and forwards `https://<host>.<tailnet>.ts.net` to `127.0.0.1:8000`.
+Tested on Alpine 3.23, kernel 6.18, x86_64. Docker is **not** required.
 
 ## 1. Prerequisites
 
