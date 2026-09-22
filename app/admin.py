@@ -12,6 +12,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
@@ -331,9 +332,9 @@ def register_admin_route(
                 database_path = runtime.store.path
                 if not database_path.is_absolute():
                     database_path = _REPO_ROOT / database_path
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
                 dest = database_path.with_name(
-                    f"{database_path.stem}-backup-"
-                    f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.sqlite3"
+                    f"{database_path.stem}-backup-{stamp}.sqlite3"
                 )
                 await asyncio.to_thread(runtime.store.backup_to, dest)
                 return {"path": str(dest)}

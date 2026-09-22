@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -82,13 +84,26 @@ class Store:
             ]
 
     def backup_to(self, dest: Path) -> None:
+        # sqlite's online backup API tolerates concurrent readers/writers, so
+        # this deliberately runs outside self.lock; the snapshot is written to
+        # a temp file and renamed so a failed copy never leaves a valid-looking
+        # backup behind
         dest.parent.mkdir(parents=True, exist_ok=True)
-        target = sqlite3.connect(dest)
+        fd, tmp = tempfile.mkstemp(
+            dir=dest.parent, prefix=dest.name + ".", suffix=".tmp"
+        )
+        os.close(fd)
+        tmp_path = Path(tmp)
         try:
-            with self.lock:
+            target = sqlite3.connect(tmp_path)
+            try:
                 self.connection.backup(target)
-        finally:
-            target.close()
+            finally:
+                target.close()
+            os.replace(tmp_path, dest)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def conv_key(
