@@ -101,9 +101,11 @@ the session is already forwarded.
   whisper.cpp built from source in `/opt/whisper.cpp` (binary
   `build/bin/whisper-cli`, model `models/ggml-base.en.bin`, ~1.4 GB RAM box,
   musl — faster-whisper/ctranslate2 wheels do not install there).
-- Self-update: the host tracks `origin/main`; a cron job pulls every 15 min,
-  or the admin sends `/update` in Telegram. Merging to `main` is how code
-  reaches the host — never edit files on the host by hand.
+- Self-update: the host follows the update channel configured in
+  `/etc/conf.d/telegram-devin-bridge` (`SELF_UPDATE_CHANNEL`, `main` today) —
+  a cron job pulls every 15 min, or the admin sends `/update` in Telegram
+  (`/update <channel>` for a one-shot override). Merging to `main` is how
+  code reaches the host — never edit files on the host by hand.
 - After any bridge PR merges, assume the host still runs the OLD build until
   the user has run `/update` (or 15 min passed) — end the merge message with
   that reminder, and treat "it still does X" reports right after a merge as

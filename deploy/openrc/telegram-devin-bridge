@@ -8,6 +8,9 @@ output_log="/var/log/telegram-devin-bridge.log"
 error_log="/var/log/telegram-devin-bridge.log"
 respawn_delay=5
 respawn_max=0
+# conf.d vars shared with the cron updater must reach the supervised process
+# so /update and the admin API resolve the same update channel
+export SELF_UPDATE_CHANNEL SELF_UPDATE_BRANCH SELF_UPDATE_SERVICE
 depend() { need net; use dns; after tailscale dnsmasq; }
 
 start_pre() {

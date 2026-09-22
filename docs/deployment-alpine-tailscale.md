@@ -168,13 +168,15 @@ tailscale funnel status
 
 ## Self-update
 
-`deploy/self-update.sh` takes a host-wide lock and records a deploy marker, pulls `origin/main` (or
-`SELF_UPDATE_BRANCH`), checks out the remote head — the host checkout is
-deploy-only and local changes are discarded on purpose — reinstalls requirements
-if `requirements.txt` changed, and restarts the service detached. Admins can
-trigger it from Telegram with
-`/update` (or `/update check` for a dry run; requires
-`TELEGRAM_ADMIN_USER_IDS`).
+`deploy/self-update.sh` takes a host-wide lock and records a deploy marker,
+resolves the update channel (`SELF_UPDATE_CHANNEL`: a branch like `main`,
+`stable`, `v1`, `v1.2`, or a `vX.Y.Z` pin — see
+[versioning.md](versioning.md)), checks out the target revision — the host
+checkout is deploy-only and local changes are discarded on purpose —
+reinstalls requirements if `requirements.txt` changed, and restarts the
+service detached. Admins can trigger it from Telegram with
+`/update` (or `/update check` for a dry run, `/update <channel>` for a
+one-shot switch; requires `TELEGRAM_ADMIN_USER_IDS`).
 
 Cron install (busybox run-parts requires NO file extension):
 
@@ -183,9 +185,10 @@ cp deploy/openrc/telegram-devin-bridge-update /etc/periodic/15min/
 chmod +x /etc/periodic/15min/telegram-devin-bridge-update
 ```
 
-The branch is configured once in `/etc/conf.d/telegram-devin-bridge`
-(`SELF_UPDATE_BRANCH="main"`) and read by both the service environment and
-the cron wrapper — set it there, not in the cron file.
+The update channel is configured once in `/etc/conf.d/telegram-devin-bridge`
+(`SELF_UPDATE_CHANNEL="main"` — or `stable`, `v1`, `v1.2`, `vX.Y.Z`;
+`SELF_UPDATE_BRANCH` is the legacy fallback) and read by both the service
+environment and the cron wrapper — set it there, not in the cron file.
 
 ## Remote control from Devin cloud sessions
 

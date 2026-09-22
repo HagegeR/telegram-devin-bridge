@@ -8,6 +8,7 @@ Type=simple
 User=telegram-devin
 Group=telegram-devin
 WorkingDirectory=/opt/telegram-devin-bridge
+EnvironmentFile=-/etc/telegram-devin-bridge.env
 ExecStart=/opt/telegram-devin-bridge/.venv/bin/python -m app.poll
 Restart=always
 RestartSec=5

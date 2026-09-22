@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import logging
 import os
+import re
 import secrets
 import shlex
 import time
@@ -82,6 +83,19 @@ async def _run_command(
         await process.wait()
         return 124, "timed out after 300s"
     return process.returncode or 0, stdout.decode(errors="replace")
+
+
+_CHANNEL_CHARS = re.compile(r"[^\s~^:?*[\]\\]+")
+
+
+def _valid_channel(token: str) -> bool:
+    return (
+        bool(_CHANNEL_CHARS.fullmatch(token))
+        and ".." not in token
+        and "@{" not in token
+        and not token.startswith(("-", ".", "/"))
+        and not token.endswith(("/", ".lock"))
+    )
 
 
 Attachment = tuple[str, bytes, str]
@@ -1516,8 +1530,20 @@ class Bridge:
                 "Self-update is unavailable on this install (not a git checkout).",
             )
             return
-        if args.strip() == "check":
+        tokens = args.split()
+        if "check" in tokens:
             argv.append("--check")
+            tokens.remove("check")
+        if len(tokens) > 1 or (tokens and not _valid_channel(tokens[0])):
+            await self.send_text(
+                message,
+                "Usage: /update [check] [channel] — channel is a branch, "
+                "stable, vN, vN.N, or vN.N.N.",
+                ephemeral=True,
+            )
+            return
+        if tokens:
+            argv.append(tokens[0])
         await self.send_text(message, "→ Checking for updates…")
         chat_id = _int(_mapping(message.get("chat")).get("id"))
         notify_target = str(chat_id)

@@ -36,6 +36,7 @@ _NEVER_ENV_KEYS = frozenset(
     {
         "SELF_UPDATE_COMMAND",
         "SELF_UPDATE_BRANCH",
+        "SELF_UPDATE_CHANNEL",
         "ADMIN_RESTART_COMMAND",
         "ADMIN_ENV_ALLOWLIST",
         "ADMIN_ENV_PATH",

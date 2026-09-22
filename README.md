@@ -90,7 +90,7 @@ deployment check list.
 | `/lang [code]` | Per-user voice-transcription language (`auto`, `off`) |
 | `/whoami` · `/sethome` | Show IDs; set the notification target chat |
 | `/users` · `/revoke <id>` | Admin: manage approved users |
-| `/update [check]` | Admin: pull latest `main` and restart, or preview |
+| `/update [check] [channel]` | Admin: pull latest for the channel (default `main`) and restart, or preview |
 
 Reactions work too: 🔁 on your message retries it, 🛑 stops the session. Topics
 are renamed to the Devin session title once generated.
@@ -134,8 +134,10 @@ Details and curl examples: [docs/operations.md](docs/operations.md).
 | Polling service | No public URL available | `deploy/vm/install.sh` (OpenRC/systemd) |
 | Fly.io | Managed container | `fly.toml`, SQLite volume at `/data` |
 
-Self-updates: `deploy/self-update.sh` pulls `origin/main`, reinstalls
-requirements when they changed, and restarts — triggerable by cron or `/update`.
+Self-updates: `deploy/self-update.sh` resolves your release channel — `main`,
+`stable`, `v1`, `v1.2`, or an exact tag — reinstalls requirements when they
+changed, and restarts; triggerable by cron or `/update`. See
+[docs/versioning.md](docs/versioning.md).
 
 ## Development
 
@@ -163,6 +165,7 @@ ruff check .    # lint
 - [docs/configuration.md](docs/configuration.md) — every environment variable, grouped by domain; access control; transcription backends; message-format behavior.
 - [docs/operations.md](docs/operations.md) — `/notify`, `/doctor`, `/admin`, self-update, VM service management, Fly DB migration, Devin Knowledge publishing.
 - [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md) — full Alpine + Tailscale Funnel runbook with real-world network pitfalls.
+- [docs/versioning.md](docs/versioning.md) — release channels, semver bump rules, and how to cut a release; changes are logged in [CHANGELOG.md](CHANGELOG.md).
 - [docs/v2-design.md](docs/v2-design.md) — architecture and implementation brief (module map, inbound flow, watcher).
 - [docs/devin-knowledge.md](docs/devin-knowledge.md) — the knowledge note published to Devin itself.
 

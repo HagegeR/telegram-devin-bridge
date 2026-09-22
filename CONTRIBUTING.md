@@ -46,6 +46,12 @@ cheap to cover.
 - Fill in the PR template — what changed, why, and how you verified.
 - CI runs CodeQL and a Python analysis workflow; keep them green.
 
+## Releases
+
+Versioning scheme, update channels, and the release checklist live in
+[docs/versioning.md](docs/versioning.md); notable changes go in
+[CHANGELOG.md](CHANGELOG.md) under `Unreleased` until they ship.
+
 ## Reporting bugs and proposing features
 
 Use the issue templates — [bug report](../../issues/new?template=bug_report.yml)

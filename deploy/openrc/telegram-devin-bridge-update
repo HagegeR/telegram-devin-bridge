@@ -2,7 +2,8 @@
 # run-parts cron entry (no file extension!). Reads the branch/service config
 # shared with the service; unset vars fall back to defaults in self-update.sh.
 [ -f /etc/conf.d/telegram-devin-bridge ] && . /etc/conf.d/telegram-devin-bridge
+SELF_UPDATE_CHANNEL="${SELF_UPDATE_CHANNEL:-}"
 SELF_UPDATE_BRANCH="${SELF_UPDATE_BRANCH:-main}"
 SELF_UPDATE_SERVICE="${SELF_UPDATE_SERVICE:-telegram-devin-bridge}"
-export SELF_UPDATE_BRANCH SELF_UPDATE_SERVICE
+export SELF_UPDATE_CHANNEL SELF_UPDATE_BRANCH SELF_UPDATE_SERVICE
 exec sh /root/telegram-devin-bridge/deploy/self-update.sh >> /var/log/telegram-devin-bridge-update.log 2>&1

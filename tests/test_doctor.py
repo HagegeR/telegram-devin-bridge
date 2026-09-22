@@ -753,6 +753,21 @@ async def test_self_update_admin_and_check_arg(tmp_path: Path) -> None:
     await runtime.self_update(admin_msg, "check")
     assert commands[-1] == ["sh", "deploy/self-update.sh", "--check"]
 
+    await runtime.self_update(admin_msg, "stable")
+    assert commands[-1] == ["sh", "deploy/self-update.sh", "stable"]
+
+    await runtime.self_update(admin_msg, "check v1.2")
+    assert commands[-1] == ["sh", "deploy/self-update.sh", "--check", "v1.2"]
+
+    sent.clear()
+    await runtime.self_update(admin_msg, "release+candidate")
+    assert commands[-1] == ["sh", "deploy/self-update.sh", "release+candidate"]
+
+    sent.clear()
+    await runtime.self_update(admin_msg, "foo..bar")
+    assert commands[-1] == ["sh", "deploy/self-update.sh", "release+candidate"]
+    assert sent[0].startswith("Usage:")
+
     sent.clear()
     stranger_msg = {"from": {"id": 7}, "chat": {"id": 5}}
     previous_commands = list(commands)
