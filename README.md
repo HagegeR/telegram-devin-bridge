@@ -10,6 +10,8 @@ Each DM or forum topic gets its own Devin session; replies stream back as rich T
 [![Python](https://img.shields.io/badge/python-%E2%89%A5%203.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Code style: Ruff](https://img.shields.io/badge/code%20style-Ruff-261230?logo=ruff&logoColor=white)](https://docs.astral.sh/ruff/)
+[![CI](https://github.com/HagegeR/telegram-devin-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/HagegeR/telegram-devin-bridge/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/HagegeR/telegram-devin-bridge/actions/workflows/codeql.yml/badge.svg)](https://github.com/HagegeR/telegram-devin-bridge/actions/workflows/codeql.yml)
 
 </div>
 
@@ -41,6 +43,14 @@ A single FastAPI process receives Telegram updates (webhook or long polling),
 creates or resumes the Devin session for that conversation, and a per-session
 watcher streams each new `devin_message` back to Telegram while it works.
 
+It feels like this:
+
+> **You:** `/new` fix the flaky login test in my repo
+> **Bot:** Started session `devin-…` — *fix the flaky login test*
+> **Bot:** _(streams)_ Found it: `wait_for` races the async store. Fixing.
+> **Bot:** PR opened: [fix: serialize login writes](https://github.com/…) — CI green
+> [ `OPTIONS:` Merge it ] [ Explain the fix ] [ Close ]
+
 ## Quick start
 
 Requires Python ≥ 3.12, a Telegram bot token, and a Devin **v1** API key
@@ -52,6 +62,10 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN + DEVIN_API_KEY
 ```
+
+New here? [docs/getting-started.md](docs/getting-started.md) walks through the
+BotFather and API-key steps in about five minutes. Prefer containers?
+`docker compose up -d` with a filled-in `.env` works too.
 
 Then pick one of two modes:
 
@@ -132,12 +146,18 @@ Details and curl examples: [docs/operations.md](docs/operations.md).
 | --- | --- | --- |
 | Webhook + Tailscale Funnel | Dedicated host, production | [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md) + `deploy/openrc/` |
 | Polling service | No public URL available | `deploy/vm/install.sh` (OpenRC/systemd) |
+| Docker Compose | Single-host container | `docker-compose.yml`, named volume at `/data` |
 | Fly.io | Managed container | `fly.toml`, SQLite volume at `/data` |
 
 Self-updates: `deploy/self-update.sh` resolves your release channel — `main`,
 `stable`, `v1`, `v1.2`, or an exact tag — reinstalls requirements when they
 changed, and restarts; triggerable by cron or `/update`. See
 [docs/versioning.md](docs/versioning.md).
+
+**Scaling note.** The bridge is deliberately one process with one SQLite
+database — in-memory queues and watchers don't survive a second replica, and
+SQLite is a single-writer store. Run one instance per deployment; see
+[ROADMAP.md](ROADMAP.md) for the scaling work ahead.
 
 ## Development
 
@@ -159,15 +179,19 @@ ruff check .    # lint
 - Never commit `.env`, tokens, API keys, or real user/chat identifiers.
 - Keep the webhook behind HTTPS and use a random webhook secret.
 - Use a dedicated Devin API key with the smallest available scope.
+- Before going to production, walk [docs/hardening.md](docs/hardening.md).
 
 ## Documentation
 
+- [docs/getting-started.md](docs/getting-started.md) — five-minute polling-first setup from zero to first session.
 - [docs/configuration.md](docs/configuration.md) — every environment variable, grouped by domain; access control; transcription backends; message-format behavior.
+- [docs/hardening.md](docs/hardening.md) — production checklist: access, secrets, host, and operations.
 - [docs/operations.md](docs/operations.md) — `/notify`, `/doctor`, `/admin`, self-update, VM service management, Fly DB migration, Devin Knowledge publishing.
 - [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md) — full Alpine + Tailscale Funnel runbook with real-world network pitfalls.
 - [docs/versioning.md](docs/versioning.md) — release channels, semver bump rules, and how to cut a release; changes are logged in [CHANGELOG.md](CHANGELOG.md).
 - [docs/v2-design.md](docs/v2-design.md) — architecture and implementation brief (module map, inbound flow, watcher).
 - [docs/devin-knowledge.md](docs/devin-knowledge.md) — the knowledge note published to Devin itself.
+- [ROADMAP.md](ROADMAP.md) — what's shipped, what's next, what's later.
 
 ## `OPTIONS:` convention
 

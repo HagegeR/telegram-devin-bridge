@@ -1,0 +1,15 @@
+# Easiest way to run the bridge: `docker compose up -d`.
+# Polling mode needs no exposed port; webhook mode exposes 8000 for your
+# reverse proxy / tunnel to reach.
+services:
+  bridge:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - bridge-data:/data
+    restart: unless-stopped
+
+volumes:
+  bridge-data:

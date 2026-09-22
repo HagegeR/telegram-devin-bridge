@@ -4,8 +4,9 @@ Every environment variable, grouped by domain. All live in `.env` (see
 `.env.example`); only `TELEGRAM_BOT_TOKEN` and `DEVIN_API_KEY` are always
 required.
 
-> **Pitfall:** delete empty optional lines instead of leaving `KEY=` — an empty
-> string fails `int | None` parsing and pydantic refuses to start.
+> **Pitfall:** optional variables are commented out in `.env.example` — keep
+> them commented until you set them. An empty `KEY=` is parsed as an empty
+> string, not as unset.
 
 ## Core
 
