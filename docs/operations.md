@@ -99,9 +99,9 @@ them.
 | `v1.2` | newest tag within minor 1.2 |
 | `v1.2.3` | that exact tag (pin) |
 
-Tag mode fetches `v*` tags and checks out the tag detached; branch mode keeps
-the old `git checkout -B` behavior. See [versioning.md](versioning.md) for the
-bump rules and release flow.
+Tag mode fetches `v*` tags; both modes check out the target revision with a
+detached `HEAD` (the host checkout is deploy-only). See
+[versioning.md](versioning.md) for the bump rules and release flow.
 
 Admins can run it from Telegram with `/update` or preview with
 `/update check` (`TELEGRAM_ADMIN_USER_IDS`, or `TELEGRAM_ALLOWED_USERS` when
