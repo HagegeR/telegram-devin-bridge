@@ -57,6 +57,13 @@ class AccessRequest:
     decided_by: int | None
 
 
+@dataclass(frozen=True)
+class UserStats:
+    messages: int = 0
+    sessions: int = 0
+    last_seen_at: float | None = None
+
+
 class Store:
     def __init__(self, database_path: str) -> None:
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
@@ -150,6 +157,12 @@ class Store:
                     requested_at REAL NOT NULL,
                     decided_at REAL,
                     decided_by INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS user_stats (
+                    user_id INTEGER PRIMARY KEY,
+                    messages INTEGER NOT NULL DEFAULT 0,
+                    sessions INTEGER NOT NULL DEFAULT 0,
+                    last_seen_at REAL NOT NULL
                 );
                 """
             )
@@ -577,6 +590,30 @@ class Store:
                 """,
                 (status, time.time(), decided_by, user_id),
             )
+
+    def bump_user_stats(self, user_id: int, *, messages: int = 0, sessions: int = 0) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO user_stats(user_id, messages, sessions, last_seen_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    messages = messages + excluded.messages,
+                    sessions = sessions + excluded.sessions,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (user_id, messages, sessions, time.time()),
+            )
+
+    def get_user_stats(self, user_id: int) -> UserStats:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT messages, sessions, last_seen_at FROM user_stats WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return UserStats()
+        return UserStats(int(row["messages"]), int(row["sessions"]), float(row["last_seen_at"]))
 
     def list_access_requests(self, status: str = "approved") -> list[AccessRequest]:
         with self.lock:
