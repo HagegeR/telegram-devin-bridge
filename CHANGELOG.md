@@ -8,6 +8,25 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- **Onboarding**: `docs/getting-started.md` (polling-first, five minutes),
+  `docker-compose.yml`, `ROADMAP.md`, README badges/demo/scaling note, and
+  `docs/hardening.md` (production checklist).
+
+### Changed
+
+- `.env.example`: optional variables are commented out — copying the file
+  verbatim no longer crashes on empty values.
+- `Dockerfile`: runs as an unprivileged user (uid 10001), stores the SQLite
+  database on a `/data` volume, and gains a `/health` healthcheck.
+
+### Fixed
+
+- `deploy/self-update.sh` only SIGTERMs the caller when it is the service's
+  own `MainPID` — it previously killed any caller on systemd hosts, including
+  manual shells and test subprocesses.
+
 ### Performance
 
 - Session polling no longer rebuilds `DevinMessage` objects for events the
