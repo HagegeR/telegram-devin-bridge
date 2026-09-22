@@ -1,0 +1,20 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Auto-notes plus the CHANGELOG section cut in docs/versioning.md
+      # make up the release body; tag-channel hosts pick the tag up via
+      # self-update regardless of the GitHub release existing.
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
