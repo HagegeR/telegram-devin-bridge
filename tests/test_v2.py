@@ -4276,6 +4276,29 @@ async def test_access_request_admin_approval_denial_and_non_admin(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_users_lists_env_and_approved(tmp_path: Path) -> None:
+    config = settings(
+        tmp_path,
+        telegram_admin_user_ids="900",
+        telegram_allowed_users="222,900",
+    )
+    store = Store(str(tmp_path / "users.sqlite3"))
+    store.save_access_request(333, "bob", "Bob")
+    store.decide_access_request(333, "approved", 900)
+    telegram = _FakeTelegram()
+    runtime = Bridge(config, store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+
+    await runtime.handle_message(message("/users", user_id=222, chat_id=222))
+    assert telegram.sent[-1]["text"] == "Admins only."
+
+    await runtime.handle_message(message("/users", user_id=900, chat_id=900))
+    assert telegram.sent[-1]["text"] == (
+        "222 · allowed via .env\n900 · allowed via .env\n333 · Bob"
+    )
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_sethome_requires_admin(tmp_path: Path) -> None:
     config = settings(
         tmp_path,

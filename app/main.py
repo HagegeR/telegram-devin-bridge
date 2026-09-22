@@ -1460,13 +1460,18 @@ class Bridge:
     async def list_users(self, message: Mapping[str, object]) -> None:
         sender_id = _int(_mapping(message.get("from")).get("id"))
         if sender_id not in self.settings.admin_user_ids:
+            await self.send_text(message, "Admins only.", ephemeral=True)
             return
-        users = self.store.list_access_requests("approved")
-        text = "\n".join(
+        lines = [
+            f"{user_id} · allowed via .env"
+            for user_id in sorted(self.settings.allowed_users)
+        ]
+        lines.extend(
             f"{request.user_id} · {request.first_name or request.username or 'user'}"
-            for request in users
-        ) or "No approved users."
-        await self.send_text(message, text)
+            for request in self.store.list_access_requests("approved")
+            if request.user_id not in self.settings.allowed_users
+        )
+        await self.send_text(message, "\n".join(lines) or "No approved users.")
 
     async def self_update(self, message: Mapping[str, object], args: str) -> None:
         sender_id = _int(_mapping(message.get("from")).get("id"))
