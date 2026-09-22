@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/HagegeR/telegram-devin-bridge/security/advisories/new
+    about: Please report vulnerabilities privately — never in a public issue.
+  - name: Deployment runbook
+    url: https://github.com/HagegeR/telegram-devin-bridge/blob/main/docs/deployment-alpine-tailscale.md
+    about: Setup and ops questions are often answered here before opening an issue.

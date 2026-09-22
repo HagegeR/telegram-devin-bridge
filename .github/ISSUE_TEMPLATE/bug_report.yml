@@ -1,0 +1,45 @@
+name: Bug report
+description: Something the bridge does wrong — a lost message, a broken command, a failed deploy.
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Redact all tokens, user IDs, and chat IDs from
+        logs and `.env` values before pasting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, what actually happened.
+      placeholder: "Sent a voice note → got a voice.ogg attachment instead of a transcript"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Deployment mode
+      options:
+        - webhook
+        - polling
+        - fly.io
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / diagnostics
+      description: Relevant service log lines (secrets redacted) or `python -m app.doctor` output.
+      render: text
+    validations:
+      required: false

@@ -1,0 +1,27 @@
+name: Feature request
+description: A new command, endpoint, backend, or deployment option.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The workflow or pain point, not just the feature name.
+      placeholder: "When the bridge restarts mid-session, queued turns are lost and users get no notice"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Command syntax, env vars, or behavior you have in mind — a sketch is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, or why existing config doesn't cover it.
+    validations:
+      required: false
