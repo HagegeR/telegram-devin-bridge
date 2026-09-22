@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 import app.doctor as doctor_module
 from app.config import Settings
+from app.store import Store
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +48,21 @@ _NEVER_ENV_KEYS = frozenset(
 _RATE_LIMIT = 10  # requests per minute
 _AUTH_FAIL_DELAY = 1.0
 
-ACTIONS = ("doctor", "logs", "get-env", "set-env", "restart", "update")
+ACTIONS = (
+    "doctor",
+    "logs",
+    "get-env",
+    "set-env",
+    "restart",
+    "update",
+    "db-check",
+    "backup",
+)
 
 
 class AdminRuntime(Protocol):
+    store: Store
+
     async def notify(
         self,
         text: str,
@@ -310,6 +322,21 @@ def register_admin_route(
             if action == "restart":
                 await spawn_shell(settings.admin_restart_command)
                 return {"scheduled": True}
+
+            if action == "db-check":
+                problems = await asyncio.to_thread(runtime.store.integrity_check)
+                return {"ok": problems == ["ok"], "results": problems}
+
+            if action == "backup":
+                database_path = runtime.store.path
+                if not database_path.is_absolute():
+                    database_path = _REPO_ROOT / database_path
+                dest = database_path.with_name(
+                    f"{database_path.stem}-backup-"
+                    f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.sqlite3"
+                )
+                await asyncio.to_thread(runtime.store.backup_to, dest)
+                return {"path": str(dest)}
 
             # action == "update"
             argv = shlex.split(settings.self_update_command)

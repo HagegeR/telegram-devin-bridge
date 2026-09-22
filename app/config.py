@@ -1,6 +1,8 @@
 import re
 import shlex
 from functools import lru_cache
+from types import NoneType
+from typing import get_args
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -91,6 +93,23 @@ class Settings(BaseSettings):
     self_update_command: str = "sh deploy/self-update.sh"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def empty_string_means_unset(cls, values: object) -> object:
+        # an empty `KEY=` in .env or the environment reads as unset for every
+        # optional variable, never as the empty string
+        if not isinstance(values, dict):
+            return values
+        optional = {
+            name
+            for name, field in cls.model_fields.items()
+            if NoneType in get_args(field.annotation)
+        }
+        return {
+            key: None if value == "" and key in optional else value
+            for key, value in values.items()
+        }
 
     @model_validator(mode="after")
     def validate_transport(self) -> "Settings":

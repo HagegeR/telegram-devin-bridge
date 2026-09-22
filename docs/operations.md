@@ -59,6 +59,8 @@ Devin APIs, the webhook registration, and local/public `/health`. Exit code is
 | `{"action":"set-env","key":"DEVIN_MAX_ACU_LIMIT","value":"5"}` | rewrite one allowlisted `.env` key (applies after `restart`) |
 | `{"action":"restart"}` | restart the service (detached; reply arrives before the restart) |
 | `{"action":"update"}` | run the self-updater |
+| `{"action":"db-check"}` | SQLite `PRAGMA integrity_check` — `{"ok":true}` when clean |
+| `{"action":"backup"}` | online backup of `DATABASE_PATH` to `<name>-backup-<UTC stamp>.sqlite3` beside the database; returns `{"path": …}` |
 
 ```bash
 curl -X POST https://<host>.<tailnet>.ts.net/admin \

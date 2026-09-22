@@ -156,7 +156,7 @@ async def handle_command(
     )
     conversation = runtime.store.get_conversation(conv_key)
     if command in {"start", "help"}:
-        help_text = _help_text()
+        help_text = _start_text() if command == "start" else _help_text()
         if (
             _mapping(message.get("chat")).get("type") == "private"
             and not runtime.bot_topics_enabled
@@ -548,12 +548,44 @@ def _parse(text: str) -> tuple[str, str]:
     return match.group(1).lower().replace("_", "-"), (match.group(2) or "").strip()
 
 
+def _start_text() -> str:
+    return (
+        "👋 I'm your bridge to Devin.\n\n"
+        "Just send a message and it becomes a Devin session in this chat — "
+        "replies stream back here, with buttons when Devin asks a question. "
+        "Photos, documents, and voice notes are sent along as attachments.\n\n"
+        "First steps:\n"
+        "• /new <title> — start a session explicitly\n"
+        "• /status — what Devin is doing right now\n"
+        "• /settings — notifications, drafts, defaults\n"
+        "• /help — every command\n\n"
+        "Reactions: 🔁 on your message retries it, 🛑 stops the session."
+    )
+
+
 def _help_text() -> str:
     return (
-        "/new [title]\n/topic <name>\n/close\n/rename <name>\n/sessions\n"
-        "/resume <n>\n/status\n/stop (/cancel)\n/playbook [n] [text]\n/retry\n"
-        "/steer <text>\n/lang [code]\n/settings\n/usage\n/whoami\n/sethome\n/users\n/revoke <id>\n"
-        "/update [check] [channel]\n/help"
+        "# Sessions\n"
+        "/new [title] — start a fresh session\n"
+        "/status — what Devin is doing\n"
+        "/stop (/cancel) — terminate the session\n"
+        "/retry — resend your last message\n"
+        "/steer <text> — inject into the running session\n"
+        "/sessions · /resume <n> — history and switching\n\n"
+        "# Topics\n"
+        "/topic <name> — new topic with its own session\n"
+        "/rename <name> — rename this topic\n"
+        "/close — close this topic's session\n\n"
+        "# Setup and admin\n"
+        "/playbook [n] [text] — list or run a playbook\n"
+        "/settings — notifications, drafts, defaults\n"
+        "/lang [code] — voice-note language\n"
+        "/usage — Devin ACU usage\n"
+        "/whoami — your IDs and access\n"
+        "/sethome — route notifications here\n"
+        "/users · /revoke <id> — approved users (admin)\n"
+        "/update [check] [channel] — self-update (admin)\n\n"
+        "Reactions: 🔁 retry · 🛑 stop"
     )
 
 

@@ -84,8 +84,19 @@ def test_admin_user_ids_fall_back_to_allowed_users(tmp_path: Path) -> None:
     assert explicit.admin_user_ids == frozenset({42})
 
 
-def test_load_settings_or_error_empty_int(monkeypatch) -> None:
+def test_load_settings_or_error_empty_optional_reads_unset(monkeypatch) -> None:
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "x")
+    monkeypatch.setenv("DEVIN_API_KEY", "x")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://x.example")
+    loaded = doctor.load_settings_or_error()
+    assert isinstance(loaded, Settings)
+    assert loaded.telegram_home_channel is None
+
+
+def test_load_settings_or_error_bad_int(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "abc")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "x")
     monkeypatch.setenv("DEVIN_API_KEY", "x")

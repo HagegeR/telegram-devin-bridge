@@ -67,11 +67,28 @@ class UserStats:
 class Store:
     def __init__(self, database_path: str) -> None:
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
+        self.path = Path(database_path)
         self.connection = sqlite3.connect(database_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.RLock()
         self._last_processed_prune = 0.0
         self._initialize()
+
+    def integrity_check(self) -> list[str]:
+        with self.lock:
+            return [
+                row[0]
+                for row in self.connection.execute("PRAGMA integrity_check")
+            ]
+
+    def backup_to(self, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        target = sqlite3.connect(dest)
+        try:
+            with self.lock:
+                self.connection.backup(target)
+        finally:
+            target.close()
 
     @staticmethod
     def conv_key(

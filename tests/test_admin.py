@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from fastapi import FastAPI
 
 from app.admin import register_admin_route
 from app.config import Settings
+from app.store import Store
 
 
 def settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -71,7 +73,10 @@ def make_app(tmp_path: Path, sleep_func=None, **overrides: object):
     async def fake_sleep(delay: float) -> None:
         sleeps.append(delay)
 
-    runtime = SimpleNamespace(notify=fake_notify)
+    runtime = SimpleNamespace(
+        notify=fake_notify,
+        store=Store(str(tmp_path / "bridge.sqlite3")),
+    )
     app = FastAPI()
     register_admin_route(
         app,
@@ -135,7 +140,7 @@ async def test_admin_unknown_action(tmp_path: Path) -> None:
         (
             "Admin API: invalid — error 400: "
             "unknown action; one of ['doctor', 'logs', 'get-env', 'set-env', "
-            "'restart', 'update']"
+            "'restart', 'update', 'db-check', 'backup']"
         )
     ]
 
@@ -620,3 +625,39 @@ async def test_admin_authenticated_rate_limit_notifies(tmp_path: Path) -> None:
     assert [response.status_code for response in responses[:10]] == [200] * 10
     assert responses[10].status_code == 429
     assert any("error 429" in notice for notice in notices)
+
+
+@pytest.mark.asyncio
+async def test_admin_db_check_ok(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await authed(client, {"action": "db-check"})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "results": ["ok"]}
+
+
+@pytest.mark.asyncio
+async def test_admin_backup_copies_database(tmp_path: Path) -> None:
+    app, *_ = make_app(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await authed(client, {"action": "backup"})
+    assert response.status_code == 200
+    dest = Path(response.json()["path"])
+    assert dest.name.startswith("bridge-backup-")
+    assert dest.suffix == ".sqlite3"
+    copy = sqlite3.connect(dest)
+    try:
+        assert copy.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        tables = {
+            row[0]
+            for row in copy.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "conversations" in tables
+    finally:
+        copy.close()

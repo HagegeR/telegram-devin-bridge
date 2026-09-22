@@ -10,12 +10,21 @@ and deployment update channels.
 
 ### Added
 
+- `/admin` actions `db-check` (SQLite `PRAGMA integrity_check`) and `backup`
+  (online backup to `<name>-backup-<UTC stamp>.sqlite3` beside the database).
+- Startup logs one summary line (mode, bot, database, access counts) and
+  warns when placeholder `replace-with-*` secrets are still configured.
+- `/start` sends a short onboarding greeting; `/help` is grouped by area
+  with one-line descriptions.
 - **Onboarding**: `docs/getting-started.md` (polling-first, five minutes),
   `docker-compose.yml`, `ROADMAP.md`, README badges/demo/scaling note, and
   `docs/hardening.md` (production checklist).
 
 ### Changed
 
+- Empty `KEY=` in `.env` or the environment now reads as unset for every
+  optional variable — a copied-but-unfilled file can no longer crash on
+  settings parsing (e.g. `TELEGRAM_HOME_CHANNEL=`).
 - `.env.example`: optional variables are commented out — copying the file
   verbatim no longer crashes on empty values.
 - `Dockerfile`: runs as an unprivileged user (uid 10001), stores the SQLite
