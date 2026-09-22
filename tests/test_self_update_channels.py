@@ -185,9 +185,10 @@ def test_supervised_caller_gets_termed(deploy_clone, tmp_path: Path):
         "INVOCATION_ID": "test",
     }
     result = subprocess.run(
-        # the sleep keeps the wrapper alive for the TERM; its fds are closed
-        # so the orphaned child does not hold the output pipes after the kill
-        ["sh", "-c", "sh deploy/self-update.sh release; sleep 30 </dev/null >&- 2>&-"],
+        # `exec` makes the sleep itself the TERM target's child that gets
+        # killed; a plain `; sleep 30` would leave an orphaned sleep
+        # reparented to init and visible to other tests' `ps` listings
+        ["sh", "-c", "sh deploy/self-update.sh release; exec sleep 30"],
         cwd=clone,
         env=env,
         capture_output=True,
