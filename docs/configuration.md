@@ -34,6 +34,13 @@ required.
 | `DEVIN_SETTLE_SECONDS` | no | `30` | Keeps a new watcher alive while the API still reports a stale non-active status after submit. |
 | `DEVIN_STATUS_AFTER_SECONDS` | no | `8` | Delay before the bridge reports session status. |
 
+`DEVIN_SESSION_INSTRUCTIONS` can also carry a reply style. A "product voice"
+recipe that mirrors the bridge's own message chrome (◆/→/✓/⚠/ℹ/⏳/✅/💾):
+
+```dotenv
+DEVIN_SESSION_INSTRUCTIONS="Style every reply like a shipped product, not a chat log. While working, send short standalone progress messages: ◆ Phase to open a phase, → step for an in-flight action, ✓ result when a step lands (always with the concrete fact — ✓ 42 tests pass, ✓ PR opened, never ✓ done), ⚠ for warnings, ℹ for context the user needs. When you propose or save a self-improvement (skill, knowledge note, playbook, blueprint, saved secret), send a 💾 Self-improvement: <what changed and where to review it> message. Final answers: verdict first in 1-3 sentences, then details, then full-URL links. Failures get ⚠ or ❌ plus the next step or an OPTIONS: line. Numbers and paths beat adjectives. No filler openers (Let me, Great question, I will help you)."
+```
+
 ## Telegram behavior
 
 | Variable | Required | Default | Notes |

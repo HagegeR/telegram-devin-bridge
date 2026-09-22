@@ -370,7 +370,7 @@ class Bridge:
                 self.rate_warnings[user_id] = now
                 await self.telegram.send_message(
                     chat_id,
-                    "Slow down — try again in a moment.",
+                    "⏳ Slow down — try again in a moment.",
                     thread_id=_thread_id(message),
                 )
             return
@@ -392,7 +392,7 @@ class Bridge:
         if not text and attachment is None:
             await self.telegram.send_message(
                 chat_id,
-                "Unsupported message type; send text, a photo, a document, or a voice note.",
+                "ℹ Unsupported message type — send text, a photo, a document, or a voice note.",
                 thread_id=_thread_id(message),
             )
             return
@@ -764,7 +764,7 @@ class Bridge:
             self.store.bump_user_stats(sender_id, sessions=1)
         started_id = await self.send_text(
             message,
-            f"Started session: {session_url}",
+            f"◆ Started session\n{session_url}",
             silent=True,
         )
         if started_id is not None:
@@ -945,7 +945,7 @@ class Bridge:
                 and self._rate_limited(user_id)
             ):
                 await self.telegram.answer_callback_query(
-                    callback_id, "Slow down — try again in a moment."
+                    callback_id, "⏳ Slow down — try again in a moment."
                 )
                 return
             choices = self.store.list_choices(conv_key, callback_message_id)
@@ -1058,7 +1058,7 @@ class Bridge:
                     target["is_topic_message"] = True
                 await self.send_text(
                     target,
-                    "Stopped session.",
+                    "🛑 Stopped session.",
                     silent=True,
                 )
 
@@ -1512,7 +1512,7 @@ class Bridge:
             return
         if args.strip() == "check":
             argv.append("--check")
-        await self.send_text(message, "Checking for updates…")
+        await self.send_text(message, "→ Checking for updates…")
         chat_id = _int(_mapping(message.get("chat")).get("id"))
         notify_target = str(chat_id)
         thread_id = _thread_id(message)
@@ -1806,7 +1806,7 @@ class Bridge:
         try:
             await self.telegram.send_message(
                 chat_id,
-                f"Couldn't process that message: {reason}. {suffix}",
+                f"⚠ Couldn't process that message: {reason}. {suffix}",
                 thread_id=_thread_id(message),
             )
             message_id = _int(message.get("message_id"))

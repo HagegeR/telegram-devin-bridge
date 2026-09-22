@@ -88,6 +88,7 @@ class SessionState:
     pr_url: str | None
     messages: list[DevinMessage]
     structured_output: object | None = None
+    updated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,7 @@ class DevinClient:
             pr_url=pr_url,
             messages=messages,
             structured_output=payload.get("structured_output"),
+            updated_at=self._optional_str(payload.get("updated_at")),
         )
 
     async def list_playbooks(self) -> list[Playbook]:
