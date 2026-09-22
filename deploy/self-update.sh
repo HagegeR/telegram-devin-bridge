@@ -28,22 +28,21 @@ MARKER=.self-update-rev
 PREV=$(cat "$MARKER" 2>/dev/null || true)
 
 MODE=branch; PATTERN=
-case "$CHANNEL" in
-  stable|latest|tags)
-    MODE=tag; PATTERN='v*' ;;
-  v[0-9]*|[0-9]*)
-    MODE=tag
-    V="${CHANNEL#v}"
-    case "$V" in
-      *.*.*) PATTERN="v$V" ;;     # exact pin   v1.2.3
-      *.*)   PATTERN="v$V.*" ;;   # minor line  v1.2.*
-      *)     PATTERN="v$V.*.*" ;; # major line  v1.*.*
-    esac ;;
-esac
+if [ "$CHANNEL" = stable ]; then
+  MODE=tag; PATTERN='v*'
+elif printf '%s\n' "$CHANNEL" | grep -qE '^v[0-9]+(\.[0-9]+){0,2}$'; then
+  MODE=tag
+  V="${CHANNEL#v}"
+  case "$V" in
+    *.*.*) PATTERN="v$V" ;;     # exact pin   v1.2.3
+    *.*)   PATTERN="v$V.*" ;;   # minor line  v1.2.*
+    *)     PATTERN="v$V.*.*" ;; # major line  v1.*.*
+  esac
+fi
 
 TAG=
 if [ "$MODE" = tag ]; then
-  git fetch -q origin '+refs/tags/v*:refs/tags/v*'
+  git fetch -q --prune origin '+refs/tags/v*:refs/tags/v*'
   git fetch -q origin main 2>/dev/null || true
   MERGED=
   git rev-parse -q --verify origin/main >/dev/null 2>&1 && MERGED="--merged origin/main"
