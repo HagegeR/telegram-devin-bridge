@@ -8,13 +8,6 @@ and deployment update channels.
 
 ## [Unreleased]
 
-### Added
-
-- **Release channels for self-update**: `SELF_UPDATE_CHANNEL` selects what a
-  deployment tracks — a branch (`main`, classic behavior), `stable` (newest
-  `vX.Y.Z` tag), `vX` (within a major), `vX.Y` (within a minor line), or an
-  exact `vX.Y.Z` pin. Works for cron runs, `/update`, and the admin API.
-  `SELF_UPDATE_BRANCH` remains as a fallback.
 
 ## [1.0.0] - 2026-09-22
 
@@ -22,6 +15,12 @@ First tagged release. Everything that was already running on `main` at this
 point, grouped:
 
 ### Added
+
+- **Release channels for self-update**: `SELF_UPDATE_CHANNEL` selects what a
+  deployment tracks — a branch (`main`, classic behavior), `stable` (newest
+  `vX.Y.Z` tag), `vX` (within a major), `vX.Y` (within a minor line), or an
+  exact `vX.Y.Z` pin. Works for cron runs, `/update`, and the admin API.
+  `SELF_UPDATE_BRANCH` remains as a fallback.
 
 - FastAPI bridge mapping each Telegram DM or forum topic to its own Devin v1
   session, with SQLite-backed history (`/sessions`, `/resume`), a per-session
