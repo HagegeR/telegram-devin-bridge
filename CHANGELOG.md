@@ -10,10 +10,6 @@ and deployment update channels.
 
 ### Added
 
-- **CI**: ruff, pytest on Python 3.12/3.13, Docker build, ShellCheck,
-  yamllint, and a non-blocking `pip-audit` job; weekly CodeQL; a tag-push
-  release workflow that validates `vX.Y.Z` tags and builds release notes from
-  the changelog plus generated notes.
 - **Onboarding**: `docs/getting-started.md` (polling-first, five minutes),
   `docker-compose.yml`, `ROADMAP.md`, README badges/demo/scaling note, and
   `docs/hardening.md` (production checklist).

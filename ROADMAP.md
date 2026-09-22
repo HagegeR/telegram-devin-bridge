@@ -10,10 +10,11 @@ Rough direction, not commitments — open an issue to discuss anything here.
   external command, bounded Docker sidecar (Moonshine)
 - Rich Telegram replies: `OPTIONS:` buttons, PR cards, image/document delivery
 - Access control: allowlists, admin approval flow, free-response chats
-- CI (ruff, pytest matrix, docker build, shellcheck, dep audit) and CodeQL
 
 ## Next
 
+- **CI, code scanning, and release automation** — ruff/pytest matrix, Docker
+  build, shellcheck, dep audit, and tag-push releases (in flight)
 - **Group `/help` and onboarding polish** — categorized command help, better
   `/start` for first-time and denied users
 - **Backup/restore commands** — SQLite backup via `/admin` and a `db_check`
