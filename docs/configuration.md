@@ -131,7 +131,8 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 | `ADMIN_LOG_PATH` | no | `/var/log/telegram-devin-bridge.log` | Log file tailed by the `logs` action. |
 | `ADMIN_RESTART_COMMAND` | no | OpenRC `rc-service` restart | Command run by the `restart` action. |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` | Command run by `/update` and the admin `update` action. |
-| `SELF_UPDATE_BRANCH` | no | `main` | Branch the self-updater tracks. |
+| `SELF_UPDATE_CHANNEL` | no | unset | Release channel the updater tracks: a branch name, `stable`, `vX`, `vX.Y`, or a `vX.Y.Z` pin — see [versioning.md](versioning.md). Root-only, never admin-settable. |
+| `SELF_UPDATE_BRANCH` | no | `main` | Fallback when `SELF_UPDATE_CHANNEL` is unset (branch tracking only). |
 | `GITHUB_TOKEN` | no | unset | Enables richer GitHub metadata (e.g. PR cards). |
 
 ## Message and media behavior

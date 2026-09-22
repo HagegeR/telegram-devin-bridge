@@ -78,13 +78,30 @@ Tailscale SSH as fallback. Command and path keys can never be set via the API.
 ## Self-update
 
 `deploy/self-update.sh` takes a host-wide lock and records a deploy marker,
-fetches `origin/<branch>` (`SELF_UPDATE_BRANCH`, default `main`), checks out
-the remote head, reinstalls requirements when `requirements.txt` changed, and
-restarts the OpenRC/systemd service detached. `--check` reports without
-touching anything. The host checkout is deploy-only: `git checkout -B`
-discards local changes on purpose. VM installs keep the source git checkout
-under `BRIDGE_HOME` so `/update` works; unprivileged services exit and let
-supervise-daemon or systemd respawn them.
+resolves the configured **update channel** to a revision, checks it out,
+reinstalls requirements when `requirements.txt` changed, and restarts the
+OpenRC/systemd service detached. `--check` reports without touching anything.
+The host checkout is deploy-only: local changes are discarded on purpose.
+VM installs keep the source git checkout under `BRIDGE_HOME` so `/update`
+works; unprivileged services exit and let supervise-daemon or systemd respawn
+them.
+
+### Update channels
+
+`SELF_UPDATE_CHANNEL` picks what the updater tracks (falling back to
+`SELF_UPDATE_BRANCH`, then `main`):
+
+| Channel | Tracks |
+| --- | --- |
+| `main` or any branch | `origin/<branch>` head |
+| `stable` | newest `vX.Y.Z` tag reachable from `origin/main` |
+| `v1` | newest tag within major 1 |
+| `v1.2` | newest tag within minor 1.2 |
+| `v1.2.3` | that exact tag (pin) |
+
+Tag mode fetches `v*` tags and checks out the tag detached; branch mode keeps
+the old `git checkout -B` behavior. See [versioning.md](versioning.md) for the
+bump rules and release flow.
 
 Admins can run it from Telegram with `/update` or preview with
 `/update check` (`TELEGRAM_ADMIN_USER_IDS`, or `TELEGRAM_ALLOWED_USERS` when
