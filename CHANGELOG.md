@@ -8,6 +8,28 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Performance
+
+- Session polling no longer rebuilds `DevinMessage` objects for events the
+  watcher already delivered (`get_session(since_event_id=)`); the v1 API
+  still returns the full history, so this saves CPU rather than bandwidth.
+- Update dispatch now uses a bounded queue (256) with eight workers instead
+  of one unbounded task per update; webhook callers get backpressure when
+  the queue is full.
+- Attachment downloads and GitHub PR metadata fetches are parallelized
+  (bounded), and PR metadata is cached for 60 seconds keyed by URL and
+  token.
+- `fit_photo`/`photo_fits_unchanged` Pillow work runs off the event loop;
+  remote transcription reuses a single `httpx.AsyncClient`.
+- Capped in-memory collections (pending/queued turns, transient message
+  ids, implicit topics) and a ten-minute janitor evicts stale rate-limit
+  windows, access prompts, denied notices, and implicit topics.
+- `_expand_text_links` decodes UTF-16 offsets incrementally instead of a
+  prefix decode per entity.
+- Telegram 400 fallbacks only retry on parse/markup error descriptions.
+- Added covering SQLite indexes (`conversations`, `session_history`,
+  `pending_choices`, `long_texts`, `processed_updates`, `message_index`);
+  `processed_updates` pruning runs hourly instead of per update.
 
 ## [1.0.0] - 2026-09-22
 

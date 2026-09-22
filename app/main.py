@@ -62,6 +62,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _ANNOUNCE_MAX_ATTEMPTS = 3
 _ANNOUNCE_RETRY_DELAYS = (30.0, 120.0)
 _UPDATE_CONCURRENCY = 8
+_UPDATE_QUEUE_SIZE = 256
 _MAX_PENDING_FRAGMENTS = 20
 _MAX_QUEUED_TURNS = 20
 _MAX_TRANSIENT_IDS = 100
@@ -123,7 +124,7 @@ class Bridge:
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.bot_topics_enabled = False
-        self.implicit_topics: set[tuple[int, int]] = set()
+        self.implicit_topics: dict[tuple[int, int], float] = {}
         self.watchers: dict[str, asyncio.Task[None]] = {}
         self.active_watchers: dict[str, SessionWatcher] = {}
         self.locks: dict[str, asyncio.Lock] = {}
@@ -131,7 +132,10 @@ class Bridge:
         self.background_tasks: set[asyncio.Task[None]] = set()
         self._janitor_task: asyncio.Task[None] | None = None
         self.denied_notices: dict[tuple[int, int], float] = {}
-        self._update_slots = asyncio.Semaphore(_UPDATE_CONCURRENCY)
+        self._update_queue: asyncio.Queue[Mapping[str, object]] = asyncio.Queue(
+            maxsize=_UPDATE_QUEUE_SIZE
+        )
+        self._worker_tasks: list[asyncio.Task[None]] = []
         self._transcription_client: httpx.AsyncClient | None = None
         self._run_command = _run_command
         self.access_prompted: dict[int, float] = {}
@@ -158,6 +162,11 @@ class Bridge:
             for request in self.store.list_access_requests("approved")
         }
         self._janitor_task = asyncio.create_task(self._janitor())
+        if not self._worker_tasks:
+            self._worker_tasks = [
+                asyncio.create_task(self._update_worker())
+                for _ in range(_UPDATE_CONCURRENCY)
+            ]
         await self._resume_watchers()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
@@ -263,6 +272,11 @@ class Bridge:
             self._janitor_task.cancel()
             await asyncio.gather(self._janitor_task, return_exceptions=True)
             self._janitor_task = None
+        for task in self._worker_tasks:
+            task.cancel()
+        if self._worker_tasks:
+            await asyncio.gather(*self._worker_tasks, return_exceptions=True)
+            self._worker_tasks = []
         for task in self.background_tasks:
             task.cancel()
         if self.background_tasks:
@@ -277,33 +291,45 @@ class Bridge:
         update_id = update.get("update_id")
         if not isinstance(update_id, int) or not self.store.mark_update_seen(update_id):
             return
-        task = asyncio.create_task(self._dispatch_update(update))
-        self.background_tasks.add(task)
-        task.add_done_callback(self.background_tasks.discard)
+        if not self._worker_tasks and not self.shutting_down:
+            self._worker_tasks = [
+                asyncio.create_task(self._update_worker())
+                for _ in range(_UPDATE_CONCURRENCY)
+            ]
+        # Blocks when the bounded queue is full: webhook callers get
+        # backpressure instead of an unbounded pile of pending tasks.
+        await self._update_queue.put(update)
+
+    async def _update_worker(self) -> None:
+        while True:
+            update = await self._update_queue.get()
+            try:
+                await self._dispatch_update(update)
+            finally:
+                self._update_queue.task_done()
 
     async def _dispatch_update(self, update: Mapping[str, object]) -> None:
-        async with self._update_slots:
-            try:
-                callback = _mapping(update.get("callback_query"))
-                if callback:
-                    await self.handle_callback(callback)
-                    return
-                reaction = _mapping(update.get("message_reaction"))
-                if reaction:
-                    await self.handle_reaction(reaction)
-                    return
-                edited = _mapping(update.get("edited_message"))
-                if edited:
-                    await self.handle_edited_message(edited)
-                    return
-                message = _mapping(update.get("message")) or _mapping(
-                    update.get("channel_post")
-                )
-                if message:
-                    await self.handle_message(message)
-            except Exception as exc:
-                logger.exception("Failed to process Telegram update")
-                await self._report_processing_failure(update, exc)
+        try:
+            callback = _mapping(update.get("callback_query"))
+            if callback:
+                await self.handle_callback(callback)
+                return
+            reaction = _mapping(update.get("message_reaction"))
+            if reaction:
+                await self.handle_reaction(reaction)
+                return
+            edited = _mapping(update.get("edited_message"))
+            if edited:
+                await self.handle_edited_message(edited)
+                return
+            message = _mapping(update.get("message")) or _mapping(
+                update.get("channel_post")
+            )
+            if message:
+                await self.handle_message(message)
+        except Exception as exc:
+            logger.exception("Failed to process Telegram update")
+            await self._report_processing_failure(update, exc)
 
     async def handle_message(self, message: Mapping[str, object]) -> None:
         sender = _mapping(message.get("from"))
@@ -317,9 +343,9 @@ class Bridge:
                 key = (chat_id, thread_id)
                 if bool(topic_created.get("is_name_implicit")):
                     if len(self.implicit_topics) < _MAX_IMPLICIT_TOPICS:
-                        self.implicit_topics.add(key)
+                        self.implicit_topics[key] = time.time()
                 else:
-                    self.implicit_topics.discard(key)
+                    self.implicit_topics.pop(key, None)
         if any(
             message.get(field) is not None
             for field in (
@@ -447,9 +473,14 @@ class Bridge:
             await self._flush_pending(conv_key)
             pending = self.pending_turns.setdefault(conv_key, [])
         if len(pending) >= _MAX_PENDING_FRAGMENTS:
-            await self._flush_pending(conv_key)
-            pending = self.pending_turns.setdefault(conv_key, [])
-        pending.append((message, text, attachment))
+            # Install the new list with this fragment first so a concurrent
+            # fragment cannot overtake it while the overflow batch flushes.
+            overflow = pending
+            self.pending_turns[conv_key] = [(message, text, attachment)]
+            pending = self.pending_turns[conv_key]
+            await self._flush_fragments(conv_key, overflow)
+        else:
+            pending.append((message, text, attachment))
         if self.settings.telegram_debounce_seconds <= 0:
             await self._flush_pending(conv_key)
             return
@@ -471,7 +502,13 @@ class Bridge:
                 self.debounce_tasks.pop(conv_key, None)
 
     async def _flush_pending(self, conv_key: str) -> None:
-        fragments = self.pending_turns.pop(conv_key, [])
+        await self._flush_fragments(
+            conv_key, self.pending_turns.pop(conv_key, [])
+        )
+
+    async def _flush_fragments(
+        self, conv_key: str, fragments: list[TurnFragment]
+    ) -> None:
         if not fragments:
             return
         for fragment_message, _, _ in fragments:
@@ -622,6 +659,9 @@ class Bridge:
                 for key, noticed_at in list(self.denied_notices.items()):
                     if now_wall - noticed_at >= 86400:
                         self.denied_notices.pop(key, None)
+                for key, created_at in list(self.implicit_topics.items()):
+                    if now_wall - created_at >= 86400:
+                        self.implicit_topics.pop(key, None)
                 self.store.cleanup_message_index()
                 self.store.cleanup_long_texts()
             except Exception:
@@ -772,7 +812,7 @@ class Bridge:
                         thread_id,
                     )
                 finally:
-                    self.implicit_topics.discard((chat_id, thread_id))
+                    self.implicit_topics.pop((chat_id, thread_id), None)
         await self.start_watcher(conversation, trigger_message_id=message_id)
 
     async def create_session_for_message(

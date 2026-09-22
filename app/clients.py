@@ -125,7 +125,9 @@ class DevinClient:
             transport=transport,
         )
         self._download_slots = asyncio.Semaphore(4)
-        self._pr_cache: dict[str, tuple[float, dict[str, object]]] = {}
+        self._pr_cache: dict[
+            tuple[str, str | None], tuple[float, dict[str, object]]
+        ] = {}
 
     async def create_session(
         self,
@@ -362,7 +364,8 @@ class DevinClient:
         url: str,
         token: str | None = None,
     ) -> dict[str, object] | None:
-        cached = self._pr_cache.get(url)
+        cache_key = (url, token)
+        cached = self._pr_cache.get(cache_key)
         if cached is not None and time.monotonic() - cached[0] < PR_CACHE_TTL_SECONDS:
             return cached[1]
         if re.fullmatch(
@@ -397,7 +400,7 @@ class DevinClient:
             }
         if len(self._pr_cache) >= PR_CACHE_MAX:
             self._pr_cache.pop(next(iter(self._pr_cache)))
-        self._pr_cache[url] = (time.monotonic(), value)
+        self._pr_cache[cache_key] = (time.monotonic(), value)
         return cast(dict[str, object], value)
 
     async def _call(
