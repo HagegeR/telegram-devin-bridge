@@ -381,10 +381,10 @@ class Bridge:
                     f"Voice note transcript:\n{transcript}"
                     + (f"\n\n{text}" if text else "")
                 )
-                await self.telegram.set_message_reaction(
+                await self._react(
                     chat_id,
                     _int(message.get("message_id")),
-                    "🎙",
+                    "✍",
                 )
                 if not self.settings.telegram_attach_voice:
                     attachment = None
@@ -645,7 +645,7 @@ class Bridge:
                 last_user_text=text,
                 last_user_message_id=message_id,
             )
-        await self.telegram.set_message_reaction(chat_id, message_id, "👀")
+        await self._react(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
         if attachment is not None:
             filename, content, content_type = attachment
@@ -1041,12 +1041,7 @@ class Bridge:
             if "🔁" in added and conversation.last_user_text:
                 if self._rate_limited(_int(user.get("id"))):
                     return
-                if message_id:
-                    await self.telegram.set_message_reaction(
-                        chat_id,
-                        message_id,
-                        "👀",
-                    )
+                await self._react(chat_id, message_id, "👀")
                 await self.retry_conversation(
                     conversation,
                     trigger_message_id=message_id,
@@ -1092,12 +1087,11 @@ class Bridge:
                 self._contextualize_message(message, text),
                 attachment,
             )
-            if message_id:
-                await self.telegram.set_message_reaction(
-                    _int(_mapping(message.get("chat")).get("id")),
-                    message_id,
-                    "✏️",
-                )
+            await self._react(
+                _int(_mapping(message.get("chat")).get("id")),
+                message_id,
+                "✏️",
+            )
             return
         conversation = self.store.get_conversation(conv_key)
         if conversation is None:
@@ -1125,12 +1119,7 @@ class Bridge:
                 f"Correction to my previous message: {text}",
             )
             message_id = _int(message.get("message_id"))
-            if message_id:
-                await self.telegram.set_message_reaction(
-                    conversation.chat_id,
-                    message_id,
-                    "✏️",
-                )
+            await self._react(conversation.chat_id, message_id, "✏️")
             updated = self.store.get_conversation(conv_key) or conversation
             await self.start_watcher(
                 updated,
@@ -1379,6 +1368,11 @@ class Bridge:
 
     async def send_session_message(self, session_id: str, text: str) -> None:
         await self.devin.send_message(session_id, text)
+
+    async def _react(
+        self, chat_id: int, message_id: int | None, emoji: str | None
+    ) -> None:
+        await self.telegram.react(chat_id, message_id, emoji)
 
     async def react(self, message: Mapping[str, object], emoji: str) -> None:
         try:

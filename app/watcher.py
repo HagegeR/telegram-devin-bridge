@@ -730,9 +730,7 @@ class SessionWatcher:
         return value >= wall_started_at - 5
 
     async def _finish_reaction(self, *, expired: bool) -> None:
-        if self.trigger_message_id is None:
-            return
-        await self.telegram.set_message_reaction(
+        await self.telegram.react(
             self.conversation.chat_id,
             self.trigger_message_id,
             "👎" if expired else "👍",
