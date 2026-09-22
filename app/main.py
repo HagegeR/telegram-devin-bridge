@@ -298,13 +298,22 @@ class Bridge:
             ]
         # Blocks when the bounded queue is full: webhook callers get
         # backpressure instead of an unbounded pile of pending tasks.
-        await self._update_queue.put(update)
+        try:
+            await self._update_queue.put(update)
+        except asyncio.CancelledError:
+            # Cancelled while suspended on a full queue: the update was never
+            # enqueued, so release the dedup marker or Telegram's retry is
+            # silently dropped.
+            self.store.unmark_update_seen(update_id)
+            raise
 
     async def _update_worker(self) -> None:
         while True:
             update = await self._update_queue.get()
             try:
                 await self._dispatch_update(update)
+            except Exception:
+                logger.exception("Telegram update worker dispatch failed")
             finally:
                 self._update_queue.task_done()
 

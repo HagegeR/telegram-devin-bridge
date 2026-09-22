@@ -776,6 +776,13 @@ class Store:
                 return False
         return True
 
+    def unmark_update_seen(self, update_id: int) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM processed_updates WHERE update_id = ?",
+                (update_id,),
+            )
+
     def add_choice(
         self,
         choice_id: str,
