@@ -85,6 +85,19 @@ async def _run_command(
     return process.returncode or 0, stdout.decode(errors="replace")
 
 
+_CHANNEL_CHARS = re.compile(r"[^\s~^:?*[\]\\]+")
+
+
+def _valid_channel(token: str) -> bool:
+    return (
+        bool(_CHANNEL_CHARS.fullmatch(token))
+        and ".." not in token
+        and "@{" not in token
+        and not token.startswith(("-", ".", "/"))
+        and not token.endswith(("/", ".lock"))
+    )
+
+
 Attachment = tuple[str, bytes, str]
 TurnFragment = tuple[Mapping[str, object], str, Attachment | None]
 QueuedTurn = tuple[Mapping[str, object], str, Attachment | None]
@@ -1515,7 +1528,7 @@ class Bridge:
         if "check" in tokens:
             argv.append("--check")
             tokens.remove("check")
-        if len(tokens) > 1 or (tokens and not re.fullmatch(r"[A-Za-z0-9][\w./-]*", tokens[0])):
+        if len(tokens) > 1 or (tokens and not _valid_channel(tokens[0])):
             await self.send_text(
                 message,
                 "Usage: /update [check] [channel] — channel is a branch, "

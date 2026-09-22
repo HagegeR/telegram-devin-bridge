@@ -90,7 +90,7 @@ deployment check list.
 | `/lang [code]` | Per-user voice-transcription language (`auto`, `off`) |
 | `/whoami` · `/sethome` | Show IDs; set the notification target chat |
 | `/users` · `/revoke <id>` | Admin: manage approved users |
-| `/update [check]` | Admin: pull latest `main` and restart, or preview |
+| `/update [check] [channel]` | Admin: pull latest for the channel (default `main`) and restart, or preview |
 
 Reactions work too: 🔁 on your message retries it, 🛑 stops the session. Topics
 are renamed to the Devin session title once generated.
