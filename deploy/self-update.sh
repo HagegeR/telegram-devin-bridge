@@ -55,7 +55,9 @@ if [ "$MODE" = tag ]; then
   REMOTE=$(git rev-parse "$TAG^{commit}")
   TRACK="$TAG"
 else
-  git fetch -q origin "$CHANNEL"
+  # explicit refspec: branch names like +canary or @ must not be read as
+  # refspec syntax or HEAD shorthand
+  git fetch -q origin "+refs/heads/$CHANNEL:refs/remotes/origin/$CHANNEL"
   REMOTE=$(git rev-parse "origin/$CHANNEL")
   TRACK="$CHANNEL"
 fi

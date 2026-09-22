@@ -61,6 +61,8 @@ def deploy_clone(tmp_path: Path):
 
     # a branch whose name looks version-ish must stay a branch channel
     git(work, "push", "-q", "origin", "main:refs/heads/v2-hotfix")
+    # ref-valid but refspec-looking names must still fetch by name
+    git(work, "push", "-q", "origin", "main:refs/heads/+canary")
     # a tag on a commit not merged into main must never be selected
     git(work, "checkout", "-qb", "side", "HEAD~1")
     commit("e")
@@ -106,6 +108,11 @@ def test_channel_resolution(deploy_clone):
 def test_versionish_branch_name_stays_a_branch(deploy_clone):
     clone, _ = deploy_clone
     assert track_of(check(clone, "v2-hotfix")) == "v2-hotfix"
+
+
+def test_refspec_looking_branch_names(deploy_clone):
+    clone, _ = deploy_clone
+    assert track_of(check(clone, "+canary")) == "+canary"
 
 
 def test_channel_with_no_matching_tag_fails(deploy_clone):
