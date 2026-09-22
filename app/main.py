@@ -144,7 +144,9 @@ class Bridge:
         since = time.time() - self.settings.devin_watch_timeout_seconds
         for conversation in self.store.list_recent_conversations(since):
             await self.start_watcher(
-                conversation, resume_from=conversation.created_at
+                conversation,
+                resume_from=conversation.created_at,
+                trigger_message_id=conversation.last_user_message_id,
             )
 
     async def _retry_announce_update(self) -> None:
@@ -831,7 +833,10 @@ class Bridge:
         if existing is not None and not existing.done():
             watcher = self.active_watchers.get(conversation.session_id)
             if watcher is not None and trigger_message_id is not None:
+                old_trigger = watcher.trigger_message_id
                 watcher.set_trigger(trigger_message_id)
+                if old_trigger is not None and old_trigger != trigger_message_id:
+                    await self._react(conversation.chat_id, old_trigger, "👍")
             return
         watcher = SessionWatcher(
             conversation,
@@ -850,6 +855,7 @@ class Bridge:
                 conversation.conv_key,
             ),
             silent=self._conversation_silent(conversation.conv_key),
+            has_queued=lambda: self.queued_count(conversation.conv_key) > 0,
             resume_from=resume_from,
         )
         task = asyncio.create_task(watcher.run())

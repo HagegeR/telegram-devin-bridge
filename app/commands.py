@@ -20,6 +20,16 @@ SYSTEM_PREAMBLE = (
     "User message: "
 )
 
+_STATUS_LABELS = {
+    "working": "⏳ working",
+    "resumed": "⏳ resuming",
+    "resume_requested": "⏳ resuming",
+    "resume_requested_frontend": "⏳ resuming",
+    "blocked": "💬 waiting for your reply",
+    "finished": "✓ finished",
+    "expired": "⚠ expired",
+}
+
 
 class CommandRuntime(Protocol):
     settings: Settings
@@ -208,7 +218,7 @@ async def handle_command(
             await runtime.send_text(message, "No active session.", ephemeral=True)
         else:
             state = await runtime.get_state(conversation.session_id)
-            status = state.status_enum
+            status = _STATUS_LABELS.get(state.status_enum, state.status_enum)
             pr_line = f"\n🔗 PR: {state.pr_url}" if state.pr_url else ""
             queued_line = (
                 f" · {runtime.queued_count(conv_key)} queued"
