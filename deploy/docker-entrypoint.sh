@@ -6,4 +6,5 @@ set -eu
 
 mkdir -p /data
 chown -R bridge:bridge /data
+# shellcheck disable=SC2016 # the child shell is meant to expand $0/$@
 exec su -s /bin/sh bridge -c 'exec "$0" "$@"' -- "$@"
