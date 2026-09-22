@@ -11,7 +11,6 @@ Each DM or forum topic gets its own Devin session; replies stream back as rich T
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Code style: Ruff](https://img.shields.io/badge/code%20style-Ruff-261230?logo=ruff&logoColor=white)](https://docs.astral.sh/ruff/)
 [![CI](https://github.com/HagegeR/telegram-devin-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/HagegeR/telegram-devin-bridge/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/HagegeR/telegram-devin-bridge/actions/workflows/codeql.yml/badge.svg)](https://github.com/HagegeR/telegram-devin-bridge/actions/workflows/codeql.yml)
 
 </div>
 
