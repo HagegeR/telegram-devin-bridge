@@ -155,7 +155,7 @@ class Bridge:
         if not self.bot_username and username is not None:
             self.bot_username = username
         self.bot_topics_enabled = bool(profile.get("has_topics_enabled"))
-        secret_attr_names = (
+        placeholder_fields = (
             ("TELEGRAM_BOT_TOKEN", "telegram_bot_token"),
             ("DEVIN_API_KEY", "devin_api_key"),
             ("NOTIFY_SECRET", "notify_secret"),
@@ -164,7 +164,7 @@ class Bridge:
         )
         placeholder_names = [
             env_name
-            for env_name, attr in secret_attr_names
+            for env_name, attr in placeholder_fields
             if "replace-with" in (getattr(self.settings, attr) or "")
         ]
         if placeholder_names:
