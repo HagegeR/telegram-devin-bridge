@@ -4280,8 +4280,10 @@ async def test_users_lists_env_and_approved(tmp_path: Path) -> None:
     config = settings(
         tmp_path,
         telegram_admin_user_ids="900",
-        telegram_allowed_users="222,900",
+        telegram_allowed_users="222:Sarah, 900",
     )
+    assert config.allowed_users == frozenset({222, 900})
+    assert config.admin_user_ids == frozenset({900})
     store = Store(str(tmp_path / "users.sqlite3"))
     store.save_access_request(333, "bob", "Bob")
     store.decide_access_request(333, "approved", 900)
@@ -4293,7 +4295,7 @@ async def test_users_lists_env_and_approved(tmp_path: Path) -> None:
 
     await runtime.handle_message(message("/users", user_id=900, chat_id=900))
     assert telegram.sent[-1]["text"] == (
-        "222 · allowed via .env\n900 · allowed via .env\n333 · Bob"
+        "222 · Sarah\n900 · allowed via .env\n333 · Bob"
     )
     await runtime.shutdown()
 

@@ -1463,8 +1463,8 @@ class Bridge:
             await self.send_text(message, "Admins only.", ephemeral=True)
             return
         lines = [
-            f"{user_id} · allowed via .env"
-            for user_id in sorted(self.settings.allowed_users)
+            f"{user_id} · {label or 'allowed via .env'}"
+            for user_id, label in sorted(self.settings.allowed_user_labels.items())
         ]
         lines.extend(
             f"{request.user_id} · {request.first_name or request.username or 'user'}"

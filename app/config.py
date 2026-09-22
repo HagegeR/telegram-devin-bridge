@@ -175,7 +175,8 @@ class Settings(BaseSettings):
                 getattr(self, property_name)
             except ValueError as exc:
                 raise ValueError(
-                    f"{field_name} must be a comma-separated list of integers"
+                    f"{field_name} must be a comma-separated list of integers "
+                    "(optionally id:label)"
                 ) from exc
         return self
 
@@ -196,12 +197,21 @@ class Settings(BaseSettings):
         return self
 
     @staticmethod
-    def _csv_ints(value: str) -> frozenset[int]:
-        return frozenset(
-            int(item.strip())
-            for item in value.split(",")
-            if item.strip()
-        )
+    def _csv_labels(value: str) -> dict[int, str]:
+        labels: dict[int, str] = {}
+        for item in value.split(","):
+            if item.strip():
+                user_id, _, label = item.partition(":")
+                labels[int(user_id.strip())] = label.strip()
+        return labels
+
+    @classmethod
+    def _csv_ints(cls, value: str) -> frozenset[int]:
+        return frozenset(cls._csv_labels(value))
+
+    @property
+    def allowed_user_labels(self) -> dict[int, str]:
+        return self._csv_labels(self.telegram_allowed_users)
 
     @property
     def allowed_chat_ids(self) -> frozenset[int]:
