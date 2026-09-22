@@ -65,8 +65,9 @@ When in doubt between MINOR and MAJOR: if a correctly-configured existing
    git push origin vX.Y.Z
    ```
 
-4. Create the GitHub release (`gh release create vX.Y.Z --generate-notes`) —
-   GitHub's auto-notes plus the changelog section are the release body.
+4. Pushing the tag runs `release.yml`: it validates the tag is a strict
+   `vX.Y.Z`, then creates the GitHub release with the tag's `CHANGELOG.md`
+   section plus GitHub's auto-generated notes as the body.
 
 Hosts on `stable`, `vX`, or `vX.Y` pick the new tag up on their next
 self-update run (cron or `/update`); hosts on `main` already had the code and
