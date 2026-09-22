@@ -19,8 +19,9 @@ exposing a deployment to anyone but yourself.
       not a placeholder — `python -m app.doctor` flags leftover
       `replace-with-*` values.
 - [ ] Rotate `TELEGRAM_WEBHOOK_SECRET`, `NOTIFY_SECRET`, `DOCTOR_SECRET`, and
-      `ADMIN_SECRET` on a schedule and after any suspected exposure
-      (`/admin set-env` for runtime-editable keys, or edit `.env` and restart).
+      `ADMIN_SECRET` on a schedule and after any suspected exposure — they are
+      deliberately not in the `/admin set-env` allowlist, so edit `.env` on
+      the host and restart the service.
 - [ ] `ADMIN_SECRET` is unset on hosts that don't need the `/admin` API — the
       endpoint is disabled entirely when the secret is unset.
 - [ ] The Devin key is a dedicated **v1** key with the smallest usable scope.

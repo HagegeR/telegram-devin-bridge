@@ -49,6 +49,7 @@ Or with Docker:
 
 ```bash
 docker compose up -d
+# upgrades later: docker compose up -d --build (image rebuild, not /update)
 ```
 
 ## 5. Talk to it

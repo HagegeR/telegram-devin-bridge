@@ -1,12 +1,17 @@
 # Easiest way to run the bridge: `docker compose up -d`.
-# Polling mode needs no exposed port; webhook mode exposes 8000 for your
-# reverse proxy / tunnel to reach.
+# Polling mode needs no exposed port; webhook mode needs your reverse
+# proxy/tunnel to reach 127.0.0.1:8000.
+# Updates are image rebuilds (`docker compose up -d --build`), not the
+# in-app `/update` command — that needs a git checkout.
 services:
   bridge:
     build: .
     env_file: .env
+    environment:
+      # env_file must not override the volume-backed path
+      DATABASE_PATH: /data/bridge.sqlite3
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - bridge-data:/data
     restart: unless-stopped
