@@ -329,11 +329,11 @@ def register_admin_route(
                 return {"ok": problems == ["ok"], "results": problems}
 
             if action == "backup":
-                database_path = runtime.store.path  # resolved at open
-                if not database_path.exists():
+                database_path = runtime.store.path
+                if database_path is None or not database_path.exists():
                     return {
                         "ok": False,
-                        "error": f"no file-backed database at {database_path}",
+                        "error": "database is not file-backed; nothing to copy",
                     }
                 stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
                 dest = database_path.with_name(

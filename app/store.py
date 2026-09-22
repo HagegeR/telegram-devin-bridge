@@ -68,13 +68,16 @@ class UserStats:
 
 class Store:
     def __init__(self, database_path: str) -> None:
-        Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-        # resolve the same way sqlite does — relative to the process cwd — so
-        # backup paths always land beside the live database file
-        self.path = Path(database_path).resolve()
+        if database_path:
+            Path(database_path).parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(database_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.RLock()
+        # sqlite reports the filename it actually opened here — empty for
+        # :memory:, URI targets, and temporary (empty-path) databases — so
+        # backups always land beside the live file, never a resolved guess
+        row = self.connection.execute("PRAGMA database_list").fetchone()
+        self.path = Path(row[2]).resolve() if row and row[2] else None
         self._last_processed_prune = 0.0
         self._initialize()
 
