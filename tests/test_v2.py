@@ -420,6 +420,17 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
         ) -> None:
             self.reactions.append(emoji)
 
+        async def react(
+            self, chat_id: int, message_id: int | None, emoji: str | None
+        ) -> bool:
+            if message_id is None:
+                return False
+            try:
+                await self.set_message_reaction(chat_id, message_id, emoji)
+            except Exception:  # noqa: BLE001 - mirrors client
+                return False
+            return True
+
     now = 0.0
 
     def clock() -> float:
@@ -757,6 +768,17 @@ class _FakeTelegram:
         self, _chat_id: int, _message_id: int, emoji: str
     ) -> None:
         self.reactions.append(emoji)
+
+    async def react(
+        self, chat_id: int, message_id: int | None, emoji: str | None
+    ) -> bool:
+        if message_id is None:
+            return False
+        try:
+            await self.set_message_reaction(chat_id, message_id, emoji)
+        except Exception:  # noqa: BLE001 - mirrors client
+            return False
+        return True
 
     async def answer_callback_query(
         self, _callback_id: str, text: str | None = None
@@ -3855,6 +3877,17 @@ async def test_busy_turn_queue_survives_reaction_failure(tmp_path: Path) -> None
         ) -> None:
             raise RuntimeError("reaction invalid")
 
+        async def react(
+            self, chat_id: int, message_id: int | None, emoji: str | None
+        ) -> bool:
+            if message_id is None:
+                return False
+            try:
+                await self.set_message_reaction(chat_id, message_id, emoji)
+            except Exception:  # noqa: BLE001 - mirrors client
+                return False
+            return True
+
     store = Store(":memory:")
     store.save_conversation(
         conv_key="222",
@@ -3943,6 +3976,17 @@ async def test_react_swallows_http_error(tmp_path: Path) -> None:
             self, _chat_id: int, _message_id: int, _emoji: str
         ) -> None:
             raise httpx.HTTPError("reaction transport failed")
+
+        async def react(
+            self, chat_id: int, message_id: int | None, emoji: str | None
+        ) -> bool:
+            if message_id is None:
+                return False
+            try:
+                await self.set_message_reaction(chat_id, message_id, emoji)
+            except Exception:  # noqa: BLE001 - mirrors client
+                return False
+            return True
 
     runtime = Bridge(
         settings(tmp_path),
@@ -5315,6 +5359,18 @@ async def test_voice_transcription_reaction_failure_is_nonfatal(
         async def set_message_reaction(self, _chat_id, _message_id, emoji):
             raise RuntimeError("Bad Request: REACTION_INVALID")
 
+        async def react(self, chat_id, message_id, emoji):
+            if message_id is None:
+                return False
+            try:
+                await self.set_message_reaction(chat_id, message_id, emoji)
+            except Exception as exc:  # noqa: BLE001 - mirrors client
+                logging.getLogger("app.clients").warning(
+                    "reaction %r failed: %s", emoji, exc
+                )
+                return False
+            return True
+
     telegram = FailingReactionTelegram()
     devin = _FakeDevin()
     runtime = Bridge(
@@ -5379,3 +5435,131 @@ async def test_react_noops_without_message_id(tmp_path: Path) -> None:
     )
     await runtime._react(222, None, "👀")
     assert telegram.reactions == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_client_react() -> None:
+    calls: list[dict[str, object]] = []
+
+    async def ok_handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    telegram = TelegramClient(
+        "fake-token",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(ok_handler),
+    )
+    assert await telegram.react(222, None, "👍") is False
+    assert calls == []
+    assert await telegram.react(222, 7, "👍") is True
+    assert calls[-1]["message_id"] == 7
+    await telegram.close()
+
+
+@pytest.mark.asyncio
+async def test_telegram_client_react_failure_returns_false(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def fail_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"ok": False, "description": "REACTION_INVALID"}
+        )
+
+    telegram = TelegramClient(
+        "fake-token",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(fail_handler),
+    )
+    with caplog.at_level(logging.WARNING):
+        assert await telegram.react(222, 7, "👍") is False
+    assert any("reaction" in record.message for record in caplog.records)
+    await telegram.close()
+
+
+@pytest.mark.asyncio
+async def test_watcher_finish_reaction_failure_is_not_reported_as_devin_error(
+    tmp_path: Path,
+) -> None:
+    class FakeDevin:
+        async def get_session(self, _: str) -> SessionState:
+            return SessionState(
+                "finished",
+                "title",
+                None,
+                [DevinMessage("devin_message", "event-1", "Done", None)],
+            )
+
+    class FakeTelegram:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+
+        async def send_message(
+            self, chat_id: int, text: str, **kwargs: object
+        ) -> None:
+            self.sent.append({"chat_id": chat_id, "text": text, **kwargs})
+
+        async def send_markdown(
+            self, chat_id: int, text: str, **kwargs: object
+        ) -> list[dict[str, object]]:
+            await self.send_message(chat_id, text, **kwargs)
+            return [{**self.sent[-1], "message_id": len(self.sent)}]
+
+        async def send_chat_action(self, *_: object, **__: object) -> None:
+            return None
+
+        async def set_message_reaction(
+            self, _chat_id: int, _message_id: int, _emoji: str
+        ) -> None:
+            raise RuntimeError("Bad Request: REACTION_INVALID")
+
+        async def react(
+            self, chat_id: int, message_id: int | None, emoji: str | None
+        ) -> bool:
+            if message_id is None:
+                return False
+            try:
+                await self.set_message_reaction(chat_id, message_id, emoji)
+            except Exception:  # noqa: BLE001 - mirrors client
+                return False
+            return True
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    config = settings(
+        tmp_path,
+        devin_poll_seconds=1,
+        devin_watch_timeout_seconds=20,
+        devin_settle_seconds=30,
+    )
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        config,
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=7,
+    ).run()
+    texts = [item["text"] for item in telegram.sent]
+    assert not any("Couldn't reach Devin" in text for text in texts)

@@ -1372,12 +1372,7 @@ class Bridge:
     async def _react(
         self, chat_id: int, message_id: int | None, emoji: str | None
     ) -> None:
-        if message_id is None:
-            return
-        try:
-            await self.telegram.set_message_reaction(chat_id, message_id, emoji)
-        except Exception as exc:  # noqa: BLE001 - reactions are best-effort
-            logger.warning("reaction %r failed: %s", emoji, exc)
+        await self.telegram.react(chat_id, message_id, emoji)
 
     async def react(self, message: Mapping[str, object], emoji: str) -> None:
         try:

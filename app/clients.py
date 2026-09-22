@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from app.formatting import (
 )
 from app.images import fit_photo
 from app.telegram_updates import ALLOWED_UPDATES
+
+logger = logging.getLogger(__name__)
 
 RETRY_ATTEMPTS = 5
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
@@ -615,6 +618,20 @@ class TelegramClient:
             {"chat_id": chat_id, "message_id": message_id, "reaction": reaction},
             None,
         )
+
+    async def react(
+        self, chat_id: int, message_id: int | None, emoji: str | None
+    ) -> bool:
+        """Best-effort set_message_reaction; False on failure. CancelledError
+        (BaseException in 3.8+) still propagates."""
+        if message_id is None:
+            return False
+        try:
+            await self.set_message_reaction(chat_id, message_id, emoji)
+        except Exception as exc:  # noqa: BLE001 - reactions are best-effort
+            logger.warning("reaction %r failed: %s", emoji, exc)
+            return False
+        return True
 
     async def answer_callback_query(
         self,
