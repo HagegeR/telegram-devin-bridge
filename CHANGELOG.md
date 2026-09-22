@@ -16,6 +16,11 @@ and deployment update channels.
   warns when placeholder `replace-with-*` secrets are still configured.
 - `/start` sends a short onboarding greeting; `/help` is grouped by area
   with one-line descriptions.
+- **CI**: ruff, pytest on Python 3.12/3.13, Docker build, ShellCheck,
+  yamllint, and a non-blocking `pip-audit` job; code scanning runs via
+  GitHub's default CodeQL setup; a tag-push release workflow validates
+  `vX.Y.Z` tags reachable from `main` and builds release notes from the
+  changelog plus generated notes.
 - **Onboarding**: `docs/getting-started.md` (polling-first, five minutes),
   `docker-compose.yml`, `ROADMAP.md`, README badges/demo/scaling note, and
   `docs/hardening.md` (production checklist).
