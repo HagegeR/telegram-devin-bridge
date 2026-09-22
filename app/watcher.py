@@ -145,7 +145,9 @@ class SessionWatcher:
                     if self.generation != gen:
                         continue
                     if previous_status in {"expired", "finished"}:
-                        await self._close_turn(previous_status)
+                        await self._close_turn(
+                            previous_status, gen=gen, trigger=turn_trigger
+                        )
                     elif not self.delivered:
                         await self.telegram.send_message(
                             self.conversation.chat_id,
@@ -251,7 +253,9 @@ class SessionWatcher:
                     if self.generation != gen:
                         await self.sleep(interval)
                         continue
-                    await self._close_turn(state.status_enum)
+                    await self._close_turn(
+                        state.status_enum, gen=gen, trigger=turn_trigger
+                    )
                     if self.generation != gen:
                         await self.sleep(interval)
                         continue
@@ -266,7 +270,9 @@ class SessionWatcher:
                         if self.generation != gen:
                             await self.sleep(interval)
                             continue
-                        await self._close_turn(state.status_enum)
+                        await self._close_turn(
+                            state.status_enum, gen=gen, trigger=turn_trigger
+                        )
                         if self.generation != gen:
                             await self.sleep(interval)
                             continue
@@ -286,7 +292,9 @@ class SessionWatcher:
                     f"⚠ Couldn't reach Devin: {self._short_reason(exc)}",
                     thread_id=self.conversation.thread_id,
                 )
-                await self._finish_reaction(expired=True)
+                await self._finish_reaction(
+                    self.trigger_message_id, expired=True
+                )
             except Exception:
                 logger.exception("Failed to report watcher error")
         except asyncio.CancelledError:
@@ -791,22 +799,26 @@ class SessionWatcher:
                 status,
             )
 
-    async def _close_turn(self, status: str) -> None:
+    async def _close_turn(
+        self, status: str, *, gen: int, trigger: int | None
+    ) -> None:
         fresh = self.delivered_count > 0 or status != self.first_status
         queued = (
-            status == "blocked"
+            status in {"blocked", "finished"}
             and self.has_queued is not None
             and self.has_queued()
         )
-        if fresh and not queued and self._closed_gen != self.generation:
+        if fresh and not queued and self._closed_gen != gen:
             await self._send_finish_notice(status)
-            self._closed_gen = self.generation
-        await self._finish_reaction(expired=status == "expired")
+        if self.generation != gen:
+            return
+        self._closed_gen = gen
+        await self._finish_reaction(trigger, expired=status == "expired")
 
-    async def _finish_reaction(self, *, expired: bool) -> None:
+    async def _finish_reaction(self, trigger: int | None, *, expired: bool) -> None:
         await self.telegram.react(
             self.conversation.chat_id,
-            self.trigger_message_id,
+            trigger,
             "👎" if expired else "👍",
         )
 

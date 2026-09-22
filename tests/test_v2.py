@@ -482,13 +482,14 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
 
 
 @pytest.mark.asyncio
-async def test_watcher_skips_waiting_notice_when_turns_queued(
-    tmp_path: Path,
+@pytest.mark.parametrize("status", ["blocked", "finished"])
+async def test_watcher_skips_finish_notice_when_turns_queued(
+    status: str, tmp_path: Path
 ) -> None:
     class QueuedDevin(_FakeDevin):
         async def get_session(self, _: str) -> SessionState:
             return SessionState(
-                "blocked",
+                status,
                 "title",
                 None,
                 [DevinMessage("devin_message", "e1", "Done", None)],
@@ -535,6 +536,7 @@ async def test_watcher_skips_waiting_notice_when_turns_queued(
     texts = [str(item["text"]) for item in telegram.sent]
     assert "Done" in texts
     assert "💬 Waiting for your reply" not in texts
+    assert "✓ Finished" not in texts
     assert telegram.reactions == ["👍"]
 
 
