@@ -151,6 +151,8 @@ def test_real_update_survives_branch_nesting_switch(deploy_clone):
     git(work, "push", "-q", "origin", "HEAD:refs/heads/release/v2")
     result = run("release/v2")
     assert result.returncode == 0, result.stdout + result.stderr
+    # the caller is not the service's MainPID here: no detached TERM is armed
+    assert "restart telegram-devin-bridge manually" in result.stdout
     head = git_out(clone, "rev-parse", "HEAD")
     assert head == git_out(clone, "rev-parse", "origin/release/v2")
 
