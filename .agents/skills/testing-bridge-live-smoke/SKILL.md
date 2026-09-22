@@ -11,10 +11,13 @@ should not touch production Telegram/Devin.
 
 ## Key facts
 
-- `import app.main` runs a module-level `create_app()` → `Settings()` → set dummy
+- `import app.main` runs a module-level `create_app()` → `Settings()` (reads
+  shell env AND `.env`) and opens `DATABASE_PATH` (default `./bridge.sqlite3`).
+  BEFORE importing, hard-assign `os.environ[...] = ...` — NOT `setdefault`:
   `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `DEVIN_API_KEY`,
-  `PUBLIC_BASE_URL` via `os.environ.setdefault` BEFORE importing (same as
-  `tests/conftest.py`). This also opens `DATABASE_PATH`/`./bridge.sqlite3`.
+  `PUBLIC_BASE_URL` get dummies and `DATABASE_PATH` gets an absolute temp path.
+  On a deployment checkout real shell/`.env` values otherwise survive, and the
+  "fake" run would open the production DB and hand live creds to `/doctor`.
 - `create_app(settings, store=, devin=, telegram=)` accepts injected clients.
   `TelegramClient(bot_token, base_url=..., transport=httpx.MockTransport(h))`
   and `DevinClient(key, base_url, max_acu, transport=...)` fake ALL outbound
@@ -59,13 +62,17 @@ should not touch production Telegram/Devin.
   ~0.5s before startup and seed stale dicts to watch pruning live.
 - `/admin` bad-auth triggers lockout+429 — do valid-bearer checks first.
 - `/doctor` hits REAL api.telegram.org (getMe with settings token) and
-  REAL devin_api_base_url — real read-only creds in settings make those checks
-  green while app traffic stays fake. `local health` checks port 8000 hardcoded
-  in create_app's route registration — expect fail on a custom port.
+  REAL devin_api_base_url — with hard-set dummy env vars those checks fail
+  safely. Deliberately assigning real read-only creds makes them green while
+  app traffic stays fake; only do that consciously, never by leftover env.
+  `local health` checks port 8000 hardcoded in create_app's route registration
+  — expect fail on a custom port.
 - DB: `store.cleanup_*` run at startup; new `idx_*` indexes queryable via
   `sqlite3.connect("file:db?mode=ro", uri=True)` while app runs.
 
 ## Devin Secrets Needed
 
 Optional: `TELEGRAM_DEVIN_BRIDGE_BOT_TOKEN` + `DEVIN_API_KEY_TELEGRAM_BRIDGE`
-only to make `/doctor`'s real probes green; dummy values work otherwise.
+— only when you deliberately want `/doctor`'s real probes green (assign them
+yourself; never rely on ambient shell env or `.env`). Dummy hard-assigns work
+otherwise.
