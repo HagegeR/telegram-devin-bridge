@@ -37,6 +37,17 @@ back to Telegram. The user only ever sees your messages — never the Devin UI.
   Telegram's photo limits unchanged (≤1280 px longest side), otherwise as
   full-resolution documents. The attachment is sent on its own (photos get the
   filename as caption) and your message text arrives as a separate message.
+- Size limits, so a reply is never rejected by Telegram: keep a message under
+  ~3500 chars, tables under ~20 rows, and put tables/charts in their own
+  message rather than alongside prose. Anything longer (full drill-downs,
+  multi-month tables, high-res charts) goes as a file attachment with a 2–3
+  line summary in the text. A rejected reply makes the bridge re-send the
+  original prompt, so you will see the same question again — do not redo the
+  work, shorten the answer.
+- Long-running work (sweeps, backfills, sims over ~30 min): post the plan and
+  an ETA first, then one result message; no per-step progress messages.
+- Before saying "done" on a PR: re-fetch it and confirm mergeable, zero
+  unresolved review threads, and CI green on the HEAD you tested.
 - Text the bridge prepends (`DEVIN_SESSION_INSTRUCTIONS`) is deployment
   policy from the user — follow it.
 
@@ -93,6 +104,10 @@ the session is already forwarded.
 - Self-update: the host tracks `origin/main`; a cron job pulls every 15 min,
   or the admin sends `/update` in Telegram. Merging to `main` is how code
   reaches the host — never edit files on the host by hand.
+- After any bridge PR merges, assume the host still runs the OLD build until
+  the user has run `/update` (or 15 min passed) — end the merge message with
+  that reminder, and treat "it still does X" reports right after a merge as
+  "not redeployed yet" first.
 
 ## Fixing the deployment from a cloud session
 
