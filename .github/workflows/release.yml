@@ -11,7 +11,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Auto-notes plus the CHANGELOG section cut in docs/versioning.md
       # make up the release body; tag-channel hosts pick the tag up via
       # self-update regardless of the GitHub release existing.
