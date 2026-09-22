@@ -140,6 +140,13 @@ def test_tag_mode_requires_origin_main(deploy_clone, tmp_path: Path):
     assert "release channels require fetching origin/main" in result.stdout
 
 
+def test_force_pushed_main_still_resolves(deploy_clone):
+    # a force-push rewinding main must update origin/main, not wedge it
+    clone, work = deploy_clone
+    git(work, "push", "-qf", "origin", "HEAD~1:main")
+    assert track_of(check(clone, "stable")) == "v1.2.1"
+
+
 def test_nonchannel_names_stay_branch_mode(deploy_clone):
     # 'latest'/'tags'-style aliases are not channels: they fall through to
     # branch mode and fail the branch fetch instead of silently tracking tags.
