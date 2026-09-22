@@ -47,7 +47,7 @@ The deployment must expose HTTPS and route the configured public URL to port
 | `TELEGRAM_RICH_MESSAGES` | no | `true` |
 | `TELEGRAM_DRAFTS` | no | `false` |
 | `TELEGRAM_IMAGES_AS_DOCUMENTS` | no | `auto` (`sendPhoto` when the image fits unchanged; `true` = always `sendDocument`; `false` = always `sendPhoto`) |
-| `TELEGRAM_ALLOWED_USERS` | no | empty |
+| `TELEGRAM_ALLOWED_USERS` | no | empty (`id` or `id:label`, e.g. `123:Ruben,456:Sarah`; labels show in `/users`) |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | no | empty |
 | `TELEGRAM_ALLOW_ALL_USERS` | no | `false` |
 | `TELEGRAM_FREE_RESPONSE_CHATS` | no | empty |
