@@ -469,7 +469,10 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
         sleep=sleep,
         trigger_message_id=7,
     ).run()
-    assert [item["text"] for item in telegram.sent] == ["**Done**"]
+    assert [item["text"] for item in telegram.sent] == [
+        "**Done**",
+        "💬 Waiting for your reply",
+    ]
     assert "parse_mode" not in telegram.sent[0]
     markup = cast(dict[str, object], telegram.sent[0]["reply_markup"])
     keyboard = cast(list[list[dict[str, str]]], markup["inline_keyboard"])
@@ -3694,7 +3697,8 @@ async def test_options_reply_does_not_paginate(tmp_path: Path) -> None:
         settings(tmp_path, telegram_long_reply_chars=100),
     ).run()
     assert not telegram.documents
-    assert telegram.sent[-1]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+    assert telegram.sent[-2]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+    assert telegram.sent[-1]["text"] == "✓ Finished"
     assert store.list_choices("222", 1)
 
 

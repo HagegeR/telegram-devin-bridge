@@ -43,6 +43,12 @@ ACTIVE_STATUSES = frozenset({
     "resume_requested_frontend",
 })
 
+FINISH_NOTICES = {
+    "blocked": "💬 Waiting for your reply",
+    "finished": "✓ Finished",
+    "expired": "⚠ Session expired",
+}
+
 
 class SessionWatcher:
     def __init__(
@@ -220,6 +226,7 @@ class SessionWatcher:
                     continue
                 if state.status_enum in {"expired", "finished"}:
                     await self._cleanup_transients()
+                    await self._send_finish_notice(state.status_enum)
                     await self._finish_reaction(expired=state.status_enum == "expired")
                     return
                 if state.status_enum not in ACTIVE_STATUSES:
@@ -229,6 +236,7 @@ class SessionWatcher:
                     )
                     if self.delivered or settled:
                         await self._cleanup_transients()
+                        await self._send_finish_notice(state.status_enum)
                         await self._finish_reaction(expired=False)
                         return
                 else:
@@ -239,6 +247,7 @@ class SessionWatcher:
                 await self.sleep(max(interval, 0.001))
             if previous_status in {"expired", "finished"}:
                 await self._cleanup_transients()
+                await self._send_finish_notice(previous_status)
                 await self._finish_reaction(expired=previous_status == "expired")
                 return
             await self._cleanup_transients()
@@ -747,6 +756,21 @@ class SessionWatcher:
             except ValueError:
                 return True
         return value >= wall_started_at - 5
+
+    async def _send_finish_notice(self, status: str) -> None:
+        try:
+            await self.telegram.send_message(
+                self.conversation.chat_id,
+                FINISH_NOTICES.get(status, "✓ Done"),
+                thread_id=self.conversation.thread_id,
+                disable_notification=self.silent,
+            )
+        except (RuntimeError, httpx.HTTPError):
+            logger.warning(
+                "Failed to send finish notice chat=%s status=%s",
+                self.conversation.chat_id,
+                status,
+            )
 
     async def _finish_reaction(self, *, expired: bool) -> None:
         await self.telegram.react(
