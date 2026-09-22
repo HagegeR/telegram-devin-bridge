@@ -29,10 +29,10 @@ Each DM or forum topic gets its own Devin session; replies stream back as rich T
 ```mermaid
 flowchart LR
     U([Telegram user]) -->|message| B[FastAPI bridge]
-    B -->|"create session / send message"| D[(Devin API)]
-    D -->|"session status + replies"| B
-    B -->|"rich Markdown, inline buttons"| U
-    B <--> S[("SQLite: chats ↔ sessions, history, dedupe")]
+    B -->|"create / message session"| D[(Devin API)]
+    D -->|"status + replies"| B
+    B -->|"rich Markdown + buttons"| U
+    B <--> S[("SQLite store")]
 ```
 
 A single FastAPI process receives Telegram updates (webhook or long polling),
