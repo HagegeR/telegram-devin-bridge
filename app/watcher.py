@@ -63,6 +63,7 @@ class SessionWatcher:
         trigger_message_id: int | None = None,
         transient_message_ids: list[int] | None = None,
         on_status_change: Callable[[str], Awaitable[None]] | None = None,
+        has_queued: Callable[[], bool] | None = None,
         drafts_enabled: bool | None = None,
         status_after_seconds: float | None = None,
         silent: bool = False,
@@ -84,6 +85,7 @@ class SessionWatcher:
         self.trigger_message_id = trigger_message_id
         self.transient_message_ids = transient_message_ids or []
         self.on_status_change = on_status_change
+        self.has_queued = has_queued
         self.drafts_ok = (
             settings.telegram_drafts
             if drafts_enabled is None
@@ -102,6 +104,8 @@ class SessionWatcher:
         self.status_sent_at: float | None = None
         self.last_chat_action_at: float | None = None
         self.delivered_count = 0
+        self.first_status: str | None = None
+        self._closed_gen = -1
         self.delivered = False
         self.draft_used = False
         self.last_status: str | None = None
@@ -129,13 +133,29 @@ class SessionWatcher:
         previous_status: str | None = None
         title_retries_after_finish = 3
         try:
-            while (
-                self.clock() - self.started_at
-                < self.settings.devin_watch_timeout_seconds
-            ):
+            while True:
                 turn_trigger = self.trigger_message_id
                 turn_delivered = self.delivered
                 gen = self.generation
+                if (
+                    self.clock() - self.started_at
+                    >= self.settings.devin_watch_timeout_seconds
+                ):
+                    await self._cleanup_transients()
+                    if self.generation != gen:
+                        continue
+                    if previous_status in {"expired", "finished"}:
+                        await self._close_turn(previous_status)
+                    elif not self.delivered:
+                        await self.telegram.send_message(
+                            self.conversation.chat_id,
+                            "⏳ Devin is still working; I'll deliver replies when you next message.",
+                            thread_id=self.conversation.thread_id,
+                            disable_notification=self.silent,
+                        )
+                    if self.generation != gen:
+                        continue
+                    return
                 state = await self.devin.get_session(self.conversation.session_id)
                 if self.generation != gen:
                     await self.sleep(interval)
@@ -166,6 +186,8 @@ class SessionWatcher:
                 )
                 previous_status = state.status_enum
                 self.last_status = state.status_enum
+                if self.first_status is None:
+                    self.first_status = state.status_enum
                 if first_poll or new_messages or status_changed:
                     interval = min(
                         max(self.settings.devin_poll_fast_seconds, 0.5),
@@ -226,8 +248,13 @@ class SessionWatcher:
                     continue
                 if state.status_enum in {"expired", "finished"}:
                     await self._cleanup_transients()
-                    await self._send_finish_notice(state.status_enum)
-                    await self._finish_reaction(expired=state.status_enum == "expired")
+                    if self.generation != gen:
+                        await self.sleep(interval)
+                        continue
+                    await self._close_turn(state.status_enum)
+                    if self.generation != gen:
+                        await self.sleep(interval)
+                        continue
                     return
                 if state.status_enum not in ACTIVE_STATUSES:
                     settled = (
@@ -236,8 +263,13 @@ class SessionWatcher:
                     )
                     if self.delivered or settled:
                         await self._cleanup_transients()
-                        await self._send_finish_notice(state.status_enum)
-                        await self._finish_reaction(expired=False)
+                        if self.generation != gen:
+                            await self.sleep(interval)
+                            continue
+                        await self._close_turn(state.status_enum)
+                        if self.generation != gen:
+                            await self.sleep(interval)
+                            continue
                         return
                 else:
                     await self._refresh_progress(self.started_at, state)
@@ -245,19 +277,6 @@ class SessionWatcher:
                         await self._sleep_keeping_typing(interval)
                         continue
                 await self.sleep(max(interval, 0.001))
-            if previous_status in {"expired", "finished"}:
-                await self._cleanup_transients()
-                await self._send_finish_notice(previous_status)
-                await self._finish_reaction(expired=previous_status == "expired")
-                return
-            await self._cleanup_transients()
-            if not self.delivered:
-                await self.telegram.send_message(
-                    self.conversation.chat_id,
-                    "⏳ Devin is still working; I'll deliver replies when you next message.",
-                    thread_id=self.conversation.thread_id,
-                    disable_notification=self.silent,
-                )
         except Exception as exc:
             logger.exception("Session watcher failed for conversation %s", self.conversation.conv_key)
             await self._cleanup_transients()
@@ -771,6 +790,18 @@ class SessionWatcher:
                 self.conversation.chat_id,
                 status,
             )
+
+    async def _close_turn(self, status: str) -> None:
+        fresh = self.delivered_count > 0 or status != self.first_status
+        queued = (
+            status == "blocked"
+            and self.has_queued is not None
+            and self.has_queued()
+        )
+        if fresh and not queued and self._closed_gen != self.generation:
+            await self._send_finish_notice(status)
+            self._closed_gen = self.generation
+        await self._finish_reaction(expired=status == "expired")
 
     async def _finish_reaction(self, *, expired: bool) -> None:
         await self.telegram.react(

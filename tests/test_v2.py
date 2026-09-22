@@ -482,6 +482,89 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
 
 
 @pytest.mark.asyncio
+async def test_watcher_skips_waiting_notice_when_turns_queued(
+    tmp_path: Path,
+) -> None:
+    class QueuedDevin(_FakeDevin):
+        async def get_session(self, _: str) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [DevinMessage("devin_message", "e1", "Done", None)],
+            )
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    config = settings(
+        tmp_path,
+        devin_poll_seconds=1,
+        devin_watch_timeout_seconds=20,
+        devin_settle_seconds=30,
+    )
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        QueuedDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        config,
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=7,
+        has_queued=lambda: True,
+    ).run()
+    texts = [str(item["text"]) for item in telegram.sent]
+    assert "Done" in texts
+    assert "💬 Waiting for your reply" not in texts
+    assert telegram.reactions == ["👍"]
+
+
+@pytest.mark.asyncio
+async def test_start_watcher_acks_superseded_trigger(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    await runtime.start_watcher(conversation, trigger_message_id=11)
+    await runtime.start_watcher(conversation, trigger_message_id=22)
+    assert telegram.reactions == ["👍"]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_webhook_new_message_watcher_and_duplicate(
     tmp_path: Path,
 ) -> None:
@@ -3177,6 +3260,7 @@ async def test_startup_resumes_watchers_for_recent_conversations(
         session_url="https://devin.test/s1",
         title="title",
         last_event_id="event-0",
+        last_user_message_id=12,
     )
     store.save_conversation(
         conv_key="333",
@@ -3201,6 +3285,7 @@ async def test_startup_resumes_watchers_for_recent_conversations(
     delivered = [str(item["text"]) for item in telegram.sent]
     assert sum("Done" in text for text in delivered) == 1
     assert not any("Old" in text for text in delivered)
+    assert telegram.reactions == ["👍"]
     await runtime.shutdown()
 
 
