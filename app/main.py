@@ -155,22 +155,23 @@ class Bridge:
         if not self.bot_username and username is not None:
             self.bot_username = username
         self.bot_topics_enabled = bool(profile.get("has_topics_enabled"))
-        placeholder_secrets = [
-            name
-            for name, value in (
-                ("TELEGRAM_BOT_TOKEN", self.settings.telegram_bot_token),
-                ("DEVIN_API_KEY", self.settings.devin_api_key),
-                ("NOTIFY_SECRET", self.settings.notify_secret),
-                ("DOCTOR_SECRET", self.settings.doctor_secret),
-                ("ADMIN_SECRET", self.settings.admin_secret),
-            )
-            if value and "replace-with" in value
+        secret_attr_names = (
+            ("TELEGRAM_BOT_TOKEN", "telegram_bot_token"),
+            ("DEVIN_API_KEY", "devin_api_key"),
+            ("NOTIFY_SECRET", "notify_secret"),
+            ("DOCTOR_SECRET", "doctor_secret"),
+            ("ADMIN_SECRET", "admin_secret"),
+        )
+        placeholder_names = [
+            env_name
+            for env_name, attr in secret_attr_names
+            if "replace-with" in (getattr(self.settings, attr) or "")
         ]
-        if placeholder_secrets:
+        if placeholder_names:
             logger.warning(
                 "placeholder secret values still configured: %s — "
                 "replace them before production use",
-                ", ".join(placeholder_secrets),
+                ", ".join(placeholder_names),
             )
         logger.info(
             "bridge ready: mode=%s bot=%s topics=%s db=%s allowed_users=%d "
