@@ -67,6 +67,10 @@ def deploy_clone(tmp_path: Path):
     git(work, "tag", "-a", "v9.9.9", "-m", "v9.9.9")
     git(work, "push", "-q", "origin", "v9.9.9")
     git(work, "checkout", "-q", "main")
+    # malformed tags (SemVer forbids leading zeroes) must never be selected
+    git(work, "tag", "-a", "v02.0.0", "-m", "v02.0.0")
+    git(work, "tag", "-a", "v1.02.0", "-m", "v1.02.0", "v1.2.0^{commit}")
+    git(work, "push", "-q", "origin", "v02.0.0", "v1.02.0")
 
     (clone / "deploy").mkdir()
     shutil.copy(SCRIPT, clone / "deploy" / "self-update.sh")
@@ -118,6 +122,22 @@ def test_withdrawn_tag_is_pruned(deploy_clone):
     result = check(clone, "v2.0.0")
     assert result.returncode == 1
     assert "no release tag matches channel 'v2.0.0'" in result.stdout
+
+
+def test_malformed_version_pins_stay_branch_mode(deploy_clone):
+    clone, _ = deploy_clone
+    for channel in ("v01.2.3", "v1.02.3", "v1.2.03", "v02.0.0"):
+        assert check(clone, channel).returncode != 0, channel
+
+
+def test_tag_mode_requires_origin_main(deploy_clone, tmp_path: Path):
+    clone, work = deploy_clone
+    # delete main on the remote: bare HEAD must move first
+    git(tmp_path / "origin.git", "symbolic-ref", "HEAD", "refs/heads/v2-hotfix")
+    git(work, "push", "-q", "origin", ":refs/heads/main")
+    result = check(clone, "stable")
+    assert result.returncode == 1
+    assert "release channels require fetching origin/main" in result.stdout
 
 
 def test_nonchannel_names_stay_branch_mode(deploy_clone):

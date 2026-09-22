@@ -27,10 +27,12 @@ SERVICE="${SELF_UPDATE_SERVICE:-telegram-devin-bridge}"
 MARKER=.self-update-rev
 PREV=$(cat "$MARKER" 2>/dev/null || true)
 
+# semver numeric component: no leading zeroes
+NUM='0|[1-9][0-9]*'
 MODE=branch; PATTERN=
 if [ "$CHANNEL" = stable ]; then
   MODE=tag; PATTERN='v*'
-elif printf '%s\n' "$CHANNEL" | grep -qE '^v[0-9]+(\.[0-9]+){0,2}$'; then
+elif printf '%s\n' "$CHANNEL" | grep -qE "^v($NUM)(\\.($NUM)){0,2}$"; then
   MODE=tag
   V="${CHANNEL#v}"
   case "$V" in
@@ -43,11 +45,12 @@ fi
 TAG=
 if [ "$MODE" = tag ]; then
   git fetch -q --prune origin '+refs/tags/v*:refs/tags/v*'
-  git fetch -q origin main 2>/dev/null || true
-  MERGED=
-  git rev-parse -q --verify origin/main >/dev/null 2>&1 && MERGED="--merged origin/main"
-  # shellcheck disable=SC2086
-  TAG=$(git tag -l "$PATTERN" --sort=-v:refname $MERGED | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+  # tag channels only ever deploy commits merged into main; fail closed if
+  # origin/main cannot be resolved rather than admitting unmerged tags
+  git fetch -q origin '+refs/heads/main:refs/remotes/origin/main' || \
+    { echo "release channels require fetching origin/main"; exit 1; }
+  TAG=$(git tag -l "$PATTERN" --sort=-v:refname --merged origin/main | \
+    grep -E "^v($NUM)\\.($NUM)\\.($NUM)$" | head -n 1)
   [ -n "$TAG" ] || { echo "no release tag matches channel '$CHANNEL'"; exit 1; }
   REMOTE=$(git rev-parse "$TAG^{commit}")
   TRACK="$TAG"
