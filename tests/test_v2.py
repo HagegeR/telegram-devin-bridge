@@ -4287,6 +4287,7 @@ async def test_users_lists_env_and_approved(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "users.sqlite3"))
     store.save_access_request(333, "bob", "Bob")
     store.decide_access_request(333, "approved", 900)
+    store.bump_user_stats(333, sessions=1)
     telegram = _FakeTelegram()
     runtime = Bridge(config, store, _FakeDevin(), telegram)  # type: ignore[arg-type]
 
@@ -4295,7 +4296,9 @@ async def test_users_lists_env_and_approved(tmp_path: Path) -> None:
 
     await runtime.handle_message(message("/users", user_id=900, chat_id=900))
     assert telegram.sent[-1]["text"] == (
-        "222 · Sarah\n900 · allowed via .env\n333 · Bob"
+        "222 · Sarah · 0 sessions · 1 msgs · last seen just now\n"
+        "900 · allowed via .env · 0 sessions · 1 msgs · last seen just now\n"
+        "333 · Bob · 1 sessions · 0 msgs · last seen just now"
     )
     await runtime.shutdown()
 

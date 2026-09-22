@@ -328,6 +328,7 @@ class Bridge:
                 )
             logger.warning("Rejected Telegram message user=%s chat=%s", user_id, chat_id)
             return
+        self.store.bump_user_stats(user_id, messages=1)
         if not should_respond_in_group(
             message,
             self.bot_username,
@@ -758,6 +759,9 @@ class Bridge:
             title=stored_title,
             title_pending=title is None,
         )
+        sender_id = _int(_mapping(message.get("from")).get("id"))
+        if sender_id:
+            self.store.bump_user_stats(sender_id, sessions=1)
         started_id = await self.send_text(
             message,
             f"Started session: {session_url}",
@@ -1462,15 +1466,22 @@ class Bridge:
         if sender_id not in self.settings.admin_user_ids:
             await self.send_text(message, "Admins only.", ephemeral=True)
             return
-        lines = [
-            f"{user_id} · {label or 'allowed via .env'}"
+        entries = [
+            (user_id, label or "allowed via .env")
             for user_id, label in sorted(self.settings.allowed_user_labels.items())
         ]
-        lines.extend(
-            f"{request.user_id} · {request.first_name or request.username or 'user'}"
+        entries.extend(
+            (request.user_id, request.first_name or request.username or "user")
             for request in self.store.list_access_requests("approved")
             if request.user_id not in self.settings.allowed_users
         )
+        lines = []
+        for user_id, label in entries:
+            stats = self.store.get_user_stats(user_id)
+            lines.append(
+                f"{user_id} · {label} · {stats.sessions} sessions · "
+                f"{stats.messages} msgs · last seen {_ago(stats.last_seen_at)}"
+            )
         await self.send_text(message, "\n".join(lines) or "No approved users.")
 
     async def self_update(self, message: Mapping[str, object], args: str) -> None:
@@ -2069,6 +2080,16 @@ def _expand_text_links(
 
 def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _ago(timestamp: float | None) -> str:
+    if timestamp is None:
+        return "never"
+    seconds = max(0, int(time.time() - timestamp))
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return f"{seconds // size}{unit} ago"
+    return "just now"
 
 
 def _thread_id(message: Mapping[str, object]) -> int | None:
