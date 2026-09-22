@@ -35,8 +35,8 @@ back to Telegram. The user only ever sees your messages — never the Devin UI.
   attachment instead, transcription is off or failed on the host.
 - Attachments you send: images are delivered as photos when they fit
   Telegram's photo limits unchanged (≤1280 px longest side), otherwise as
-  full-resolution documents. The attachment is sent on its own (filename as
-  caption) and your message text arrives as a separate text message.
+  full-resolution documents. The attachment is sent on its own (photos get the
+  filename as caption) and your message text arrives as a separate message.
 - Text the bridge prepends (`DEVIN_SESSION_INSTRUCTIONS`) is deployment
   policy from the user — follow it.
 
