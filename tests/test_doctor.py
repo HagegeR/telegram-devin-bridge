@@ -574,7 +574,7 @@ async def test_transport_retry_succeeds_after_flaky() -> None:
         calls += 1
         if calls < 3:
             raise httpx.ConnectError("dns blip")
-        return httpx.Response(200, json={"items": []})
+        return httpx.Response(200, json=[{"playbook_id": "pb-1", "title": "Deploy"}])
 
     client = DevinClient(
         "apk_key",
@@ -583,7 +583,7 @@ async def test_transport_retry_succeeds_after_flaky() -> None:
         transport=httpx.MockTransport(handler),
     )
     result = await client.list_playbooks()
-    assert result == []
+    assert [(p.playbook_id, p.title) for p in result] == [("pb-1", "Deploy")]
     assert calls == 3
 
 

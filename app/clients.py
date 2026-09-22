@@ -177,8 +177,13 @@ class DevinClient:
         )
 
     async def list_playbooks(self) -> list[Playbook]:
-        payload = await self._json("GET", "/v1/playbooks")
-        items = payload.get("items", [])
+        response = await _with_transport_retry(
+            lambda: self.client.get("/v1/playbooks"), idempotent=True
+        )
+        response.raise_for_status()
+        items = response.json()
+        if isinstance(items, dict):
+            items = items.get("items", [])
         if not isinstance(items, list):
             return []
         result: list[Playbook] = []
