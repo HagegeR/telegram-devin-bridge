@@ -200,7 +200,7 @@ class SessionWatcher:
                 if state.pr_url is not None and state.pr_url != last_pr_url:
                     await self.telegram.send_message(
                         self.conversation.chat_id,
-                        f"PR: {state.pr_url}",
+                        f"🔗 PR: {state.pr_url}",
                         thread_id=self.conversation.thread_id,
                         disable_notification=self.silent,
                     )
@@ -245,7 +245,7 @@ class SessionWatcher:
             if not self.delivered:
                 await self.telegram.send_message(
                     self.conversation.chat_id,
-                    "Devin is still working; I'll deliver replies when you next message.",
+                    "⏳ Devin is still working; I'll deliver replies when you next message.",
                     thread_id=self.conversation.thread_id,
                     disable_notification=self.silent,
                 )
@@ -255,7 +255,7 @@ class SessionWatcher:
             try:
                 await self.telegram.send_message(
                     self.conversation.chat_id,
-                    f"Couldn't reach Devin: {self._short_reason(exc)}",
+                    f"⚠ Couldn't reach Devin: {self._short_reason(exc)}",
                     thread_id=self.conversation.thread_id,
                 )
                 await self._finish_reaction(expired=True)
@@ -325,7 +325,7 @@ class SessionWatcher:
             if self.drafts_ok and self.conversation.chat_id > 0:
                 await self._send_draft("")
             return
-        status_text = self._status_text(elapsed, state.structured_output)
+        status_text = self._status_text(elapsed, state)
         if self.drafts_ok and self.conversation.chat_id > 0:
             if (
                 self.last_status_text != status_text
@@ -666,16 +666,35 @@ class SessionWatcher:
         for result in results:
             self._index_outbound(result)
 
-    def _status_text(self, elapsed: float, structured_output: object | None) -> str:
+    def _status_text(self, elapsed: float, state: SessionState) -> str:
         total_seconds = max(0, int(elapsed))
         minutes, seconds = divmod(total_seconds, 60)
-        text = f"👀 Working… {minutes}:{seconds:02d}"
+        text = f"⏳ Working… {minutes}:{seconds:02d}"
         if self.delivered_count:
-            text += f" · {self.delivered_count} messages"
-        summary = self._structured_summary(structured_output)
+            text += f" · {self.delivered_count} updates"
+        activity = self._activity_age(state.updated_at)
+        if activity is not None:
+            text += f" · {activity}"
+        summary = self._structured_summary(state.structured_output)
         if summary:
             text += f"\n{summary}"
         return text
+
+    @staticmethod
+    def _activity_age(updated_at: str | None) -> str | None:
+        if updated_at is None:
+            return None
+        try:
+            stamp = datetime.datetime.fromisoformat(
+                updated_at.replace("Z", "+00:00")
+            ).timestamp()
+        except ValueError:
+            return None
+        age = max(0, int(time.time() - stamp))
+        if age <= 5:
+            return "active now"
+        minutes, seconds = divmod(age, 60)
+        return f"last activity {minutes}:{seconds:02d} ago"
 
     @staticmethod
     def _structured_summary(value: object | None) -> str:

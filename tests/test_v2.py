@@ -986,7 +986,7 @@ async def test_topic_command_creates_and_seeds_topic(tmp_path: Path) -> None:
     assert telegram.created_topics == [(222, "New topic")]
     assert telegram.sent[0]["thread_id"] == 19
     assert str(telegram.sent[0]["text"]).startswith("📌 New topic")
-    assert telegram.sent[1]["text"].startswith("Created topic New topic")
+    assert telegram.sent[1]["text"].startswith("✓ Created topic New topic")
     assert telegram.sent[1]["thread_id"] == 7
     await runtime.shutdown()
 
@@ -1022,7 +1022,7 @@ async def test_dispatch_failure_notifies_and_reacts(tmp_path: Path) -> None:
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert telegram.reactions[-1] == "👎"
-    assert telegram.sent[0]["text"].startswith("Couldn't process that message:")
+    assert telegram.sent[0]["text"].startswith("⚠ Couldn't process that message:")
     assert "parse_mode" not in telegram.sent[0]
     await runtime.shutdown()
 
@@ -1178,7 +1178,7 @@ async def test_option_only_reply_and_pr_url_are_persisted(tmp_path: Path) -> Non
         config,
     ).run()
     assert sum(
-        item["text"] == "PR: https://github.test/pr/1" for item in telegram.sent
+        item["text"] == "🔗 PR: https://github.test/pr/1" for item in telegram.sent
     ) == 1
 
 
@@ -1193,7 +1193,7 @@ async def test_unsupported_content_does_not_react_or_create_session(
     sticker.pop("text")
     sticker["sticker"] = {"file_id": "sticker"}
     await runtime.handle_message(sticker)
-    assert telegram.sent[0]["text"].startswith("Unsupported message type")
+    assert telegram.sent[0]["text"].startswith("ℹ Unsupported message type")
     assert telegram.reactions == []
     assert devin.created == []
     await runtime.shutdown()
@@ -1704,7 +1704,7 @@ async def test_resume_adopts_generated_title(tmp_path: Path) -> None:
     entry = store.list_history("222:9")[0]
     assert entry.title == "Generated"
     assert entry.title_pending is False
-    assert telegram.sent[-1]["text"] == "Resumed: Generated https://devin.test/s1"
+    assert telegram.sent[-1]["text"] == "✓ Resumed: Generated\nhttps://devin.test/s1"
 
     store.add_history(
         conv_key="222:9",
@@ -1719,7 +1719,7 @@ async def test_resume_adopts_generated_title(tmp_path: Path) -> None:
     assert stored is not None
     assert stored.title == "Manual title"
     assert stored.title_pending is False
-    assert telegram.sent[-1]["text"] == "Resumed: Manual title https://devin.test/s2"
+    assert telegram.sent[-1]["text"] == "✓ Resumed: Manual title\nhttps://devin.test/s2"
     await runtime.shutdown()
 
 
@@ -3114,7 +3114,7 @@ async def test_reaction_retry_stop_and_edited_message(tmp_path: Path) -> None:
         }
     )
     assert devin.terminated == ["s1"]
-    stopped = [item for item in telegram.sent if item["text"] == "Stopped session."]
+    stopped = [item for item in telegram.sent if item["text"] == "🛑 Stopped session."]
     assert stopped
     assert stopped[-1]["thread_id"] == 9
 
@@ -3572,7 +3572,7 @@ async def test_resume_survives_failed_topic_edit(tmp_path: Path) -> None:
     assert stored.title == "Telegram: prompt"
     assert stored.title_pending is True
     assert store.list_history("222:9")[0].title_pending is True
-    assert telegram.sent[-1]["text"] == "Resumed: Telegram: prompt https://devin.test/s1"
+    assert telegram.sent[-1]["text"] == "✓ Resumed: Telegram: prompt\nhttps://devin.test/s1"
     await runtime.watchers["s1"]
     assert telegram.edits == ["Generated", "Generated"]
     stored = store.get_conversation("222:9")
@@ -4317,13 +4317,13 @@ async def test_sethome_requires_admin(tmp_path: Path) -> None:
     await runtime.handle_message(message("/sethome", user_id=222, chat_id=222))
     assert store.get_setting("home_chat_id") is None
     assert not any(
-        item["text"] == "This chat is now the notification home."
+        item["text"] == "📌 This chat is now the notification home."
         for item in telegram.sent
     )
 
     await runtime.handle_message(message("/sethome", user_id=900, chat_id=900))
     assert store.get_setting("home_chat_id") == "900"
-    assert telegram.sent[-1]["text"] == "This chat is now the notification home."
+    assert telegram.sent[-1]["text"] == "📌 This chat is now the notification home."
     await runtime.shutdown()
 
 
@@ -5147,7 +5147,7 @@ async def test_rate_limit_blocks_choice_callback(tmp_path: Path) -> None:
     )
     assert devin.sent == []
     assert store.get_choice("pick") is not None
-    assert telegram.answers == ["Slow down — try again in a moment."]
+    assert telegram.answers == ["⏳ Slow down — try again in a moment."]
     await runtime.handle_callback(
         {
             "id": "cb2",

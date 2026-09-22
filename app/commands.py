@@ -198,7 +198,7 @@ async def handle_command(
             seed_message,
             f"📌 {name} — send a message here to start a Devin session.",
         )
-        await runtime.send_text(message, f"Created topic {name}.")
+        await runtime.send_text(message, f"✓ Created topic {name}.")
     elif command == "sessions":
         await _sessions(runtime, message, conv_key, conversation)
     elif command == "resume":
@@ -209,7 +209,7 @@ async def handle_command(
         else:
             state = await runtime.get_state(conversation.session_id)
             status = state.status_enum
-            pr_line = f"\nPR: {state.pr_url}" if state.pr_url else ""
+            pr_line = f"\n🔗 PR: {state.pr_url}" if state.pr_url else ""
             queued_line = (
                 f" · {runtime.queued_count(conv_key)} queued"
                 if runtime.queued_count(conv_key)
@@ -340,7 +340,7 @@ async def handle_command(
             return
         runtime.store.set_setting("home_chat_id", str(chat_id))
         runtime.store.set_setting("home_thread_id", str(thread_id or ""))
-        await runtime.send_text(message, "This chat is now the notification home.")
+        await runtime.send_text(message, "📌 This chat is now the notification home.")
     elif command == "update":
         await runtime.self_update(message, args)
     else:
@@ -426,7 +426,7 @@ async def _resume(
     )
     if retry_title:
         await runtime.start_watcher(conversation)
-    await runtime.send_text(message, f"Resumed: {title} {entry.session_url}")
+    await runtime.send_text(message, f"✓ Resumed: {title}\n{entry.session_url}")
 
 
 async def _stop(
