@@ -63,6 +63,8 @@ def deploy_clone(tmp_path: Path):
     git(work, "push", "-q", "origin", "main:refs/heads/v2-hotfix")
     # ref-valid but refspec-looking names must still fetch by name
     git(work, "push", "-q", "origin", "main:refs/heads/+canary")
+    # a plain branch later replaced by a nested name must not block the switch
+    git(work, "push", "-q", "origin", "main:refs/heads/release")
     # a tag on a commit not merged into main must never be selected
     git(work, "checkout", "-qb", "side", "HEAD~1")
     commit("e")
@@ -113,6 +115,14 @@ def test_versionish_branch_name_stays_a_branch(deploy_clone):
 def test_refspec_looking_branch_names(deploy_clone):
     clone, _ = deploy_clone
     assert track_of(check(clone, "+canary")) == "+canary"
+
+
+def test_deleted_parent_branch_does_not_block_nested(deploy_clone):
+    clone, work = deploy_clone
+    assert track_of(check(clone, "release")) == "release"
+    git(work, "push", "-q", "origin", ":refs/heads/release")
+    git(work, "push", "-q", "origin", "main:refs/heads/release/v2")
+    assert track_of(check(clone, "release/v2")) == "release/v2"
 
 
 def test_channel_with_no_matching_tag_fails(deploy_clone):

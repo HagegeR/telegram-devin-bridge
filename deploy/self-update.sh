@@ -55,6 +55,9 @@ if [ "$MODE" = tag ]; then
   REMOTE=$(git rev-parse "$TAG^{commit}")
   TRACK="$TAG"
 else
+  # drop stale remote refs first: a deleted origin/release would otherwise
+  # block creating refs/remotes/origin/release/v2 on a channel switch
+  git remote prune origin >/dev/null 2>&1 || true
   # explicit refspec: branch names like +canary or @ must not be read as
   # refspec syntax or HEAD shorthand
   git fetch -q origin "+refs/heads/$CHANNEL:refs/remotes/origin/$CHANNEL"

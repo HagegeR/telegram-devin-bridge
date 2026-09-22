@@ -10,6 +10,9 @@ respawn_delay=5
 respawn_max=0
 output_log="/var/log/${RC_SVCNAME}.log"
 error_log="/var/log/${RC_SVCNAME}.err"
+# conf.d update-channel vars must reach the supervised process so /update
+# and the admin API resolve the same channel as the cron updater
+export SELF_UPDATE_CHANNEL SELF_UPDATE_BRANCH SELF_UPDATE_SERVICE
 
 depend() {
     need net

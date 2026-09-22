@@ -6,10 +6,18 @@ revisions it receives.
 
 ## Update channels
 
-Set `SELF_UPDATE_CHANNEL` where the updater reads its environment
-(`/etc/conf.d/telegram-devin-bridge` on the reference Alpine host, or the
-service environment for `deploy/vm` installs). The legacy
-`SELF_UPDATE_BRANCH` still works as a fallback when no channel is set.
+Set `SELF_UPDATE_CHANNEL` where the updater reads its environment:
+
+- **OpenRC** (`deploy/openrc`, `deploy/vm` initd): `/etc/conf.d/telegram-devin-bridge`.
+  The service script and the cron updater both read it, so `/update`, the
+  admin API, and cron resolve the same channel.
+- **systemd** (`deploy/vm` service): `/etc/telegram-devin-bridge.env`
+  (`EnvironmentFile=` in the unit, e.g. `SELF_UPDATE_CHANNEL=stable`).
+
+The legacy `SELF_UPDATE_BRANCH` still works as a fallback when no channel is
+set. To try a channel once without changing the configured one, admins can
+run `/update <channel>` in Telegram — the next scheduled update reverts to
+the configured channel.
 
 | Channel | You get | Pick it when |
 | --- | --- | --- |
