@@ -329,9 +329,12 @@ def register_admin_route(
                 return {"ok": problems == ["ok"], "results": problems}
 
             if action == "backup":
-                database_path = runtime.store.path
-                if not database_path.is_absolute():
-                    database_path = _REPO_ROOT / database_path
+                database_path = runtime.store.path  # resolved at open
+                if not database_path.exists():
+                    return {
+                        "ok": False,
+                        "error": f"no file-backed database at {database_path}",
+                    }
                 stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
                 dest = database_path.with_name(
                     f"{database_path.stem}-backup-{stamp}.sqlite3"

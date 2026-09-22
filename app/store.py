@@ -69,7 +69,9 @@ class UserStats:
 class Store:
     def __init__(self, database_path: str) -> None:
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-        self.path = Path(database_path)
+        # resolve the same way sqlite does — relative to the process cwd — so
+        # backup paths always land beside the live database file
+        self.path = Path(database_path).resolve()
         self.connection = sqlite3.connect(database_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.RLock()
