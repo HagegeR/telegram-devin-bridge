@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 RETRY_ATTEMPTS = 5
 RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
 CAPTION_LIMIT = 1024  # https://core.telegram.org/bots/api#sendphoto
+PR_CACHE_TTL_SECONDS = 60.0
+PR_CACHE_MAX = 256
 T = TypeVar("T")
 
 
@@ -121,6 +124,8 @@ class DevinClient:
             timeout=timeout,
             transport=transport,
         )
+        self._download_slots = asyncio.Semaphore(4)
+        self._pr_cache: dict[str, tuple[float, dict[str, object]]] = {}
 
     async def create_session(
         self,
@@ -149,13 +154,23 @@ class DevinClient:
             json={"message": message},
         )
 
-    async def get_session(self, session_id: str) -> SessionState:
+    async def get_session(
+        self,
+        session_id: str,
+        *,
+        since_event_id: str | None = None,
+    ) -> SessionState:
         payload = await self._json("GET", f"/v1/sessions/{session_id}")
         messages_value = payload.get("messages", [])
         messages: list[DevinMessage] = []
+        seen_marker = since_event_id is None
         if isinstance(messages_value, list):
             for item in messages_value:
                 if not isinstance(item, dict):
+                    continue
+                if not seen_marker:
+                    if self._optional_str(item.get("event_id")) == since_event_id:
+                        seen_marker = True
                     continue
                 messages.append(
                     DevinMessage(
@@ -165,6 +180,19 @@ class DevinClient:
                         timestamp=self._optional_str(item.get("timestamp")),
                     )
                 )
+        if since_event_id is not None and not seen_marker:
+            # Marker vanished from history; rebuild everything so no message
+            # is silently dropped.
+            messages = [
+                DevinMessage(
+                    message_type=self._optional_str(item.get("type")) or "",
+                    event_id=self._optional_str(item.get("event_id")),
+                    message=self._optional_str(item.get("message")) or "",
+                    timestamp=self._optional_str(item.get("timestamp")),
+                )
+                for item in messages_value
+                if isinstance(item, dict)
+            ]
         pull_request = payload.get("pull_request")
         pr_url: str | None = None
         if isinstance(pull_request, dict):
@@ -221,6 +249,13 @@ class DevinClient:
         return value
 
     async def download_attachment(
+        self,
+        url: str,
+    ) -> tuple[bytes, str] | None:
+        async with self._download_slots:
+            return await self._download_attachment(url)
+
+    async def _download_attachment(
         self,
         url: str,
     ) -> tuple[bytes, str] | None:
@@ -327,6 +362,9 @@ class DevinClient:
         url: str,
         token: str | None = None,
     ) -> dict[str, object] | None:
+        cached = self._pr_cache.get(url)
+        if cached is not None and time.monotonic() - cached[0] < PR_CACHE_TTL_SECONDS:
+            return cached[1]
         if re.fullmatch(
             r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+",
             url,
@@ -348,7 +386,19 @@ class DevinClient:
             value = response.json()
         except ValueError:
             return None
-        return cast(dict[str, object], value) if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None
+        if len(self._pr_cache) >= PR_CACHE_MAX:
+            cutoff = time.monotonic() - PR_CACHE_TTL_SECONDS
+            self._pr_cache = {
+                key: item
+                for key, item in self._pr_cache.items()
+                if item[0] >= cutoff
+            }
+        if len(self._pr_cache) >= PR_CACHE_MAX:
+            self._pr_cache.pop(next(iter(self._pr_cache)))
+        self._pr_cache[url] = (time.monotonic(), value)
+        return cast(dict[str, object], value)
 
     async def _call(
         self,
@@ -742,7 +792,7 @@ class TelegramClient:
         """Send an image as a photo, downscaling it to Telegram's sendPhoto limits
         (10 MB, width+height <= 10000, ratio <= 20). Images that cannot fit, or
         that Telegram still rejects with 400, are sent as a document instead."""
-        fitted = fit_photo(content)
+        fitted = await asyncio.to_thread(fit_photo, content)
         if fitted is None:
             return await self.send_document(
                 chat_id,
@@ -920,14 +970,27 @@ class TelegramClient:
                     lambda: self.client.request(method, path, json=body),
                     idempotent=idempotent,
                 )
-        if response.status_code == 400 and parse_mode is not None and body is not None:
-            plain_body = dict(body)
-            plain_body.pop("parse_mode", None)
-            response = await _with_transport_retry(
-                lambda: self.client.request(method, path, json=plain_body),
-                idempotent=idempotent,
-            )
-            if response.status_code == 400 and "reply_markup" in plain_body:
+        if response.status_code == 400 and body is not None:
+            description = self._error_description(response)
+            if parse_mode is not None and "can't parse" in description:
+                plain_body = dict(body)
+                plain_body.pop("parse_mode", None)
+                response = await _with_transport_retry(
+                    lambda: self.client.request(method, path, json=plain_body),
+                    idempotent=idempotent,
+                )
+                if (
+                    response.status_code == 400
+                    and "reply_markup" in plain_body
+                    and self._is_markup_error(self._error_description(response))
+                ):
+                    plain_body.pop("reply_markup", None)
+                    response = await _with_transport_retry(
+                        lambda: self.client.request(method, path, json=plain_body),
+                        idempotent=idempotent,
+                    )
+            elif "reply_markup" in body and self._is_markup_error(description):
+                plain_body = dict(body)
                 plain_body.pop("reply_markup", None)
                 response = await _with_transport_retry(
                     lambda: self.client.request(method, path, json=plain_body),
@@ -949,6 +1012,24 @@ class TelegramClient:
         if not isinstance(result, dict):
             return {}
         return cast(dict[str, object], result)
+
+    @staticmethod
+    def _error_description(response: httpx.Response) -> str:
+        try:
+            payload = TelegramClient._json_object(response)
+        except (TypeError, ValueError):
+            return ""
+        description = payload.get("description")
+        return description.casefold() if isinstance(description, str) else ""
+
+    @staticmethod
+    def _is_markup_error(description: str) -> bool:
+        return (
+            "markup" in description
+            or "button" in description
+            or "keyboard" in description
+            or "can't parse" in description
+        )
 
     @staticmethod
     def _json_object(response: httpx.Response) -> dict[str, object]:

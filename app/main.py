@@ -61,6 +61,12 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _ANNOUNCE_MAX_ATTEMPTS = 3
 _ANNOUNCE_RETRY_DELAYS = (30.0, 120.0)
+_UPDATE_CONCURRENCY = 8
+_MAX_PENDING_FRAGMENTS = 20
+_MAX_QUEUED_TURNS = 20
+_MAX_TRANSIENT_IDS = 100
+_MAX_IMPLICIT_TOPICS = 512
+_JANITOR_INTERVAL_SECONDS = 600
 
 
 async def _run_command(
@@ -123,7 +129,10 @@ class Bridge:
         self.locks: dict[str, asyncio.Lock] = {}
         self.lock_refs: dict[str, int] = {}
         self.background_tasks: set[asyncio.Task[None]] = set()
-        self.denied_notices: set[tuple[int, int]] = set()
+        self._janitor_task: asyncio.Task[None] | None = None
+        self.denied_notices: dict[tuple[int, int], float] = {}
+        self._update_slots = asyncio.Semaphore(_UPDATE_CONCURRENCY)
+        self._transcription_client: httpx.AsyncClient | None = None
         self._run_command = _run_command
         self.access_prompted: dict[int, float] = {}
         self.transient_messages: dict[str, list[int]] = {}
@@ -148,6 +157,7 @@ class Bridge:
             request.user_id
             for request in self.store.list_access_requests("approved")
         }
+        self._janitor_task = asyncio.create_task(self._janitor())
         await self._resume_watchers()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
@@ -249,12 +259,18 @@ class Bridge:
             task.cancel()
         if self.watchers:
             await asyncio.gather(*self.watchers.values(), return_exceptions=True)
+        if self._janitor_task is not None:
+            self._janitor_task.cancel()
+            await asyncio.gather(self._janitor_task, return_exceptions=True)
+            self._janitor_task = None
         for task in self.background_tasks:
             task.cancel()
         if self.background_tasks:
             await asyncio.gather(*self.background_tasks, return_exceptions=True)
         await self.devin.close()
         await self.telegram.close()
+        if self._transcription_client is not None:
+            await self._transcription_client.aclose()
         self.store.close()
 
     async def handle_update(self, update: Mapping[str, object]) -> None:
@@ -266,27 +282,28 @@ class Bridge:
         task.add_done_callback(self.background_tasks.discard)
 
     async def _dispatch_update(self, update: Mapping[str, object]) -> None:
-        try:
-            callback = _mapping(update.get("callback_query"))
-            if callback:
-                await self.handle_callback(callback)
-                return
-            reaction = _mapping(update.get("message_reaction"))
-            if reaction:
-                await self.handle_reaction(reaction)
-                return
-            edited = _mapping(update.get("edited_message"))
-            if edited:
-                await self.handle_edited_message(edited)
-                return
-            message = _mapping(update.get("message")) or _mapping(
-                update.get("channel_post")
-            )
-            if message:
-                await self.handle_message(message)
-        except Exception as exc:
-            logger.exception("Failed to process Telegram update")
-            await self._report_processing_failure(update, exc)
+        async with self._update_slots:
+            try:
+                callback = _mapping(update.get("callback_query"))
+                if callback:
+                    await self.handle_callback(callback)
+                    return
+                reaction = _mapping(update.get("message_reaction"))
+                if reaction:
+                    await self.handle_reaction(reaction)
+                    return
+                edited = _mapping(update.get("edited_message"))
+                if edited:
+                    await self.handle_edited_message(edited)
+                    return
+                message = _mapping(update.get("message")) or _mapping(
+                    update.get("channel_post")
+                )
+                if message:
+                    await self.handle_message(message)
+            except Exception as exc:
+                logger.exception("Failed to process Telegram update")
+                await self._report_processing_failure(update, exc)
 
     async def handle_message(self, message: Mapping[str, object]) -> None:
         sender = _mapping(message.get("from"))
@@ -299,7 +316,8 @@ class Bridge:
             if thread_id is not None:
                 key = (chat_id, thread_id)
                 if bool(topic_created.get("is_name_implicit")):
-                    self.implicit_topics.add(key)
+                    if len(self.implicit_topics) < _MAX_IMPLICIT_TOPICS:
+                        self.implicit_topics.add(key)
                 else:
                     self.implicit_topics.discard(key)
         if any(
@@ -337,7 +355,7 @@ class Bridge:
                         },
                     )
             elif key not in self.denied_notices:
-                self.denied_notices.add(key)
+                self.denied_notices[key] = time.time()
                 await self._send_to_ids(
                     chat_id,
                     f"This bot is private. Your user id is {user_id}.",
@@ -428,6 +446,9 @@ class Bridge:
         ):
             await self._flush_pending(conv_key)
             pending = self.pending_turns.setdefault(conv_key, [])
+        if len(pending) >= _MAX_PENDING_FRAGMENTS:
+            await self._flush_pending(conv_key)
+            pending = self.pending_turns.setdefault(conv_key, [])
         pending.append((message, text, attachment))
         if self.settings.telegram_debounce_seconds <= 0:
             await self._flush_pending(conv_key)
@@ -471,8 +492,17 @@ class Bridge:
                 and not self.shutting_down
                 and self._conversation_busy(conv_key)
             ):
-                self.queued_turns.setdefault(conv_key, []).append(turn)
-                await self.react(message, "🤔")
+                queue = self.queued_turns.setdefault(conv_key, [])
+                if len(queue) >= _MAX_QUEUED_TURNS:
+                    await self.telegram.send_message(
+                        _int(_mapping(message.get("chat")).get("id")),
+                        "⚠ Too many queued messages — please wait for the "
+                        "current turn to finish.",
+                        thread_id=_thread_id(message),
+                    )
+                else:
+                    queue.append(turn)
+                    await self.react(message, "🤔")
                 return
             queued = self.queued_turns.pop(conv_key, [])
             for index, queued_turn in enumerate(queued):
@@ -571,6 +601,31 @@ class Bridge:
         return len(self.queued_turns.get(conv_key, [])) + len(
             self.pending_turns.get(conv_key, [])
         )
+
+    async def _janitor(self) -> None:
+        while True:
+            await asyncio.sleep(_JANITOR_INTERVAL_SECONDS)
+            try:
+                now_monotonic = time.monotonic()
+                for user_id, window in list(self.rate_windows.items()):
+                    while window and window[0] <= now_monotonic - 60:
+                        window.popleft()
+                    if not window:
+                        self.rate_windows.pop(user_id, None)
+                for user_id, warned_at in list(self.rate_warnings.items()):
+                    if now_monotonic - warned_at >= 300:
+                        self.rate_warnings.pop(user_id, None)
+                now_wall = time.time()
+                for user_id, prompted_at in list(self.access_prompted.items()):
+                    if now_wall - prompted_at >= 86400:
+                        self.access_prompted.pop(user_id, None)
+                for key, noticed_at in list(self.denied_notices.items()):
+                    if now_wall - noticed_at >= 86400:
+                        self.denied_notices.pop(key, None)
+                self.store.cleanup_message_index()
+                self.store.cleanup_long_texts()
+            except Exception:
+                logger.exception("Janitor sweep failed")
 
     def _rate_limited(self, user_id: int) -> bool:
         limit = self.settings.telegram_rate_limit_per_minute
@@ -784,7 +839,9 @@ class Bridge:
             silent=True,
         )
         if started_id is not None:
-            self.transient_messages.setdefault(conv_key, []).append(started_id)
+            transient = self.transient_messages.setdefault(conv_key, [])
+            if len(transient) < _MAX_TRANSIENT_IDS:
+                transient.append(started_id)
         if start_watcher:
             await self.start_watcher(
                 conversation,
@@ -852,6 +909,7 @@ class Bridge:
                 if old_trigger is not None and old_trigger != trigger_message_id:
                     await self._react(conversation.chat_id, old_trigger, "👍")
             return
+        conv_settings = self._conversation_settings(conversation.conv_key)
         watcher = SessionWatcher(
             conversation,
             self.store,
@@ -864,11 +922,17 @@ class Bridge:
                 conversation.conv_key,
                 [],
             ),
-            drafts_enabled=self._conversation_drafts(conversation.conv_key),
-            status_after_seconds=self._conversation_status_after(
-                conversation.conv_key,
+            drafts_enabled=(
+                self.settings.telegram_drafts
+                if conv_settings.drafts is None
+                else conv_settings.drafts
             ),
-            silent=self._conversation_silent(conversation.conv_key),
+            status_after_seconds=(
+                self.settings.devin_status_after_seconds
+                if conv_settings.status_timer is not False
+                else float("inf")
+            ),
+            silent=conv_settings.silent,
             has_queued=lambda: self.queued_count(conversation.conv_key) > 0,
             resume_from=resume_from,
         )
@@ -1950,20 +2014,23 @@ class Bridge:
             data = {"model": self.settings.transcription_model}
             if language is not None:
                 data["language"] = language
-            async with httpx.AsyncClient(
-                base_url=self.settings.transcription_base_url.rstrip("/"),
-                headers={
-                    "Authorization": f"Bearer {self.settings.transcription_api_key}"
-                },
-                timeout=30,
-            ) as client:
-                response = await client.post(
-                    "/audio/transcriptions",
-                    data=data,
-                    files={"file": (filename, content, content_type)},
+            if self._transcription_client is None:
+                self._transcription_client = httpx.AsyncClient(
+                    base_url=self.settings.transcription_base_url.rstrip("/"),
+                    headers={
+                        "Authorization": (
+                            f"Bearer {self.settings.transcription_api_key}"
+                        )
+                    },
+                    timeout=30,
                 )
-                response.raise_for_status()
-                payload = response.json()
+            response = await self._transcription_client.post(
+                "/audio/transcriptions",
+                data=data,
+                files={"file": (filename, content, content_type)},
+            )
+            response.raise_for_status()
+            payload = response.json()
         except (httpx.HTTPError, ValueError):
             logger.warning("Voice transcription failed", exc_info=True)
             return None
@@ -2078,7 +2145,7 @@ def _expand_text_links(
     if not isinstance(entities, list):
         return text
     raw_text = text.encode("utf-16-le")
-    links: list[tuple[int, int, str]] = []
+    candidates: list[tuple[int, int, str]] = []
     for entity_value in entities:
         entity = _mapping(entity_value)
         if entity.get("type") != "text_link":
@@ -2094,15 +2161,30 @@ def _expand_text_links(
             or length <= 0
         ):
             continue
-        start = offset * 2
-        end = (offset + length) * 2
-        if end > len(raw_text):
+        end = offset + length
+        if end * 2 > len(raw_text):
             continue
+        candidates.append((offset, end, url))
+    links: list[tuple[int, int, str]] = []
+    index = 0  # python index corresponding to unit_cursor
+    unit_cursor = 0  # utf-16 units already decoded
+    for offset, end, url in sorted(candidates):
         try:
-            start_index = len(raw_text[:start].decode("utf-16-le"))
-            end_index = len(raw_text[:end].decode("utf-16-le"))
+            if offset >= unit_cursor:
+                index += len(
+                    raw_text[unit_cursor * 2 : offset * 2].decode("utf-16-le")
+                )
+                start_index = index
+            else:
+                start_index = len(raw_text[: offset * 2].decode("utf-16-le"))
+            end_index = start_index + len(
+                raw_text[offset * 2 : end * 2].decode("utf-16-le")
+            )
         except UnicodeDecodeError:
             continue
+        if end > unit_cursor:
+            unit_cursor = end
+            index = end_index
         links.append((start_index, end_index, url))
     expanded = text
     for start, end, url in sorted(links, reverse=True):
