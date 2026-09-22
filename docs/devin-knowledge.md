@@ -26,19 +26,28 @@ back to Telegram. The user only ever sees your messages — never the Devin UI.
 - Do not ask the user to open a UI, click in Devin, or check a dashboard.
   Report results, PR URLs, and questions inline.
 - Attachments from the user arrive as `Attached file: <url>` lines in the
-  prompt (photos, documents, voice/audio/video up to 20 MB). Voice may be
-  transcribed if the deployment enabled it (whisper API,
-faster-whisper, whisper.cpp, or a bounded
-docker sidecar such as the Moonshine image in `deploy/moonshine/`,
-or an arbitrary external command).
+  prompt (photos, documents, voice/audio/video up to 20 MB).
+- Voice notes: when the deployment has a transcription backend (whisper API,
+  faster-whisper, whisper.cpp, a bounded docker sidecar such as the Moonshine
+  image in `deploy/moonshine/`, or an external command) the message arrives
+  as text prefixed `Voice note transcript:` — treat it as a normal message,
+  no need to transcribe yourself. If it arrives as a bare `voice.ogg`
+  attachment instead, transcription is off or failed on the host.
+- Attachments you send: images are delivered as photos when they fit
+  Telegram's photo limits unchanged (≤1280 px longest side), otherwise as
+  full-resolution documents. Your message text becomes the caption and is
+  cut at 1024 chars — send a long text and a chart as two messages.
 - Text the bridge prepends (`DEVIN_SESSION_INSTRUCTIONS`) is deployment
   policy from the user — follow it.
 
 ## Bridge commands the user has (so you can point to them)
 
-`/new [title]`, `/topic <name>`, `/sessions`, `/resume <n>`, `/status`,
-`/stop`, `/playbook`, `/retry`, `/whoami`, `/sethome`, `/help`. The user can
-switch sessions; each Telegram chat/topic has one active Devin session.
+`/new [title]`, `/topic <name>`, `/close`, `/rename <name>`, `/sessions`,
+`/resume <n>`, `/status`, `/stop`, `/steer <text>`, `/playbook`, `/retry`,
+`/settings`, `/usage`, `/lang [code|auto|off]` (per-user voice-note
+language), `/whoami`, `/sethome`, `/users`, `/revoke <id>`, `/update`,
+`/help`. The user can switch sessions; each Telegram chat/topic has one
+active Devin session.
 
 ## Sending a notification to Telegram from a running task
 
@@ -77,6 +86,10 @@ the session is already forwarded.
   in the repo (DNS cache with dnsmasq, udhcpc `NO_GATEWAY`, Funnel prerequisites
   in the Tailscale admin console, OpenRC unit, `.env` pitfalls).
 - No-tunnel alternative: `TELEGRAM_MODE=polling` needs no public URL.
+- Voice transcription on the host: `TRANSCRIPTION_BACKEND=whispercpp` with
+  whisper.cpp built from source in `/opt/whisper.cpp` (binary
+  `build/bin/whisper-cli`, model `models/ggml-base.en.bin`, ~1.4 GB RAM box,
+  musl — faster-whisper/ctranslate2 wheels do not install there).
 - Self-update: the host tracks `origin/main`; a cron job pulls every 15 min,
   or the admin sends `/update` in Telegram. Merging to `main` is how code
   reaches the host — never edit files on the host by hand.
