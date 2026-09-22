@@ -145,6 +145,13 @@ pytest          # test suite
 ruff check .    # lint
 ```
 
+## Community
+
+- [Contributing](CONTRIBUTING.md) — dev setup, checks, and PR conventions.
+- [Security policy](SECURITY.md) — report vulnerabilities privately.
+- [Code of Conduct](CODE_OF_CONDUCT.md) — the Contributor Covenant.
+- Bugs and features: use the [issue templates](https://github.com/HagegeR/telegram-devin-bridge/issues/new/choose).
+
 ## Safety
 
 - Never commit `.env`, tokens, API keys, or real user/chat identifiers.
