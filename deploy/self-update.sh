@@ -81,11 +81,9 @@ else
 fi
 [ "$CHECK" = 1 ] && exit 0
 git reset -q --hard
-if [ "$MODE" = tag ]; then
-  git checkout -q -f --detach "$TAG"
-else
-  git checkout -q -f -B "$CHANNEL" "origin/$CHANNEL"
-fi
+# deploy-only checkout: detached HEAD in both modes — creating local branch
+# refs only buys name/dir conflicts when channels switch nesting
+git checkout -q -f --detach "$REMOTE"
 [ "$(git rev-parse HEAD)" = "$REMOTE" ] || { echo "checkout failed"; exit 1; }
 if [ -z "$PREV" ] || ! git cat-file -e "$PREV^{commit}" 2>/dev/null; then
   .venv/bin/pip install -q -r requirements.txt

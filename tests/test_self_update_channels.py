@@ -32,6 +32,12 @@ def git(cwd: Path, *args: str) -> None:
     )
 
 
+def commit(work: Path, name: str) -> None:
+    (work / name).write_text(name)
+    git(work, "add", name)
+    git(work, "commit", "-qm", name)
+
+
 @pytest.fixture()
 def deploy_clone(tmp_path: Path):
     """Bare origin on main + a clone kept one release behind, like the host."""
@@ -42,20 +48,15 @@ def deploy_clone(tmp_path: Path):
     git(tmp_path, "init", "-b", "main", str(work))
     git(work, "remote", "add", "origin", str(origin))
 
-    def commit(name: str) -> None:
-        (work / name).write_text(name)
-        git(work, "add", name)
-        git(work, "commit", "-qm", name)
-
-    commit("a")  # clone's HEAD stays here
+    commit(work, "a")  # clone's HEAD stays here
     git(work, "push", "-q", "origin", "main")
     git(tmp_path, "clone", "-q", str(origin), str(clone))
 
-    commit("b")
+    commit(work, "b")
     git(work, "tag", "-a", "v1.2.0", "-m", "v1.2.0")
-    commit("c")
+    commit(work, "c")
     git(work, "tag", "-a", "v1.2.1", "-m", "v1.2.1")
-    commit("d")
+    commit(work, "d")
     git(work, "tag", "-a", "v2.0.0", "-m", "v2.0.0")
     git(work, "push", "-q", "origin", "main", "v1.2.0", "v1.2.1", "v2.0.0")
 
@@ -67,7 +68,7 @@ def deploy_clone(tmp_path: Path):
     git(work, "push", "-q", "origin", "main:refs/heads/release")
     # a tag on a commit not merged into main must never be selected
     git(work, "checkout", "-qb", "side", "HEAD~1")
-    commit("e")
+    commit(work, "e")
     git(work, "tag", "-a", "v9.9.9", "-m", "v9.9.9")
     git(work, "push", "-q", "origin", "v9.9.9")
     git(work, "checkout", "-q", "main")
@@ -123,6 +124,47 @@ def test_deleted_parent_branch_does_not_block_nested(deploy_clone):
     git(work, "push", "-q", "origin", ":refs/heads/release")
     git(work, "push", "-q", "origin", "main:refs/heads/release/v2")
     assert track_of(check(clone, "release/v2")) == "release/v2"
+
+
+def test_real_update_survives_branch_nesting_switch(deploy_clone):
+    # full update path incl. the checkout: a stale local refs/heads/release
+    # (left by pre-channel checkouts) must not block release/v2
+    clone, work = deploy_clone
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+
+    def run(channel: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["sh", "deploy/self-update.sh", channel],
+            cwd=clone,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert run("release").returncode == 0
+    git(clone, "branch", "-f", "release", "HEAD")  # stale ref, like old -B left
+    git(work, "push", "-q", "origin", ":refs/heads/release")
+    commit(work, "f")
+    git(work, "push", "-q", "origin", "HEAD:refs/heads/release/v2")
+    result = run("release/v2")
+    assert result.returncode == 0, result.stdout + result.stderr
+    head = git_out(clone, "rev-parse", "HEAD")
+    assert head == git_out(clone, "rev-parse", "origin/release/v2")
+
+
+def git_out(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        env={**os.environ, **GIT_ENV},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 def test_channel_with_no_matching_tag_fails(deploy_clone):
