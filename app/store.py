@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -66,12 +68,47 @@ class UserStats:
 
 class Store:
     def __init__(self, database_path: str) -> None:
-        Path(database_path).parent.mkdir(parents=True, exist_ok=True)
+        if database_path:
+            Path(database_path).parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(database_path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.lock = threading.RLock()
+        # sqlite reports the filename it actually opened here — empty for
+        # :memory:, URI targets, and temporary (empty-path) databases — so
+        # backups always land beside the live file, never a resolved guess
+        row = self.connection.execute("PRAGMA database_list").fetchone()
+        self.path = Path(row[2]).resolve() if row and row[2] else None
         self._last_processed_prune = 0.0
         self._initialize()
+
+    def integrity_check(self) -> list[str]:
+        with self.lock:
+            return [
+                row[0]
+                for row in self.connection.execute("PRAGMA integrity_check")
+            ]
+
+    def backup_to(self, dest: Path) -> None:
+        # sqlite's online backup API tolerates concurrent readers/writers, so
+        # this deliberately runs outside self.lock; the snapshot is written to
+        # a temp file and renamed so a failed copy never leaves a valid-looking
+        # backup behind
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=dest.parent, prefix=dest.name + ".", suffix=".tmp"
+        )
+        os.close(fd)
+        tmp_path = Path(tmp)
+        try:
+            target = sqlite3.connect(tmp_path)
+            try:
+                self.connection.backup(target)
+            finally:
+                target.close()
+            os.replace(tmp_path, dest)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def conv_key(

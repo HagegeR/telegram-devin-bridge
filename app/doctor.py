@@ -74,12 +74,15 @@ def load_settings_or_error() -> Settings | CheckResult:
             f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
             for error in exc.errors()
         )
+        fields = ", ".join(
+            sorted({".".join(str(p) for p in e["loc"]).upper() for e in exc.errors()})
+        )
         return CheckResult(
             "env",
             "fail",
             f"settings failed to load: {detail}",
-            "remove empty lines for optional int fields (TELEGRAM_HOME_CHANNEL) "
-            "from .env",
+            f"fix {fields} in .env or the environment — "
+            "empty optional values are allowed, malformed ones are not",
         )
 
 
