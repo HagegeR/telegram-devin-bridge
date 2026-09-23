@@ -6,4 +6,5 @@ set -eu
 
 mkdir -p /data
 chown -R bridge:bridge /data
+# shellcheck disable=SC2016
 exec su -s /bin/sh bridge -c 'exec "$0" "$@"' -- "$@"

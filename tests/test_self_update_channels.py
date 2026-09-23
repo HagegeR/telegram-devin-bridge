@@ -157,6 +157,48 @@ def test_real_update_survives_branch_nesting_switch(deploy_clone):
     assert head == git_out(clone, "rev-parse", "origin/release/v2")
 
 
+def test_supervised_caller_gets_termed(deploy_clone, tmp_path: Path):
+    # when the caller IS the service's MainPID the script arms a detached TERM
+    # for supervisor respawn — here a sacrificial wrapper shell plays the
+    # service so pytest stays untouched
+    import signal
+
+    clone, _ = deploy_clone
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    bin_dir = tmp_path / "sbin"
+    bin_dir.mkdir()
+    stub = bin_dir / "systemctl"
+    # report the script's parent (the wrapper) as the service MainPID:
+    # stub -> command-substitution shell -> script -> wrapper, so walk up two
+    stub.write_text(
+        "#!/bin/sh\n"
+        "ps -o ppid= -p $(ps -o ppid= -p $PPID | tr -d ' ') | tr -d ' '\n"
+    )
+    stub.chmod(0o755)
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "INVOCATION_ID": "test",
+    }
+    result = subprocess.run(
+        # `exec` makes the sleep itself the TERM target's child that gets
+        # killed; a plain `; sleep 30` would leave an orphaned sleep
+        # reparented to init and visible to other tests' `ps` listings
+        ["sh", "-c", "sh deploy/self-update.sh release; exec sleep 30"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == -signal.SIGTERM
+    assert (clone / ".self-update-pending").exists()
+
+
 def git_out(cwd: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", *args],
