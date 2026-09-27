@@ -39,10 +39,15 @@ awk -v ver="$VER" '
   { echo "error: no changelog entries for $TAG" >&2; exit 1; }
 git diff --quiet CHANGELOG.md || {
   git commit -qam "docs: $TAG changelog section"
-  git push -q origin main ||
-    { echo "error: main rejected the push (protected branch?) — land the" \
-        "'docs: $TAG changelog section' commit via PR, then re-run" >&2
-      exit 1; }
+  git push -q origin main || {
+    # protected main: keep the commit on a side branch for a PR and realign
+    # local main so a squash merge cannot strand the retry on a divergent ref
+    git push -q origin "HEAD:refs/heads/release/$TAG-changelog"
+    git reset -q --hard origin/main
+    echo "error: main is protected — open a PR from release/$TAG-changelog," >&2
+    echo "  merge it, then re-run: $0 $TAG" >&2
+    exit 1
+  }
 }
 
 git tag -a "$TAG" -m "$TAG"
