@@ -66,6 +66,9 @@ When in doubt between MINOR and MAJOR: if a correctly-configured existing
    notes. When a release for the tag already exists — e.g. drafted through
    the GitHub UI, which also pushes the tag — its notes are updated in place
    instead of failing on a name clash.
+4. To (re)publish a tag whose run failed — a tag's rerun executes the
+   workflow revision at that tag, not `main`'s — use Actions → Release →
+   Run workflow with the tag as input instead of re-running the failed job.
 
 Hosts on `stable`, `vX`, or `vX.Y` pick the new tag up on their next
 self-update run (cron or `/update`); hosts on `main` already had the code and

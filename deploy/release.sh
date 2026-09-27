@@ -22,6 +22,11 @@ fi
 git pull -q --ff-only
 
 if ! grep -qE "^## \[v?$VER\]" CHANGELOG.md; then
+  # check before editing so a failure leaves the tree clean
+  awk '$0 == "## [Unreleased]" { found=1; next } /^## / { found=0 } found' \
+    CHANGELOG.md | grep -q . ||
+    { echo "error: CHANGELOG.md Unreleased is empty — write entries first" >&2
+      exit 1; }
   # move the Unreleased body under a new version heading
   sed -i "s/^## \[Unreleased\]$/## [Unreleased]\n\n## [$TAG] - $(date +%F)/" \
     CHANGELOG.md
@@ -31,10 +36,13 @@ awk -v ver="$VER" '
   $0 ~ "^## \\[v?" ver "\\]" { found=1; next }
   /^## / { found=0 }
   found' CHANGELOG.md | grep -q . ||
-  { echo "error: no changelog entries for $TAG (Unreleased is empty)" >&2; exit 1; }
+  { echo "error: no changelog entries for $TAG" >&2; exit 1; }
 git diff --quiet CHANGELOG.md || {
   git commit -qam "docs: $TAG changelog section"
-  git push -q origin main
+  git push -q origin main ||
+    { echo "error: main rejected the push (protected branch?) — land the" \
+        "'docs: $TAG changelog section' commit via PR, then re-run" >&2
+      exit 1; }
 }
 
 git tag -a "$TAG" -m "$TAG"
