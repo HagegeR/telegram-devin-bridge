@@ -48,7 +48,7 @@ jobs:
       - run: >-
           shellcheck -e SC1007 -x deploy/self-update.sh
           deploy/alpine/install.sh deploy/vm/install.sh
-          deploy/docker-entrypoint.sh
+          deploy/docker-entrypoint.sh deploy/release.sh
 
   yamllint:
     runs-on: ubuntu-latest
