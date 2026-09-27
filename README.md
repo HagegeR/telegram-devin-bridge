@@ -187,6 +187,8 @@ ruff check .    # lint
 - [docs/hardening.md](docs/hardening.md) — production checklist: access, secrets, host, and operations.
 - [docs/operations.md](docs/operations.md) — `/notify`, `/doctor`, `/admin`, self-update, VM service management, Fly DB migration, Devin Knowledge publishing.
 - [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md) — full Alpine + Tailscale Funnel runbook with real-world network pitfalls.
+- [docs/host-small-alpine-vm.md](docs/host-small-alpine-vm.md) — running on a small (< 4 cores, < 2 GB) Alpine VM: boot services, post-reboot checks, pitfalls.
+- [docs/transcription-design.md](docs/transcription-design.md) — why the transcription backends are what they are, with CPU benchmarks.
 - [docs/versioning.md](docs/versioning.md) — release channels, semver bump rules, and how to cut a release; changes are logged in [CHANGELOG.md](CHANGELOG.md).
 - [docs/v2-design.md](docs/v2-design.md) — architecture and implementation brief (module map, inbound flow, watcher).
 - [docs/devin-knowledge.md](docs/devin-knowledge.md) — the knowledge note published to Devin itself.

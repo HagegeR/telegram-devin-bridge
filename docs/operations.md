@@ -190,3 +190,10 @@ flyctl scale count 0
 python -m app.publish_knowledge            # create or update by name
 python -m app.publish_knowledge --dry-run  # print the payload only
 ```
+
+Host-specific facts (addresses, IDs, NAS paths) do not belong in this public
+repo; keep them in a private note. `--file` uploads the whole file to Devin
+Knowledge, so it leaves the host: before publishing a private note that way,
+review it and redact anything Devin sessions do not need (secrets, user IDs,
+addresses). `docs/host-small-alpine-vm.md` holds only the generic small-VM
+lessons.

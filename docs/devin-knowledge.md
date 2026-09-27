@@ -84,7 +84,7 @@ the session is already forwarded.
   (`rc-service telegram-devin-bridge start|stop|restart|status`), code in
   `/root/telegram-devin-bridge` with a venv at `.venv`, config in `.env`
   (chmod 600, never print it), log `/var/log/telegram-devin-bridge.log`.
-- Public HTTPS via Tailscale Funnel: `https://devin-bridge.<tailnet>.ts.net`
+- Public HTTPS via Tailscale Funnel: `https://<host>.<tailnet>.ts.net`
   -> `127.0.0.1:8000` (`tailscale funnel status`). Webhook path is
   `/telegram/webhook`; `GET /health` returns `{"status":"ok"}`.
 - Diagnostics: `cd /root/telegram-devin-bridge && .venv/bin/python -m app.doctor`
@@ -96,11 +96,15 @@ the session is already forwarded.
 - Runbook for re-deploying from scratch: `docs/deployment-alpine-tailscale.md`
   in the repo (DNS cache with dnsmasq, udhcpc `NO_GATEWAY`, Funnel prerequisites
   in the Tailscale admin console, OpenRC unit, `.env` pitfalls).
+- Small-VM operations (boot services, post-reboot checks, pitfalls, rules of
+  engagement): `docs/host-small-alpine-vm.md`.
 - No-tunnel alternative: `TELEGRAM_MODE=polling` needs no public URL.
 - Voice transcription on the host: `TRANSCRIPTION_BACKEND=whispercpp` with
   whisper.cpp built from source in `/opt/whisper.cpp` (binary
-  `build/bin/whisper-cli`, model `models/ggml-base.en.bin`, ~1.4 GB RAM box,
-  musl — faster-whisper/ctranslate2 wheels do not install there).
+  `build/bin/whisper-cli`, quantized model `models/ggml-base.en-q5_1.bin`,
+  < 2 GB RAM box, musl — faster-whisper/ctranslate2 wheels do not install
+  there). Why these backends, with CPU benchmarks:
+  `docs/transcription-design.md`.
 - Self-update: the host follows the update channel configured in
   `/etc/conf.d/telegram-devin-bridge` (`SELF_UPDATE_CHANNEL`, `main` today) —
   a cron job pulls every 15 min, or the admin sends `/update` in Telegram
@@ -139,7 +143,8 @@ Typical fix flow: `doctor` -> read failing check + `logs` -> `set-env` ->
 
 ### 2. Tailscale SSH — full shell on the VM
 
-The VM (`devin-bridge`, Tailscale IP `100.127.21.58`) runs Tailscale SSH;
+The VM (Tailscale hostname and IP are provided as the session secret
+`BRIDGE_HOST`) runs Tailscale SSH;
 the tailnet ACL allows `tag:devin` nodes to SSH in as `root`. Join the tailnet
 from the session with the ephemeral, pre-authorized auth key provided as the
 secret `TAILSCALE_AUTHKEY` (the node is deleted automatically when it goes
@@ -149,7 +154,7 @@ offline):
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscaled --state=mem: >/tmp/tailscaled.log 2>&1 &
 sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=devin-session --ssh=false
-ssh -o StrictHostKeyChecking=accept-new root@100.127.21.58 'rc-service telegram-devin-bridge status'
+ssh -o StrictHostKeyChecking=accept-new "root@$BRIDGE_HOST" 'rc-service telegram-devin-bridge status'
 ```
 
 Without root in the sandbox use userspace networking instead:
@@ -157,7 +162,7 @@ Without root in the sandbox use userspace networking instead:
 ```bash
 tailscaled --tun=userspace-networking --socks5-server=localhost:1055 --state=mem: >/tmp/tailscaled.log 2>&1 &
 tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=devin-session
-ssh -o ProxyCommand='nc -x localhost:1055 %h %p' -o StrictHostKeyChecking=accept-new root@100.127.21.58
+ssh -o ProxyCommand='nc -x localhost:1055 %h %p' -o StrictHostKeyChecking=accept-new "root@$BRIDGE_HOST"
 ```
 
 Tailscale SSH authenticates by tailnet identity — no SSH keys or passwords.
@@ -165,8 +170,8 @@ On the VM, keep to: `rc-service telegram-devin-bridge …`, editing
 `/root/telegram-devin-bridge/.env` (never print it), `sh deploy/self-update.sh`,
 `.venv/bin/python -m app.doctor`, `tail /var/log/telegram-devin-bridge.log`,
 `tailscale funnel status`. Do not change routing, `/etc/udhcpc/udhcpc.conf`,
-Docker, or other services on the VM — another deployment (`ibkr-gateway`)
-shares it. Code changes go through a PR to `main`, not edits on the host.
+Docker, or other services on the VM — another deployment shares it. Code
+changes go through a PR to `main`, not edits on the host.
 
 ## Devin API facts the bridge relies on (v1 key)
 
