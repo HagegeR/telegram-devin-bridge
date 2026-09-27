@@ -190,3 +190,7 @@ flyctl scale count 0
 python -m app.publish_knowledge            # create or update by name
 python -m app.publish_knowledge --dry-run  # print the payload only
 ```
+
+Host-specific facts (addresses, IDs, NAS paths) do not belong in this public
+repo; keep them in a private note and publish it the same way with `--file`.
+`docs/host-small-alpine-vm.md` holds only the generic small-VM lessons.
