@@ -54,20 +54,18 @@ When in doubt between MINOR and MAJOR: if a correctly-configured existing
 ## Cutting a release
 
 1. Land the changes on `main` through PRs as usual.
-2. Update [CHANGELOG.md](../CHANGELOG.md): move the `Unreleased` entries under
-   a new `## [vX.Y.Z] - YYYY-MM-DD` heading and merge that (it can ride along
-   in the last feature PR).
-3. Tag the merge commit and push:
-
-   ```bash
-   git checkout main && git pull
-   git tag -a vX.Y.Z -m "vX.Y.Z"
-   git push origin vX.Y.Z
-   ```
-
-4. Pushing the tag runs `release.yml`: it validates the tag is a strict
-   `vX.Y.Z`, then creates the GitHub release with the tag's `CHANGELOG.md`
-   section plus GitHub's auto-generated notes as the body.
+2. From a clean `main` checkout run `deploy/release.sh vX.Y.Z` — it moves the
+   `Unreleased` entries under a new `## [vX.Y.Z] - YYYY-MM-DD` heading, pushes
+   `main`, tags the head, and pushes the tag. (By hand instead: commit the
+   changelog section first — it can ride along in the last feature PR — then
+   `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push origin vX.Y.Z`.)
+3. Pushing the tag runs `release.yml`: it validates the tag is a strict
+   `vX.Y.Z` reachable from `main`, then creates the GitHub release with the
+   tag's `CHANGELOG.md` section (falling back to `main`'s copy when the tag
+   was pushed ahead of its changelog commit) plus GitHub's auto-generated
+   notes. When a release for the tag already exists — e.g. drafted through
+   the GitHub UI, which also pushes the tag — its notes are updated in place
+   instead of failing on a name clash.
 
 Hosts on `stable`, `vX`, or `vX.Y` pick the new tag up on their next
 self-update run (cron or `/update`); hosts on `main` already had the code and

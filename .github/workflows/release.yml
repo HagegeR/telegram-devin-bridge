@@ -34,8 +34,23 @@ jobs:
             $0 ~ "^## \\[v?" ver "\\]" { found=1; next }
             /^## / { found=0 }
             found' CHANGELOG.md > section.md
-          [ -s section.md ] || { echo "no CHANGELOG.md section for $GITHUB_REF_NAME"; exit 1; }
+          # a tag pushed ahead of its changelog commit can still release:
+          # retry the extraction against FETCH_HEAD (origin/main)
+          if [ ! -s section.md ]; then
+            git show FETCH_HEAD:CHANGELOG.md |
+              awk -v ver="$VER" '
+                $0 ~ "^## \\[v?" ver "\\]" { found=1; next }
+                /^## / { found=0 }
+                found' > section.md || true
+          fi
+          [ -s section.md ] || { echo "no CHANGELOG.md section for $GITHUB_REF_NAME (checked the tag and origin/main)"; exit 1; }
           gh api repos/{owner}/{repo}/releases/generate-notes \
             -f tag_name="$GITHUB_REF_NAME" -q .body > generated.md
           cat section.md generated.md > body.md
-          gh release create "$GITHUB_REF_NAME" --notes-file body.md --verify-tag
+          # a UI-drafted release already exists (drafting pushes the tag):
+          # update its notes instead of failing on a name clash
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file body.md --verify-tag
+          else
+            gh release create "$GITHUB_REF_NAME" --notes-file body.md --verify-tag
+          fi
