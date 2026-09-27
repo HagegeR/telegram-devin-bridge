@@ -107,10 +107,13 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
   git clone https://github.com/ggml-org/whisper.cpp /opt/whisper.cpp
   cd /opt/whisper.cpp
   cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2 --target whisper-cli
-  sh models/download-ggml-model.sh base.en
+  sh models/download-ggml-model.sh base.en-q5_1
   ```
 
-  Requires `ffmpeg`; set `WHISPER_CPP_BIN=/opt/whisper.cpp/build/bin/whisper-cli`.
+  Requires `ffmpeg`; set `WHISPER_CPP_BIN=/opt/whisper.cpp/build/bin/whisper-cli`
+  and `WHISPER_CPP_MODEL=/opt/whisper.cpp/models/ggml-base.en-q5_1.bin`
+  (the quantized model gives the same text in about half the time on CPU; see
+  [transcription-design.md](transcription-design.md)).
 - **`command`** — runs `TRANSCRIPTION_COMMAND` per request: the bridge converts
   the clip to 16 kHz mono WAV, pipes it on stdin, reads the transcript from
   stdout, and exports `TRANSCRIPTION_LANGUAGE` into the child's environment.

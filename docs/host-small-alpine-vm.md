@@ -14,7 +14,8 @@ the Docker transcription backend or another deployment needs it).
 - `telegram-devin-bridge`: OpenRC unit from `deploy/openrc/`, uses
   `supervise-daemon`, waits up to 60 s for DNS, then runs
   `uvicorn app.main:app --host 127.0.0.1 --port 8000` from the repo venv.
-  Logs: `/var/log/telegram-devin-bridge.log` (+ `.err`). Health:
+  Logs: `/var/log/telegram-devin-bridge.log` (stdout and stderr; the
+  `deploy/vm/` unit writes stderr to `.err` instead). Health:
   `curl -s 127.0.0.1:8000/health` → `{"status":"ok"}`.
 - `dnsmasq`: local DNS cache (`deploy/dnsmasq/local-cache.conf`);
   `/etc/resolv.conf` points at 127.0.0.1 and udhcpc must not overwrite it
