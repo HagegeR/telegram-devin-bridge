@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v1.1.0] - 2026-09-23
+
 ### Added
 
 - `/admin` actions `db-check` (SQLite `PRAGMA integrity_check`) and `backup`
