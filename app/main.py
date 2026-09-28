@@ -611,7 +611,7 @@ class Bridge:
                         retryable=True,
                     )
                     return
-                batches = self.queued_turns.pop(conv_key, [])
+                batches = self._coalesce_turns(self.queued_turns.pop(conv_key, []))
         except Exception as exc:
             logger.exception("Failed to flush Telegram turn for %s", conv_key)
             await self._report_processing_failure(
@@ -708,7 +708,7 @@ class Bridge:
                         retryable=True,
                     )
                     return
-                batches = self.queued_turns.pop(conv_key, [])
+                batches = self._coalesce_turns(self.queued_turns.pop(conv_key, []))
         finally:
             self.draining.discard(conv_key)
 
