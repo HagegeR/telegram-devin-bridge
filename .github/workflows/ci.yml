@@ -84,6 +84,8 @@ jobs:
           IMAGE: ${{ matrix.image }}
           UV_MOUNT: ${{ matrix.uv && '1' || '' }}
         run: |
+          # Docker Hub resets the odd connection: retry the pull
+          for i in 1 2 3; do docker pull -q "$IMAGE" && break; sleep 15; done
           set -- -v "$PWD:/src:ro"
           [ -n "$UV_MOUNT" ] && set -- "$@" -v "$(command -v uv):/usr/local/bin/uv:ro"
           docker run --rm "$@" "$IMAGE" sh -c '
