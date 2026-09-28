@@ -132,6 +132,7 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 | `DOCTOR_SECRET` | no | unset (`/doctor` disabled) | Separate from `NOTIFY_SECRET`; 30 s cooldown between runs. |
 | `ADMIN_SECRET` | no | unset (`/admin` disabled) | See [operations.md](operations.md#admin-api). |
 | `ADMIN_ENV_ALLOWLIST` | no | built-in non-secret key list | Keys settable via `set-env`. Tokens/keys/secrets are never readable or writable. |
+| `ADMIN_ENV_PATH` | no | `.env` | Env file the `get-env`/`set-env` actions read and write; relative paths resolve from the repo root. |
 | `ADMIN_LOG_PATH` | no | `/var/log/telegram-devin-bridge.log` | Log file tailed by the `logs` action. |
 | `ADMIN_RESTART_COMMAND` | no | OpenRC `rc-service` restart | Command run by the `restart` action. |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` | Command run by `/update` and the admin `update` action. |
