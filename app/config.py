@@ -1,10 +1,12 @@
+import os
 import re
 import shlex
+import shutil
 from functools import lru_cache
 from types import NoneType
 from typing import get_args
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DOCKER_IMAGE_RE = re.compile(
@@ -16,6 +18,22 @@ _DOCKER_IMAGE_RE = re.compile(
 _DOCKER_MEMORY_RE = re.compile(r"^([0-9]+)([bkmg]?)$")
 _DOCKER_MEMORY_UNITS = {"": 1, "b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
 _DOCKER_MEMORY_MIN = 6 * 1024**2  # docker rejects limits below 6 MiB
+
+
+def _default_restart_command() -> str:
+    # empty means: exit and let the supervisor (OpenRC, systemd, launchd,
+    # deploy/windows/run.ps1, Docker) respawn the process
+    if (
+        os.name == "posix"
+        and os.geteuid() == 0
+        and os.path.isdir("/run/openrc")
+        and shutil.which("rc-service")
+    ):
+        return (
+            "nohup sh -c 'sleep 1; rc-service telegram-devin-bridge restart' "
+            ">/dev/null 2>&1 &"
+        )
+    return ""
 
 
 class Settings(BaseSettings):
@@ -69,10 +87,7 @@ class Settings(BaseSettings):
         "TELEGRAM_RATE_LIMIT_PER_MINUTE,BOT_USERNAME"
     )
     admin_log_path: str = "/var/log/telegram-devin-bridge.log"
-    admin_restart_command: str = (
-        "nohup sh -c 'sleep 1; rc-service telegram-devin-bridge restart' "
-        ">/dev/null 2>&1 &"
-    )
+    admin_restart_command: str = Field(default_factory=_default_restart_command)
     admin_env_path: str = ".env"
     bot_username: str | None = None
     telegram_admin_user_ids: str = ""

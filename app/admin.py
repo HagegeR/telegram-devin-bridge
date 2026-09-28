@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import shlex
+import signal
 import tempfile
 import time
 from collections import deque
@@ -82,6 +83,10 @@ Sleep = Callable[[float], Awaitable[None]]
 
 
 async def _default_spawn(command: str) -> object:
+    if not command:
+        return asyncio.get_running_loop().call_later(
+            1, os.kill, os.getpid(), signal.SIGTERM
+        )
     return await asyncio.create_subprocess_shell(command)
 
 

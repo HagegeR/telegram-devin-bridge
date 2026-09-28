@@ -45,6 +45,18 @@ pip install -r requirements.txt
 python -m app.poll
 ```
 
+On Windows (PowerShell): `py -3.12 -m venv .venv`, then
+`.venv\Scripts\pip install -r requirements.txt` and
+`.venv\Scripts\python -m app.poll`.
+
+To keep it running as a service that `/update` can restart:
+
+- Linux: `sudo sh deploy/vm/install.sh` (OpenRC or systemd)
+- macOS: `sh deploy/macos/install.sh` (launchd agent, as your user)
+- Windows: `powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1`
+
+See [operations.md](operations.md#vm-service-management) for details.
+
 Or with Docker:
 
 ```bash

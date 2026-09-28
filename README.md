@@ -25,7 +25,7 @@ Each DM or forum topic gets its own Devin session; replies stream back as rich T
 - **Chat-app behavior** — turn debounce, per-user rate limiting, typing indicators and drafts, queued turns while Devin is busy.
 - **Access control** — user/chat allowlists, admin approval flow, per-chat free-response mode.
 - **Ops built in** — diagnostics endpoint, narrow HTTP admin API, notifications webhook, and `/update` self-updates from Telegram.
-- **Deploy anywhere** — webhook behind Tailscale Funnel/HTTPS, or long polling with no public URL at all; OpenRC, systemd, and Fly.io supported.
+- **Deploy anywhere** — webhook behind Tailscale Funnel/HTTPS, or long polling with no public URL at all; OpenRC, systemd, launchd (macOS), Windows, Docker, and Fly.io supported.
 
 ## How it works
 
@@ -144,7 +144,9 @@ Details and curl examples: [docs/operations.md](docs/operations.md).
 | Style | When to pick it | Guide |
 | --- | --- | --- |
 | Webhook + Tailscale Funnel | Dedicated host, production | [docs/deployment-alpine-tailscale.md](docs/deployment-alpine-tailscale.md) + `deploy/openrc/` |
-| Polling service | No public URL available | `deploy/vm/install.sh` (OpenRC/systemd) |
+| Polling service | No public URL available | `deploy/vm/install.sh` (OpenRC/systemd; apk, apt, dnf/yum, pacman, zypper) |
+| macOS | Always-on Mac | `deploy/macos/install.sh` (per-user launchd agent) |
+| Windows | Always-on PC | `deploy\windows\install.ps1` (scheduled task + restart loop) |
 | Docker Compose | Single-host container | `docker-compose.yml`, named volume at `/data` |
 | Fly.io | Managed container | `fly.toml`, SQLite volume at `/data` |
 

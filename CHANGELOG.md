@@ -8,7 +8,23 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- **macOS and Windows installs**: `deploy/macos/install.sh` (per-user
+  launchd agent) and `deploy/windows/install.ps1` (scheduled task running a
+  restart loop), both polling mode with `/update` support.
+- `deploy/vm/install.sh` supports openSUSE (`zypper`) and hosts whose
+  `python3` is older than 3.12 (versioned package, else a uv-managed
+  interpreter). CI installs it on Alpine, Debian, Ubuntu, Fedora, Rocky,
+  Arch and openSUSE containers, and runs macOS and Windows jobs.
+
 ### Changed
+
+- `deploy/self-update.sh` no longer requires `flock` (falls back to a
+  `mkdir` lock) and finds Windows venvs (`.venv/Scripts`).
+- `ADMIN_RESTART_COMMAND` now defaults to `rc-service` only when running as
+  root with OpenRC; otherwise empty, which exits the process for the
+  supervisor (systemd, launchd, the Windows loop, Docker) to respawn.
 
 - Queued turns for the same conversation are now coalesced into a single
   Devin message per batch (turns carrying attachments still get their own

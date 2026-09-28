@@ -8,6 +8,7 @@ import io
 import logging
 import os
 import signal
+import subprocess
 import tempfile
 import wave
 from collections.abc import Sequence
@@ -111,10 +112,24 @@ def _release_slot(job: asyncio.Future[str]) -> None:
     _slots.release()
 
 
-async def _reap(process: asyncio.subprocess.Process) -> None:
-    # Children run in their own session, so this reaches sh -c grandchildren.
+def _kill(process: asyncio.subprocess.Process) -> None:
     with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
+        if os.name == "nt":
+            # no process groups on Windows: /T walks the child tree instead
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True,
+                check=False,
+            )
+            process.kill()
+        else:
+            # Children run in their own session, so this reaches sh -c
+            # grandchildren.
+            os.killpg(process.pid, signal.SIGKILL)
+
+
+async def _reap(process: asyncio.subprocess.Process) -> None:
+    _kill(process)
     await process.wait()
 
 
@@ -130,8 +145,7 @@ async def _read_capped(
         buffer += chunk
         if len(buffer) > _MAX_OUTPUT:
             buffer = None
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+            _kill(process)
     return None if buffer is None else bytes(buffer)
 
 
@@ -162,7 +176,7 @@ async def _run_whispercpp_command(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                start_new_session=True,
+                start_new_session=os.name != "nt",
             )
         finally:
             if stdin is not None:

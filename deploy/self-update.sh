@@ -18,9 +18,37 @@
 set -eu
 cd "$(dirname "$0")/.."
 LOCK="${SELF_UPDATE_LOCK:-.self-update.lock}"
-command -v flock >/dev/null 2>&1 || { echo "flock not found (apk add util-linux-misc)"; exit 1; }
-exec 9>"$LOCK"
-flock -n 9 || { echo "another update is running"; exit 0; }
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK"
+  flock -n 9 || { echo "another update is running"; exit 0; }
+else
+  # macOS and Git Bash on Windows ship no flock: mkdir is atomic everywhere.
+  # The lock dir holds the owner pid (none yet = still being taken, for a
+  # minute). A run whose owner died takes the dir over in place; the inner
+  # claim mkdir makes that takeover single-winner.
+  owner_alive() {
+    OWNER=$(cat "$LOCK.d/pid" 2>/dev/null || true)
+    if [ -n "$OWNER" ]; then
+      kill -0 "$OWNER" 2>/dev/null
+    else
+      [ -z "$(find "$LOCK.d" -maxdepth 0 -mmin +1 2>/dev/null)" ]
+    fi
+  }
+  busy() { echo "another update is running"; exit 0; }
+  if ! mkdir "$LOCK.d" 2>/dev/null; then
+    owner_alive && busy
+    find "$LOCK.d/claim" -maxdepth 0 -mmin +1 -exec rmdir {} \; 2>/dev/null || true
+    mkdir "$LOCK.d/claim" 2>/dev/null || busy
+    if owner_alive; then rmdir "$LOCK.d/claim"; busy; fi
+    echo $$ > "$LOCK.d/pid"
+    rmdir "$LOCK.d/claim"
+  else
+    echo $$ > "$LOCK.d/pid"
+  fi
+  # only ever remove our own lock, and never anything but the pid file + dir
+  trap '[ "$(cat "$LOCK.d/pid" 2>/dev/null)" = "$$" ] && rm -f "$LOCK.d/pid" && rmdir "$LOCK.d" 2>/dev/null' EXIT
+fi
+VENV_BIN=.venv/bin; [ -d .venv/Scripts ] && VENV_BIN=.venv/Scripts
 CHECK=0; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 CHANNEL="${1:-${SELF_UPDATE_CHANNEL:-${SELF_UPDATE_BRANCH:-main}}}"
 SERVICE="${SELF_UPDATE_SERVICE:-telegram-devin-bridge}"
@@ -86,16 +114,16 @@ git reset -q --hard
 git checkout -q -f --detach "$REMOTE"
 [ "$(git rev-parse HEAD)" = "$REMOTE" ] || { echo "checkout failed"; exit 1; }
 if [ -z "$PREV" ] || ! git cat-file -e "$PREV^{commit}" 2>/dev/null; then
-  .venv/bin/pip install -q -r requirements.txt
+  "$VENV_BIN/pip" install -q -r requirements.txt
 elif ! git diff --quiet "$PREV" "$REMOTE" -- requirements.txt; then
-  .venv/bin/pip install -q -r requirements.txt
+  "$VENV_BIN/pip" install -q -r requirements.txt
 fi
 if [ -f requirements-transcription.txt ] \
-  && .venv/bin/python -c "import faster_whisper" >/dev/null 2>&1 \
+  && "$VENV_BIN/python" -c "import faster_whisper" >/dev/null 2>&1 \
   && [ -n "$PREV" ] \
   && git cat-file -e "$PREV^{commit}" 2>/dev/null \
   && ! git diff --quiet "$PREV" "$REMOTE" -- requirements-transcription.txt; then
-  .venv/bin/pip install -q -r requirements-transcription.txt
+  "$VENV_BIN/pip" install -q -r requirements-transcription.txt
 fi
 echo "$REMOTE" > "$MARKER"
 # restart detached so a caller running inside the service (the /update
@@ -106,30 +134,33 @@ echo "$REMOTE" > "$MARKER"
 # new rev, an optional chat target ($SELF_UPDATE_NOTIFY, empty for cron); the
 # bridge appends a delivery attempt count and removes the file once announced
 write_pending() { printf '%s\n%s\n%s\n' "$LOCAL" "$REMOTE" "${SELF_UPDATE_NOTIFY:-}" > .self-update-pending; }
-if [ "$(id -u)" -eq 0 ]; then
-  if command -v rc-service >/dev/null 2>&1; then
-    write_pending
-    nohup sh -c "sleep 2; rc-service $SERVICE restart" >/dev/null 2>&1 9>&- &
-    echo "restarting $SERVICE"
-  elif command -v systemctl >/dev/null 2>&1; then
-    write_pending
-    nohup sh -c "sleep 2; systemctl restart $SERVICE" >/dev/null 2>&1 9>&- &
-    echo "restarting $SERVICE"
-  fi
-elif [ -n "${RC_SVCNAME:-}" ]; then
+restart_after() {
   write_pending
-  nohup sh -c "sleep 2; kill -TERM $PPID" >/dev/null 2>&1 9>&- &
-  echo "restarting $SERVICE (supervisor respawn)"
+  nohup sh -c "sleep 2; $1" >/dev/null 2>&1 9>&- &
+  echo "restarting $SERVICE${2:+ ($2)}"
+}
+# the bridge exports BRIDGE_PID to the commands it runs; a Windows-native
+# parent is invisible to $PPID under Git Bash, so it needs taskkill
+BRIDGE_PID="${BRIDGE_PID:-$PPID}"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) KILL="taskkill //F //PID $BRIDGE_PID" ;;
+  *) KILL="kill -TERM $BRIDGE_PID" ;;
+esac
+if [ "$(id -u)" -eq 0 ] && command -v rc-service >/dev/null 2>&1; then
+  restart_after "rc-service $SERVICE restart"
+elif [ "$(id -u)" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+  restart_after "systemctl restart $SERVICE"
+elif [ -n "${RC_SVCNAME:-}" ] || [ -n "${BRIDGE_SUPERVISED:-}" ]; then
+  # OpenRC, launchd (deploy/macos) and deploy/windows/run.ps1 respawn us
+  restart_after "$KILL" "supervisor respawn"
 elif [ -n "${INVOCATION_ID:-}" ]; then
   # only TERM the caller when it is the service's own main process:
   # INVOCATION_ID leaks into every shell on systemd hosts, so a manual
   # run (or a test subprocess) would otherwise kill the caller's shell
   SYSTEM_MAINPID=$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true)
   USER_MAINPID=$(systemctl --user show -p MainPID --value "$SERVICE" 2>/dev/null || true)
-  if [ "${SYSTEM_MAINPID:-0}" = "$PPID" ] || [ "${USER_MAINPID:-0}" = "$PPID" ]; then
-    write_pending
-    nohup sh -c "sleep 2; kill -TERM $PPID" >/dev/null 2>&1 9>&- &
-    echo "restarting $SERVICE (supervisor respawn)"
+  if [ "${SYSTEM_MAINPID:-0}" = "$BRIDGE_PID" ] || [ "${USER_MAINPID:-0}" = "$BRIDGE_PID" ]; then
+    restart_after "$KILL" "supervisor respawn"
   else
     echo "restart $SERVICE manually to load the update"
   fi

@@ -661,3 +661,17 @@ async def test_admin_backup_copies_database(tmp_path: Path) -> None:
         assert "conversations" in tables
     finally:
         copy.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_restart_command_terms_self(monkeypatch) -> None:
+    from app import admin, config
+
+    monkeypatch.setattr(config.os, "geteuid", lambda: 1000, raising=False)
+    assert config._default_restart_command() == ""
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(admin.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    handle = await admin._default_spawn("")
+    handle._run()  # fire the scheduled callback now instead of after 1 s
+    handle.cancel()
+    assert killed == [(os.getpid(), admin.signal.SIGTERM)]
