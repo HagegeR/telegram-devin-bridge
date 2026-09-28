@@ -583,7 +583,12 @@ class Bridge:
                 return
             queued = self.queued_turns.pop(conv_key, [])
             batches = self._coalesce_turns([*queued, turn])
-            for index, batch in enumerate(batches):
+            while batches:
+                batch = batches.pop(0)
+                if batches:
+                    self.queued_turns[conv_key] = batches
+                else:
+                    self.queued_turns.pop(conv_key, None)
                 batch_message, batch_text, batch_attachment = batch
                 try:
                     await self.handle_user_turn(
@@ -593,7 +598,7 @@ class Bridge:
                     )
                 except Exception as exc:
                     self.queued_turns[conv_key] = [
-                        *batches[index:],
+                        batch,
                         *self.queued_turns.get(conv_key, []),
                     ]
                     logger.exception(
@@ -606,6 +611,7 @@ class Bridge:
                         retryable=True,
                     )
                     return
+                batches = self.queued_turns.pop(conv_key, [])
         except Exception as exc:
             logger.exception("Failed to flush Telegram turn for %s", conv_key)
             await self._report_processing_failure(
@@ -672,10 +678,16 @@ class Bridge:
                     self.queued_turns[conv_key] = queued
                 return
             batches = self._coalesce_turns(queued)
-            for index, (message, text, attachment) in enumerate(batches):
+            while batches:
+                batch = batches.pop(0)
+                if batches:
+                    self.queued_turns[conv_key] = batches
+                else:
+                    self.queued_turns.pop(conv_key, None)
+                message, text, attachment = batch
                 if self._conversation_busy(conv_key):
                     self.queued_turns[conv_key] = [
-                        *batches[index:],
+                        batch,
                         *self.queued_turns.get(conv_key, []),
                     ]
                     return
@@ -683,7 +695,7 @@ class Bridge:
                     await self.handle_user_turn(message, text, attachment=attachment)
                 except Exception as exc:
                     self.queued_turns[conv_key] = [
-                        *batches[index:],
+                        batch,
                         *self.queued_turns.get(conv_key, []),
                     ]
                     logger.exception(
@@ -696,6 +708,7 @@ class Bridge:
                         retryable=True,
                     )
                     return
+                batches = self.queued_turns.pop(conv_key, [])
         finally:
             self.draining.discard(conv_key)
 
@@ -907,7 +920,6 @@ class Bridge:
             thread_id,
             is_forum=is_topic_chat(message),
         )
-        self.store.delete_setting(f"pending_title:{conv_key}")
         extra = self.settings.devin_session_instructions.strip()
         if extra:
             prompt = f"{extra}\n\n{prompt}"
@@ -916,6 +928,7 @@ class Bridge:
             title,
             playbook_id,
         )
+        self.store.delete_setting(f"pending_title:{conv_key}")
         stored_title = (
             title
             if title is not None

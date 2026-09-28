@@ -434,6 +434,7 @@ async def _resume(
         last_event_id=latest,
         last_pr_url=state.pr_url,
     )
+    runtime.store.delete_setting(f"pending_title:{conv_key}")
     if retry_title:
         await runtime.start_watcher(conversation)
     await runtime.send_text(message, f"✓ Resumed: {title}\n{entry.session_url}")
