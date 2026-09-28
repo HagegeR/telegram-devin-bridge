@@ -8,6 +8,15 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Changed
+
+- Queued turns for the same conversation are now coalesced into a single
+  Devin message per batch (turns carrying attachments still get their own
+  batch), cutting the number of Devin turns spent flushing the queue.
+- `/new [title]` no longer creates a Devin session just to greet — it
+  stores a pending title and replies immediately; the next message you send
+  starts the session with that title.
+
 ## [v1.1.0] - 2026-09-23
 
 ### Added
