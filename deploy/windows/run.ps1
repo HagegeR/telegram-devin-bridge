@@ -9,11 +9,12 @@ $env:BRIDGE_SUPERVISED = '1'
 $env:PYTHONUNBUFFERED = '1'
 $env:PYTHONUTF8 = '1'
 # stopping the scheduled task kills this loop but not its python child, so a
-# restarted task would poll twice; the venv launcher path scopes this to one
-# checkout, and /T also ends the base interpreter it spawned
+# restarted task would poll twice. Match this checkout's venv launcher running
+# app.poll only (not pip or other venv jobs); /T also ends the base
+# interpreter the launcher spawned.
 $venvPython = Join-Path $root '.venv\Scripts\python.exe'
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-    Where-Object { $_.ExecutablePath -eq $venvPython } |
+    Where-Object { $_.ExecutablePath -eq $venvPython -and $_.CommandLine -match '\s-m\s+app\.poll(\s|$)' } |
     ForEach-Object { taskkill /F /T /PID $_.ProcessId | Out-Null }
 while ($true) {
     # cmd redirection keeps the log UTF-8; Windows PowerShell's >> writes UTF-16

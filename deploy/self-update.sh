@@ -23,21 +23,30 @@ if command -v flock >/dev/null 2>&1; then
   flock -n 9 || { echo "another update is running"; exit 0; }
 else
   # macOS and Git Bash on Windows ship no flock: mkdir is atomic everywhere.
-  # The owner pid inside lets a later run reclaim the lock of a killed one;
-  # a lock without a pid yet is only stale once it is a minute old.
-  if ! mkdir "$LOCK.d" 2>/dev/null; then
+  # The lock dir holds the owner pid (none yet = still being taken, for a
+  # minute). A run whose owner died takes the dir over in place; the inner
+  # claim mkdir makes that takeover single-winner.
+  owner_alive() {
     OWNER=$(cat "$LOCK.d/pid" 2>/dev/null || true)
-    if [ -n "$OWNER" ] && kill -0 "$OWNER" 2>/dev/null; then
-      echo "another update is running"; exit 0
+    if [ -n "$OWNER" ]; then
+      kill -0 "$OWNER" 2>/dev/null
+    else
+      [ -z "$(find "$LOCK.d" -maxdepth 0 -mmin +1 2>/dev/null)" ]
     fi
-    if [ -z "$OWNER" ] && [ -z "$(find "$LOCK.d" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-      echo "another update is running"; exit 0
-    fi
-    rm -rf "$LOCK.d"
-    mkdir "$LOCK.d" 2>/dev/null || { echo "another update is running"; exit 0; }
+  }
+  busy() { echo "another update is running"; exit 0; }
+  if ! mkdir "$LOCK.d" 2>/dev/null; then
+    owner_alive && busy
+    find "$LOCK.d/claim" -maxdepth 0 -mmin +1 -exec rmdir {} \; 2>/dev/null || true
+    mkdir "$LOCK.d/claim" 2>/dev/null || busy
+    if owner_alive; then rmdir "$LOCK.d/claim"; busy; fi
+    echo $$ > "$LOCK.d/pid"
+    rmdir "$LOCK.d/claim"
+  else
+    echo $$ > "$LOCK.d/pid"
   fi
-  echo $$ > "$LOCK.d/pid"
-  trap 'rm -rf "$LOCK.d"' EXIT
+  # only ever remove our own lock, and never anything but the pid file + dir
+  trap '[ "$(cat "$LOCK.d/pid" 2>/dev/null)" = "$$" ] && rm -f "$LOCK.d/pid" && rmdir "$LOCK.d" 2>/dev/null' EXIT
 fi
 VENV_BIN=.venv/bin; [ -d .venv/Scripts ] && VENV_BIN=.venv/Scripts
 CHECK=0; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }

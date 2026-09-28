@@ -129,6 +129,8 @@ jobs:
           powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1 -DryRun
           powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1 -NoTask
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          $rules = @((Get-Acl .env).Access)
+          if ($rules.Count -ne 1 -or $rules[0].IsInherited) { throw ".env ACL not restricted: $($rules | Out-String)" }
           $env:TELEGRAM_BOT_TOKEN = 'ci'
           .venv\Scripts\python.exe -c "import shlex; from app.config import Settings; print(shlex.split(Settings().self_update_command))"
           if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -143,13 +145,19 @@ jobs:
             Start-Process powershell -PassThru -WindowStyle Hidden `
               -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', 'deploy\windows\run.ps1'
           }
-          # a long-lived stand-in for a poller orphaned by a stopped task
+          # long-lived stand-ins: a poller orphaned by a stopped task (argv
+          # ends in -m app.poll) and another venv job such as pip
+          $sleep = '-c "import time; time.sleep(600)"'
           $orphan = Start-Process $venvPython -PassThru -WindowStyle Hidden `
-            -ArgumentList '-c', 'import time; time.sleep(600)'
+            -ArgumentList "$sleep -m app.poll"
+          $other = Start-Process $venvPython -PassThru -WindowStyle Hidden -ArgumentList $sleep
+          Start-Sleep -Seconds 3
+          if ($orphan.HasExited -or $other.HasExited) { throw 'stand-ins did not start' }
           $loop = Start-Loop
           Start-Sleep -Seconds 20
           if (-not $orphan.HasExited) { throw 'run.ps1 left the stale poller running' }
-          Stop-Process -Id $loop.Id -Force
+          if ($other.HasExited) { throw 'run.ps1 killed a non-poller venv process' }
+          Stop-Process -Id $loop.Id, $other.Id -Force
           if (-not (Get-Content logs\bridge.log -Raw)) { throw 'no log output' }
 
   yamllint:

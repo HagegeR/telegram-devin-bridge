@@ -74,9 +74,13 @@ $shPosix = $sh.Replace('\', '/')
 Write-EnvValue 'TELEGRAM_MODE' 'polling'
 Write-EnvValue 'ADMIN_LOG_PATH' 'logs/bridge.log'
 Write-EnvValue 'SELF_UPDATE_COMMAND' "'`"$shPosix`" deploy/self-update.sh'"
-# .env holds the bot and Devin tokens: current user only, no inherited ACEs
-icacls .env /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(F)" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'could not restrict .env permissions' }
+# .env holds the bot and Devin tokens: replace the whole DACL with a single
+# current-user entry (drops inherited and any explicit ACEs)
+$acl = New-Object System.Security.AccessControl.FileSecurity
+$acl.SetAccessRuleProtection($true, $false)
+$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+    [System.Security.Principal.WindowsIdentity]::GetCurrent().User, 'FullControl', 'Allow')))
+Set-Acl -Path (Join-Path $root '.env') -AclObject $acl
 
 if ($NoTask) {
     "installed; run: powershell -ExecutionPolicy Bypass -File $root\deploy\windows\run.ps1"
