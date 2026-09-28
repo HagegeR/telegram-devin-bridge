@@ -8,6 +8,8 @@ $TaskName = 'telegram-devin-bridge'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 function Find-Python {
+    # probing missing versions writes to stderr, which 'Stop' turns fatal
+    $ErrorActionPreference = 'Continue'
     $candidates = @(
         @('py', '-3.14'), @('py', '-3.13'), @('py', '-3.12'),
         @('python3'), @('python')
@@ -15,7 +17,7 @@ function Find-Python {
     foreach ($c in $candidates) {
         if (-not (Get-Command $c[0] -ErrorAction SilentlyContinue)) { continue }
         $pyArgs = @($c | Select-Object -Skip 1)
-        $exe = & $c[0] @pyArgs -c 'import sys; print(sys.executable if sys.version_info >= (3, 12) else "")' 2>$null
+        $exe = & $c[0] @pyArgs -c 'import sys; print(sys.executable) if sys.version_info >= (3, 12) else None' 2>$null
         if ($LASTEXITCODE -eq 0 -and $exe) { return "$exe".Trim() }
     }
     return $null
