@@ -161,6 +161,7 @@ if [ ! -x .venv/bin/python ]; then
             uv venv --seed --python 3.12 .venv
     fi
 fi
+.venv/bin/python -m pip --version >/dev/null 2>&1 || .venv/bin/python -m ensurepip --upgrade
 .venv/bin/python -m pip install -r requirements.txt
 
 if [ ! -f .env ]; then
