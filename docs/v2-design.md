@@ -75,7 +75,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 
 ### Commands (`commands.py`) – reply in the same conv/thread
 - `/start`, `/help` – list commands.
-- `/new [title]` – archive current conv mapping (keep history), create a session with prompt = preamble + ("Hello" if no text after) — actually: if title given, use it as `title` and prompt "The user started a new conversation titled '<title>'. Greet briefly and wait." else prompt "The user started a new conversation. Greet briefly and wait." Reply `Started session: <url>`.
+- `/new [title]` – archive current conv mapping (keep history), store a pending title, reply `◆ New conversation: <title>\nSend your first message to start Devin.` — no Devin call; the next user message creates the session with that title.
 - `/sessions` – last 10 from `session_history` for this conv, numbered with title + status (fetch status for each, tolerate errors), mark active with `*`.
 - `/resume <n>` – set that history entry as active (`last_event_id` = id of its latest devin_message so no replay), reply `Resumed: <title> <url>`.
 - `/status` – active session: title, `status_enum`, url, pr url.

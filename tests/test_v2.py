@@ -4076,7 +4076,7 @@ async def test_shutdown_delivers_pending_turn_for_busy_conversation(
     runtime.pending_turns["222"] = [(message("pending"), "pending", None)]
     runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
     await runtime.shutdown()
-    assert devin.sent[-2:] == [("s1", "queued"), ("s1", "pending")]
+    assert devin.sent[-1:] == [("s1", "queued\n\npending")]
     assert not runtime.queued_turns
 
 
@@ -4138,6 +4138,185 @@ async def test_busy_turn_is_queued_and_drained(tmp_path: Path) -> None:
     await runtime._drain_queue("222")
     assert runtime.queued_count("222") == 0
     assert telegram.reactions[-1] == "👀"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_drain_coalesces_turns_into_one_send(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        devin,
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    runtime.queued_turns["222"] = [
+        (message("one", message_id=1), "one", None),
+        (message("two", message_id=2), "two", None),
+        (message("three", message_id=3), "three", None),
+    ]
+    await runtime._drain_queue("222")
+    assert devin.sent == [("s1", "one\n\ntwo\n\nthree")]
+    assert runtime.queued_count("222") == 0
+    assert store.conv_key_for_message(222, 1) == "222"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_drain_splits_attachment_turns(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        devin,
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    runtime.queued_turns["222"] = [
+        (message("one", message_id=1), "one", ("a.txt", b"a", "text/plain")),
+    ]
+    await runtime._flush_fragments(
+        "222",
+        [(message("two", message_id=2), "two", ("b.txt", b"b", "text/plain"))],
+    )
+    assert len(devin.sent) == 2
+    assert devin.sent[0][0] == "s1" and "a.txt" in devin.sent[0][1]
+    assert devin.sent[1][0] == "s1" and "b.txt" in devin.sent[1][1]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_new_defers_session_until_first_message(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="old",
+        session_url="https://devin.test/old",
+        title="old",
+    )
+    devin = _FakeDevin()
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/new My title"), "/new My title")
+    assert devin.created == []
+    assert devin.sent == []
+    assert devin.terminated == []
+    assert store.get_setting("pending_title:222") == "My title"
+    assert store.get_conversation("222") is None
+    assert "New conversation: My title" in str(telegram.sent[-1]["text"])
+    await runtime.handle_user_turn(message("hello"), "hello")
+    assert len(devin.created) == 1
+    assert devin.created_titles == ["My title"]
+    assert store.get_setting("pending_title:222") is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_pending_title_survives_create_failure(tmp_path: Path) -> None:
+    class FlakyDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_next = True
+
+        async def create_session(
+            self,
+            prompt: str,
+            title: str | None,
+            playbook_id: str | None = None,
+        ) -> tuple[str, str]:
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("create failed")
+            return await super().create_session(prompt, title, playbook_id)
+
+    store = Store(":memory:")
+    devin = FlakyDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
+    await handle_command(runtime, message("/new T"), "/new T")
+    with pytest.raises(RuntimeError, match="create failed"):
+        await runtime.handle_user_turn(message("hi"), "hi")
+    assert store.get_setting("pending_title:222") == "T"
+    await runtime.handle_user_turn(message("hi"), "hi")
+    assert len(devin.created) == 1
+    assert devin.created_titles == ["T"]
+    assert store.get_setting("pending_title:222") is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resume_clears_pending_title(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "resume.sqlite3"))
+    store.add_history(
+        conv_key="222",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="old",
+        title_pending=False,
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
+    await handle_command(runtime, message("/new T"), "/new T")
+    assert store.get_setting("pending_title:222") == "T"
+    await handle_command(runtime, message("/resume 1"), "/resume 1")
+    assert store.get_setting("pending_title:222") is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_clear_queued_turns_stops_batch_loop(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
+    runtime.queued_turns["222"] = [
+        (message("one", message_id=1), "one", ("a.txt", b"a", "text/plain")),
+        (message("two", message_id=2), "two", ("b.txt", b"b", "text/plain")),
+    ]
+
+    original = runtime.handle_user_turn
+
+    async def send_then_clear(
+        turn_message: Mapping[str, object],
+        text: str,
+        *,
+        attachment: object = None,
+    ) -> None:
+        await original(turn_message, text, attachment=attachment)  # type: ignore[arg-type]
+        runtime.clear_queued_turns("222")
+
+    runtime.handle_user_turn = send_then_clear  # type: ignore[method-assign]
+    await runtime._flush_fragments(
+        "222",
+        [(message("three", message_id=3), "three", None)],
+    )
+    assert len(devin.sent) == 1
+    assert "a.txt" in devin.sent[0][1]
     await runtime.shutdown()
 
 
@@ -5259,8 +5438,8 @@ async def test_concurrent_queue_drains_serialize(tmp_path: Path) -> None:
     await asyncio.sleep(0)
     release.set()
     await asyncio.gather(first, second)
-    assert calls == ["one"]
-    assert runtime.queued_count("222") == 1
+    assert calls == ["one\n\ntwo"]
+    assert runtime.queued_count("222") == 0
     await runtime.shutdown()
 
 
@@ -5318,7 +5497,7 @@ async def test_flush_failure_retries_before_next_pending_turn(tmp_path: Path) ->
     assert runtime.queued_turns["222"][0][1] == "first"
     await runtime._queue_turn(message("second", message_id=2), "second", None)
     await runtime._flush_pending("222")
-    assert calls == ["first", "first", "second"]
+    assert calls == ["first", "first\n\nsecond"]
     assert not runtime.queued_turns
     await runtime.shutdown()
 

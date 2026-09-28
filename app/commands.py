@@ -76,6 +76,8 @@ class CommandRuntime(Protocol):
 
     async def stop_conversation(self, conversation: Conversation) -> None: ...
 
+    async def detach_conversation(self, conversation: Conversation) -> None: ...
+
     def clear_queued_turns(self, conv_key: str) -> None: ...
 
     def queued_count(self, conv_key: str) -> int: ...
@@ -168,16 +170,14 @@ async def handle_command(
         await runtime.send_text(message, help_text, ephemeral=True)
     elif command == "new":
         runtime.clear_queued_turns(conv_key)
+        if conversation is not None:
+            await runtime.detach_conversation(conversation)
         title = args.strip() or "Telegram conversation"
-        prompt = (
-            f"The user started a new conversation titled '{title}'. "
-            "Greet briefly and wait."
-        )
-        await runtime.create_session_for_message(
+        runtime.store.set_setting(f"pending_title:{conv_key}", title)
+        await runtime.send_text(
             message,
-            SYSTEM_PREAMBLE + prompt,
-            title,
-            playbook_id=runtime.store.get_settings(conv_key).default_playbook,
+            f"◆ New conversation: {title}\n"
+            "Send your first message to start Devin.",
         )
     elif command == "topic":
         name = args.strip()
@@ -434,6 +434,7 @@ async def _resume(
         last_event_id=latest,
         last_pr_url=state.pr_url,
     )
+    runtime.store.delete_setting(f"pending_title:{conv_key}")
     if retry_title:
         await runtime.start_watcher(conversation)
     await runtime.send_text(message, f"✓ Resumed: {title}\n{entry.session_url}")
@@ -566,7 +567,7 @@ def _start_text() -> str:
 def _help_text() -> str:
     return (
         "# Sessions\n"
-        "/new [title] — start a fresh session\n"
+        "/new [title] — start a fresh session on your next message\n"
         "/status — what Devin is doing\n"
         "/stop (/cancel) — terminate the session\n"
         "/retry — resend your last message\n"

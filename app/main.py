@@ -279,7 +279,10 @@ class Bridge:
         conv_keys = set(self.queued_turns) | set(self.pending_turns)
         for conv_key in conv_keys:
             queued = self.queued_turns.pop(conv_key, [])
-            for message, text, attachment in queued:
+            pending = self.pending_turns.pop(conv_key, [])
+            for message, text, attachment in self._coalesce_turns(
+                [*queued, *pending]
+            ):
                 try:
                     await self.handle_user_turn(
                         message,
@@ -292,7 +295,6 @@ class Bridge:
                         conv_key,
                     )
                     await self._report_processing_failure({"message": message}, exc)
-            await self._flush_pending(conv_key)
         for task in self.watchers.values():
             task.cancel()
         if self.watchers:
@@ -580,35 +582,36 @@ class Bridge:
                     await self.react(message, "🤔")
                 return
             queued = self.queued_turns.pop(conv_key, [])
-            for index, queued_turn in enumerate(queued):
-                queued_message, queued_text, queued_attachment = queued_turn
+            batches = self._coalesce_turns([*queued, turn])
+            while batches:
+                batch = batches.pop(0)
+                if batches:
+                    self.queued_turns[conv_key] = batches
+                else:
+                    self.queued_turns.pop(conv_key, None)
+                batch_message, batch_text, batch_attachment = batch
                 try:
                     await self.handle_user_turn(
-                        queued_message,
-                        queued_text,
-                        attachment=queued_attachment,
+                        batch_message,
+                        batch_text,
+                        attachment=batch_attachment,
                     )
                 except Exception as exc:
                     self.queued_turns[conv_key] = [
-                        queued_turn,
-                        *queued[index + 1:],
-                        turn,
+                        batch,
+                        *self.queued_turns.get(conv_key, []),
                     ]
                     logger.exception(
                         "Failed to flush queued Telegram turn for %s",
                         conv_key,
                     )
                     await self._report_processing_failure(
-                        {"message": queued_message},
+                        {"message": batch_message},
                         exc,
                         retryable=True,
                     )
                     return
-            try:
-                await self.handle_user_turn(message, text, attachment=attachment)
-            except Exception:
-                self.queued_turns[conv_key] = [turn]
-                raise
+                batches = self._coalesce_turns(self.queued_turns.pop(conv_key, []))
         except Exception as exc:
             logger.exception("Failed to flush Telegram turn for %s", conv_key)
             await self._report_processing_failure(
@@ -633,35 +636,79 @@ class Bridge:
             )
         )
 
+    def _coalesce_turns(self, turns: list[QueuedTurn]) -> list[QueuedTurn]:
+        groups: list[list[QueuedTurn]] = []
+        for turn in turns:
+            group = groups[-1] if groups else []
+            if group and turn[2] is not None and any(
+                item[2] is not None for item in group
+            ):
+                group = []
+            if not group:
+                groups.append(group)
+            group.append(turn)
+        batches: list[QueuedTurn] = []
+        for group in groups:
+            for merged_message, _, _ in group[:-1]:
+                merged_chat_id = _int(
+                    _mapping(merged_message.get("chat")).get("id")
+                )
+                merged_message_id = _int(merged_message.get("message_id"))
+                if merged_message_id:
+                    self.store.index_message(
+                        merged_chat_id,
+                        merged_message_id,
+                        self._conversation_key(merged_message),
+                    )
+            batches.append((
+                group[-1][0],
+                "\n\n".join(text for _, text, _ in group if text),
+                next((value for _, _, value in group if value is not None), None),
+            ))
+        return batches
+
     async def _drain_queue(self, conv_key: str) -> None:
         try:
             if conv_key in self.draining or self._conversation_busy(conv_key):
                 return
             self.draining.add(conv_key)
-            queued = self.queued_turns.get(conv_key)
+            queued = self.queued_turns.pop(conv_key, [])
             if not queued or self._conversation_busy(conv_key):
+                if queued:
+                    self.queued_turns[conv_key] = queued
                 return
-            message, text, attachment = queued.pop(0)
-            if not queued:
-                self.queued_turns.pop(conv_key, None)
-            if self._conversation_busy(conv_key):
-                self.queued_turns.setdefault(conv_key, []).insert(
-                    0, (message, text, attachment)
-                )
-                return
-            try:
-                await self.handle_user_turn(message, text, attachment=attachment)
-            except Exception as exc:
-                self.queued_turns.setdefault(conv_key, []).insert(
-                    0,
-                    (message, text, attachment),
-                )
-                logger.exception("Failed to drain Telegram turn for %s", conv_key)
-                await self._report_processing_failure(
-                    {"message": message},
-                    exc,
-                    retryable=True,
-                )
+            batches = self._coalesce_turns(queued)
+            while batches:
+                batch = batches.pop(0)
+                if batches:
+                    self.queued_turns[conv_key] = batches
+                else:
+                    self.queued_turns.pop(conv_key, None)
+                message, text, attachment = batch
+                if self._conversation_busy(conv_key):
+                    self.queued_turns[conv_key] = [
+                        batch,
+                        *self.queued_turns.get(conv_key, []),
+                    ]
+                    return
+                try:
+                    await self.handle_user_turn(message, text, attachment=attachment)
+                except Exception as exc:
+                    self.queued_turns[conv_key] = [
+                        batch,
+                        *self.queued_turns.get(conv_key, []),
+                    ]
+                    logger.exception(
+                        "Failed to drain Telegram turn for %s",
+                        conv_key,
+                    )
+                    await self._report_processing_failure(
+                        {"message": message},
+                        exc,
+                        retryable=True,
+                    )
+                    return
+                batches = self._coalesce_turns(self.queued_turns.pop(conv_key, []))
         finally:
             self.draining.discard(conv_key)
 
@@ -826,10 +873,11 @@ class Bridge:
             else:
                 conversation = self.store.get_conversation(conv_key) or conversation
         if conversation is None:
+            title = self.store.get_setting(f"pending_title:{conv_key}")
             conversation = await self.create_session_for_message(
                 message,
                 SYSTEM_PREAMBLE + text,
-                None,
+                title,
                 playbook_id=self.store.get_settings(conv_key).default_playbook,
                 last_user_text=text,
                 start_watcher=False,
@@ -880,6 +928,7 @@ class Bridge:
             title,
             playbook_id,
         )
+        self.store.delete_setting(f"pending_title:{conv_key}")
         stored_title = (
             title
             if title is not None
@@ -1322,6 +1371,18 @@ class Bridge:
         await self.start_watcher(
             conversation,
             trigger_message_id=trigger_message_id,
+        )
+
+    async def detach_conversation(self, conversation: Conversation) -> None:
+        task = self.watchers.pop(conversation.session_id, None)
+        self.active_watchers.pop(conversation.session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.clear_queued_turns(conversation.conv_key)
+        self.store.clear_conversation(
+            conversation.conv_key,
+            conversation.session_id,
         )
 
     async def stop_conversation(self, conversation: Conversation) -> None:

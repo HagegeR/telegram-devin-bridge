@@ -90,7 +90,7 @@ deployment check list.
 
 | Command | What it does |
 | --- | --- |
-| `/new [title]` | Start a fresh session (history is kept) |
+| `/new [title]` | Start a fresh session on your next message (history is kept; no Devin call until you send one) |
 | `/topic <name>` · `/close` · `/rename <name>` | Create and manage a forum topic with its own session |
 | `/sessions` · `/resume <n>` | List recent sessions; switch the active one |
 | `/status` | Title, status, and PR link of the active session |
