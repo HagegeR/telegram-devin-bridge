@@ -74,6 +74,9 @@ $shPosix = $sh.Replace('\', '/')
 Write-EnvValue 'TELEGRAM_MODE' 'polling'
 Write-EnvValue 'ADMIN_LOG_PATH' 'logs/bridge.log'
 Write-EnvValue 'SELF_UPDATE_COMMAND' "'`"$shPosix`" deploy/self-update.sh'"
+# .env holds the bot and Devin tokens: current user only, no inherited ACEs
+icacls .env /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(F)" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'could not restrict .env permissions' }
 
 if ($NoTask) {
     "installed; run: powershell -ExecutionPolicy Bypass -File $root\deploy\windows\run.ps1"
@@ -87,11 +90,8 @@ $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+# run.ps1 stops a poller the previous task instance left behind
 Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-# stopping the task leaves its python child running; two pollers conflict
-Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-    Where-Object { $_.CommandLine -like '*-m app.poll*' } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
     -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName

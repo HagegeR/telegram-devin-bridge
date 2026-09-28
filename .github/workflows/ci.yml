@@ -135,13 +135,21 @@ jobs:
       - name: Self-update check under Git Bash
         shell: bash
         run: sh deploy/self-update.sh --check main
-      - name: Supervisor loop writes the log
+      - name: Supervisor loop writes the log and never runs two pollers
         shell: powershell
         run: |
-          $p = Start-Process powershell -PassThru -WindowStyle Hidden `
-            -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', 'deploy\windows\run.ps1'
+          $venvPython = (Resolve-Path .venv\Scripts\python.exe).Path
+          function Start-Loop {
+            Start-Process powershell -PassThru -WindowStyle Hidden `
+              -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', 'deploy\windows\run.ps1'
+          }
+          # a long-lived stand-in for a poller orphaned by a stopped task
+          $orphan = Start-Process $venvPython -PassThru -WindowStyle Hidden `
+            -ArgumentList '-c', 'import time; time.sleep(600)'
+          $loop = Start-Loop
           Start-Sleep -Seconds 20
-          Stop-Process -Id $p.Id -Force
+          if (-not $orphan.HasExited) { throw 'run.ps1 left the stale poller running' }
+          Stop-Process -Id $loop.Id -Force
           if (-not (Get-Content logs\bridge.log -Raw)) { throw 'no log output' }
 
   yamllint:

@@ -636,11 +636,16 @@ async def test_transcribe_local_rejects_when_slots_busy(
     ) is None
 
 
-def test_kill_uses_process_kill_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_kill_takes_down_the_tree_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    ran: list[list[str]] = []
     killed: list[int] = []
     monkeypatch.setattr(transcription.os, "name", "nt")
     monkeypatch.setattr(
         transcription.os, "killpg", lambda *_: pytest.fail("no killpg on Windows")
     )
-    transcription._kill(SimpleNamespace(pid=1, kill=lambda: killed.append(1)))
+    monkeypatch.setattr(
+        transcription.subprocess, "run", lambda argv, **_: ran.append(argv)
+    )
+    transcription._kill(SimpleNamespace(pid=42, kill=lambda: killed.append(1)))
+    assert ran == [["taskkill", "/F", "/T", "/PID", "42"]]
     assert killed == [1]

@@ -23,10 +23,21 @@ if command -v flock >/dev/null 2>&1; then
   flock -n 9 || { echo "another update is running"; exit 0; }
 else
   # macOS and Git Bash on Windows ship no flock: mkdir is atomic everywhere.
-  # A lock older than the 300 s update timeout is from a killed run.
-  find "$LOCK.d" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null || true
-  mkdir "$LOCK.d" 2>/dev/null || { echo "another update is running"; exit 0; }
-  trap 'rmdir "$LOCK.d" 2>/dev/null' EXIT
+  # The owner pid inside lets a later run reclaim the lock of a killed one;
+  # a lock without a pid yet is only stale once it is a minute old.
+  if ! mkdir "$LOCK.d" 2>/dev/null; then
+    OWNER=$(cat "$LOCK.d/pid" 2>/dev/null || true)
+    if [ -n "$OWNER" ] && kill -0 "$OWNER" 2>/dev/null; then
+      echo "another update is running"; exit 0
+    fi
+    if [ -z "$OWNER" ] && [ -z "$(find "$LOCK.d" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      echo "another update is running"; exit 0
+    fi
+    rm -rf "$LOCK.d"
+    mkdir "$LOCK.d" 2>/dev/null || { echo "another update is running"; exit 0; }
+  fi
+  echo $$ > "$LOCK.d/pid"
+  trap 'rm -rf "$LOCK.d"' EXIT
 fi
 VENV_BIN=.venv/bin; [ -d .venv/Scripts ] && VENV_BIN=.venv/Scripts
 CHECK=0; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }

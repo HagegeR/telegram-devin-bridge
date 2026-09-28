@@ -8,6 +8,7 @@ import io
 import logging
 import os
 import signal
+import subprocess
 import tempfile
 import wave
 from collections.abc import Sequence
@@ -114,8 +115,12 @@ def _release_slot(job: asyncio.Future[str]) -> None:
 def _kill(process: asyncio.subprocess.Process) -> None:
     with contextlib.suppress(ProcessLookupError):
         if os.name == "nt":
-            # ponytail: Windows has no process groups here, so only the direct
-            # child dies; use taskkill /T if grandchildren ever matter.
+            # no process groups on Windows: /T walks the child tree instead
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True,
+                check=False,
+            )
             process.kill()
         else:
             # Children run in their own session, so this reaches sh -c

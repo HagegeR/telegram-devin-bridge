@@ -23,7 +23,12 @@ _DOCKER_MEMORY_MIN = 6 * 1024**2  # docker rejects limits below 6 MiB
 def _default_restart_command() -> str:
     # empty means: exit and let the supervisor (OpenRC, systemd, launchd,
     # deploy/windows/run.ps1, Docker) respawn the process
-    if os.name == "posix" and os.geteuid() == 0 and shutil.which("rc-service"):
+    if (
+        os.name == "posix"
+        and os.geteuid() == 0
+        and os.path.isdir("/run/openrc")
+        and shutil.which("rc-service")
+    ):
         return (
             "nohup sh -c 'sleep 1; rc-service telegram-devin-bridge restart' "
             ">/dev/null 2>&1 &"

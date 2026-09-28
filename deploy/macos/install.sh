@@ -68,6 +68,9 @@ set_env_value ADMIN_LOG_PATH "$LOG"
 chmod 600 .env
 
 mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
+xml_escape() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+XML_HOME=$(xml_escape "$BRIDGE_HOME")
+XML_LOG=$(xml_escape "$LOG")
 # KeepAlive respawns the process after /update or the admin restart exits it
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -77,11 +80,11 @@ cat > "$PLIST" <<PLIST
     <key>Label</key><string>$LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$BRIDGE_HOME/.venv/bin/python</string>
+        <string>$XML_HOME/.venv/bin/python</string>
         <string>-m</string>
         <string>app.poll</string>
     </array>
-    <key>WorkingDirectory</key><string>$BRIDGE_HOME</string>
+    <key>WorkingDirectory</key><string>$XML_HOME</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key><string>$AGENT_PATH</string>
@@ -90,8 +93,8 @@ cat > "$PLIST" <<PLIST
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>$LOG</string>
-    <key>StandardErrorPath</key><string>$LOG</string>
+    <key>StandardOutPath</key><string>$XML_LOG</string>
+    <key>StandardErrorPath</key><string>$XML_LOG</string>
 </dict>
 </plist>
 PLIST

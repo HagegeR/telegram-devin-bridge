@@ -292,10 +292,18 @@ def test_update_without_flock_uses_windows_venv(deploy_clone, tmp_path: Path):
             check=False,
         )
 
-    (clone / ".self-update.lock.d").mkdir()
-    held = run()
-    assert "another update is running" in held.stdout
-    (clone / ".self-update.lock.d").rmdir()
+    lock = clone / ".self-update.lock.d"
+    lock.mkdir()
+    # a fresh lock without an owner pid is still being taken: keep off
+    assert "another update is running" in run().stdout
+    live = subprocess.Popen(["sleep", "30"])
+    try:
+        (lock / "pid").write_text(f"{live.pid}\n")
+        assert "another update is running" in run().stdout
+    finally:
+        live.kill()
+        live.wait()
+    # the owner is gone (a killed update): the lock is reclaimed
 
     result = run()
     assert result.returncode == 0, result.stdout + result.stderr
