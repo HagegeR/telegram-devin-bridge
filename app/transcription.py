@@ -111,10 +111,20 @@ def _release_slot(job: asyncio.Future[str]) -> None:
     _slots.release()
 
 
-async def _reap(process: asyncio.subprocess.Process) -> None:
-    # Children run in their own session, so this reaches sh -c grandchildren.
+def _kill(process: asyncio.subprocess.Process) -> None:
     with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
+        if os.name == "nt":
+            # ponytail: Windows has no process groups here, so only the direct
+            # child dies; use taskkill /T if grandchildren ever matter.
+            process.kill()
+        else:
+            # Children run in their own session, so this reaches sh -c
+            # grandchildren.
+            os.killpg(process.pid, signal.SIGKILL)
+
+
+async def _reap(process: asyncio.subprocess.Process) -> None:
+    _kill(process)
     await process.wait()
 
 
@@ -130,8 +140,7 @@ async def _read_capped(
         buffer += chunk
         if len(buffer) > _MAX_OUTPUT:
             buffer = None
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+            _kill(process)
     return None if buffer is None else bytes(buffer)
 
 
@@ -162,7 +171,7 @@ async def _run_whispercpp_command(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                start_new_session=True,
+                start_new_session=os.name != "nt",
             )
         finally:
             if stdin is not None:

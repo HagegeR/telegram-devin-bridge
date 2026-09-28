@@ -51,7 +51,98 @@ jobs:
       - run: >-
           shellcheck -e SC1007 -x deploy/self-update.sh
           deploy/alpine/install.sh deploy/vm/install.sh
+          deploy/macos/install.sh
           deploy/docker-entrypoint.sh deploy/release.sh
+
+  linux-install:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - alpine:3.20
+          - debian:13
+          - ubuntu:24.04
+          - fedora:41
+          - rockylinux/rockylinux:9
+          - archlinux:latest
+          - opensuse/leap:15.6
+          - opensuse/tumbleweed
+        uv: [""]
+        include:
+          # python3 < 3.12: the installer falls back to a uv-managed interpreter
+          - image: debian:12
+            uv: "1"
+          - image: ubuntu:22.04
+            uv: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        if: matrix.uv
+      - name: Install into a fresh container
+        env:
+          IMAGE: ${{ matrix.image }}
+          UV_MOUNT: ${{ matrix.uv && '1' || '' }}
+        run: |
+          set -- -v "$PWD:/src:ro"
+          [ -n "$UV_MOUNT" ] && set -- "$@" -v "$(command -v uv):/usr/local/bin/uv:ro"
+          docker run --rm "$@" "$IMAGE" sh -c '
+            cp -a /src /tmp/src && sh /tmp/src/deploy/vm/install.sh &&
+            cd /opt/telegram-devin-bridge &&
+            .venv/bin/python -c "import app.main" &&
+            grep -q "^TELEGRAM_MODE=polling" .env'
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - run: uv venv --python 3.12 .venv
+      - run: >-
+          uv pip install -r requirements.txt -r requirements-dev.txt
+          --python .venv/bin/python
+      # macOS has no flock: exercises the self-update mkdir lock fallback
+      - run: .venv/bin/python -m pytest --timeout=300
+      - run: sh deploy/macos/install.sh --dry-run
+      - name: Install and load the launchd agent
+        run: |
+          sh deploy/macos/install.sh
+          sleep 5
+          launchctl print "gui/$(id -u)/telegram-devin-bridge" >/dev/null
+          launchctl bootout "gui/$(id -u)/telegram-devin-bridge"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      # Windows PowerShell 5.1, the shell users run the installer with
+      - name: Install (no scheduled task)
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1 -DryRun
+          powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1 -NoTask
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $env:TELEGRAM_BOT_TOKEN = 'ci'
+          .venv\Scripts\python.exe -c "import shlex; from app.config import Settings; print(shlex.split(Settings().self_update_command))"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Self-update check under Git Bash
+        shell: bash
+        run: sh deploy/self-update.sh --check main
+      - name: Supervisor loop writes the log
+        shell: powershell
+        run: |
+          $p = Start-Process powershell -PassThru -WindowStyle Hidden `
+            -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', 'deploy\windows\run.ps1'
+          Start-Sleep -Seconds 20
+          Stop-Process -Id $p.Id -Force
+          if (-not (Get-Content logs\bridge.log -Raw)) { throw 'no log output' }
 
   yamllint:
     runs-on: ubuntu-latest

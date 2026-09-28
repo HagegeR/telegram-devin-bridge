@@ -24,6 +24,8 @@ elif command -v yum >/dev/null 2>&1; then
     PKG_MANAGER=yum
 elif command -v pacman >/dev/null 2>&1; then
     PKG_MANAGER=pacman
+elif command -v zypper >/dev/null 2>&1; then
+    PKG_MANAGER=zypper
 else
     PKG_MANAGER=unknown
 fi
@@ -36,8 +38,23 @@ else
     INIT_SYSTEM=manual
 fi
 
-if command -v python3 >/dev/null 2>&1; then
-    PYTHON_VERSION=$(python3 --version 2>&1)
+# distro python3 is often older than 3.12 (Debian 12, Ubuntu 22.04, RHEL 9);
+# versioned binaries or a uv-managed interpreter cover those
+find_python() {
+    for candidate in python3.14 python3.13 python3.12 python3; do
+        if command -v "$candidate" >/dev/null 2>&1 \
+            && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+PYTHON=$(find_python || true)
+if [ -n "$PYTHON" ]; then
+    PYTHON_VERSION=$("$PYTHON" --version 2>&1)
+elif command -v uv >/dev/null 2>&1; then
+    PYTHON_VERSION='uv-managed 3.12'
 else
     PYTHON_VERSION=missing
 fi
@@ -64,25 +81,36 @@ case "$PKG_MANAGER" in
         apt-get install -y python3 python3-venv python3-pip git
         ;;
     dnf)
-        dnf install -y python3 python3-pip git
+        dnf install -y python3 python3-pip git tar
         ;;
     yum)
-        yum install -y python3 python3-pip git
+        yum install -y python3 python3-pip git tar
         ;;
     pacman)
-        pacman -Sy --noconfirm python python-pip git
+        pacman -Sy --noconfirm python python-pip git tar
+        ;;
+    zypper)
+        zypper --non-interactive install python3 python3-pip git shadow tar
         ;;
     unknown)
         printf '%s\n' 'install python3 (>=3.12), pip, git manually, then rerun this installer' >&2
         ;;
 esac
 
-if ! command -v python3 >/dev/null 2>&1; then
-    printf '%s\n' 'python3 (>=3.12) is required but was not found' >&2
-    exit 1
+PYTHON=$(find_python || true)
+if [ -z "$PYTHON" ]; then
+    # best effort: the distro may package a newer interpreter next to python3
+    case "$PKG_MANAGER" in
+        apt-get) apt-get install -y python3.12 python3.12-venv >/dev/null 2>&1 || true ;;
+        dnf|yum) "$PKG_MANAGER" install -y python3.12 python3.12-pip >/dev/null 2>&1 || true ;;
+        zypper) zypper --non-interactive install python312 >/dev/null 2>&1 || true ;;
+    esac
+    PYTHON=$(find_python || true)
 fi
-if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
-    printf 'python3 >= 3.12 is required; found %s\n' "$(python3 --version 2>&1)" >&2
+if [ -z "$PYTHON" ] && ! command -v uv >/dev/null 2>&1; then
+    printf 'python >= 3.12 is required; found %s.\n' \
+        "$(python3 --version 2>&1 || echo none)" >&2
+    printf '%s\n' 'install uv (https://docs.astral.sh/uv/) and rerun, or use docker compose' >&2
     exit 1
 fi
 
@@ -91,7 +119,8 @@ if id "$SERVICE_USER" >/dev/null 2>&1; then
 elif [ "$PKG_MANAGER" = apk ] && command -v adduser >/dev/null 2>&1; then
     adduser -D -H "$SERVICE_USER"
 elif command -v useradd >/dev/null 2>&1; then
-    useradd -r -M -s /usr/sbin/nologin "$SERVICE_USER"
+    NOLOGIN=$(command -v nologin || echo /usr/sbin/nologin)
+    useradd -r -M -s "$NOLOGIN" "$SERVICE_USER"
 else
     printf 'cannot create %s; install adduser or useradd manually\n' "$SERVICE_USER" >&2
     exit 1
@@ -115,6 +144,7 @@ else
     tar -C "$SOURCE_DIR" \
         $GIT_EXCLUDE \
         --exclude='.venv' \
+        --exclude='.python' \
         --exclude='*.sqlite3' \
         --exclude='.env' \
         -cf - . | tar -C "$BRIDGE_HOME" -xf -
@@ -122,7 +152,14 @@ fi
 
 cd "$BRIDGE_HOME"
 if [ ! -x .venv/bin/python ]; then
-    python3 -m venv .venv
+    if [ -n "$PYTHON" ]; then
+        "$PYTHON" -m venv .venv
+    else
+        # keep the interpreter inside BRIDGE_HOME so the service user can
+        # read it; --seed adds pip for deploy/self-update.sh
+        UV_PYTHON_INSTALL_DIR="$BRIDGE_HOME/.python" \
+            uv venv --seed --python 3.12 .venv
+    fi
 fi
 .venv/bin/python -m pip install -r requirements.txt
 

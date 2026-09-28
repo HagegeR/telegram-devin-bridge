@@ -81,7 +81,8 @@ async def _run_command(
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
-        env={**os.environ, **env} if env is not None else None,
+        # deploy/self-update.sh signals this pid for a supervisor respawn
+        env={**os.environ, **(env or {}), "BRIDGE_PID": str(os.getpid())},
     )
     try:
         stdout, _ = await asyncio.wait_for(process.communicate(), 300)

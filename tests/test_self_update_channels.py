@@ -255,3 +255,74 @@ def test_nonchannel_names_stay_branch_mode(deploy_clone):
     # branch mode and fail the branch fetch instead of silently tracking tags.
     clone, _ = deploy_clone
     assert check(clone, "latest").returncode != 0
+
+
+def _path_without(tmp_path: Path, *names: str) -> str:
+    """A PATH mirroring the current one minus the given executables."""
+    bin_dir = tmp_path / "path-bin"
+    bin_dir.mkdir()
+    for directory in os.environ["PATH"].split(os.pathsep):
+        if not os.path.isdir(directory):
+            continue
+        for entry in os.listdir(directory):
+            target = bin_dir / entry
+            if entry in names or target.exists():
+                continue
+            target.symlink_to(os.path.join(directory, entry))
+    return str(bin_dir)
+
+
+def test_update_without_flock_uses_windows_venv(deploy_clone, tmp_path: Path):
+    # macOS and Git Bash have no flock, and Windows venvs use Scripts/
+    clone, _ = deploy_clone
+    pip = clone / ".venv" / "Scripts" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\ntouch pip-ran\n")
+    pip.chmod(0o755)
+    env = {**os.environ, **GIT_ENV, "PATH": _path_without(tmp_path, "flock")}
+    env.pop("INVOCATION_ID", None)
+
+    def run() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["sh", "deploy/self-update.sh", "main"],
+            cwd=clone,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    (clone / ".self-update.lock.d").mkdir()
+    held = run()
+    assert "another update is running" in held.stdout
+    (clone / ".self-update.lock.d").rmdir()
+
+    result = run()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / "pip-ran").exists()
+    assert not (clone / ".self-update.lock.d").exists()
+
+
+def test_bridge_supervised_caller_gets_termed(deploy_clone):
+    # launchd and deploy/windows/run.ps1 set BRIDGE_SUPERVISED: exiting is the
+    # restart, whatever init system the host has
+    import signal
+
+    clone, _ = deploy_clone
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    env = {**os.environ, **GIT_ENV, "BRIDGE_SUPERVISED": "1"}
+    env.pop("INVOCATION_ID", None)
+    env.pop("BRIDGE_PID", None)
+    result = subprocess.run(
+        ["sh", "-c", "sh deploy/self-update.sh release; exec sleep 30"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == -signal.SIGTERM
+    assert (clone / ".self-update-pending").exists()

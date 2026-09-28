@@ -82,7 +82,8 @@ Tailscale SSH as fallback. Command and path keys can never be set via the API.
 `deploy/self-update.sh` takes a host-wide lock and records a deploy marker,
 resolves the configured **update channel** to a revision, checks it out,
 reinstalls requirements when `requirements.txt` changed, and restarts the
-OpenRC/systemd service detached. `--check` reports without touching anything.
+OpenRC/systemd service detached (or exits for a launchd/Windows supervisor
+to respawn). It uses `flock` when present and a `mkdir` lock otherwise. `--check` reports without touching anything.
 The host checkout is deploy-only: local changes are discarded on purpose.
 VM installs keep the source git checkout under `BRIDGE_HOME` so `/update`
 works; unprivileged services exit and let supervise-daemon or systemd respawn
@@ -130,7 +131,8 @@ From a checked-out repository, install or upgrade the bridge with:
 sh deploy/vm/install.sh
 ```
 
-The installer detects `apk`, `apt-get`, `dnf`, `yum`, or `pacman`, creates the
+The installer detects `apk`, `apt-get`, `dnf`, `yum`, `pacman`, or `zypper`
+(Alpine, Debian/Ubuntu, Fedora/RHEL/Rocky, Arch, openSUSE), creates the
 `telegram-devin` service account, installs the bridge under
 `/opt/telegram-devin-bridge`, and configures polling with the database at
 `/var/lib/telegram-devin-bridge/bridge.sqlite3`. It is safe to rerun: pull the
@@ -181,6 +183,44 @@ sudo install -o telegram-devin -g telegram-devin -m 0640 \
   bridge.sqlite3 /var/lib/telegram-devin-bridge/bridge.sqlite3
 flyctl scale count 0
 ```
+
+The bridge needs Python >= 3.12. When the distro `python3` is older (Debian 12,
+Ubuntu 22.04), the installer tries a versioned package (`python3.12`) and
+otherwise falls back to [uv](https://docs.astral.sh/uv/) if it is on `PATH`,
+keeping the uv-managed interpreter under `BRIDGE_HOME/.python`.
+
+### macOS
+
+Run as your normal user from the checkout you want to serve (it stays the
+`/update` target):
+
+```bash
+sh deploy/macos/install.sh            # --dry-run to inspect
+launchctl kickstart -k gui/$(id -u)/telegram-devin-bridge   # restart
+tail -f ~/Library/Logs/telegram-devin-bridge.log
+```
+
+The per-user launchd agent (`~/Library/LaunchAgents/telegram-devin-bridge.plist`)
+runs polling mode with `KeepAlive`, so `/update` and the admin `restart`
+action restart the bridge by exiting. Python comes from Homebrew
+(`brew install python@3.12`) when no 3.12+ interpreter is found.
+
+### Windows
+
+Needs Python >= 3.12 (`winget install Python.Python.3.12`) and Git for Windows
+(`winget install Git.Git`), whose `sh.exe` runs `deploy/self-update.sh`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1   # -DryRun, -NoTask
+Get-Content logs\bridge.log -Wait
+Stop-ScheduledTask telegram-devin-bridge; Start-ScheduledTask telegram-devin-bridge
+```
+
+A scheduled task starts `deploy\windows\run.ps1` at logon; it reruns the
+bridge 5 s after every exit, which is how `/update` and `restart` take effect.
+Windows locks loaded `.pyd` files, so an update that changes compiled
+dependencies may need a manual stop, `pip install -r requirements.txt`, and
+start.
 
 ## Devin Knowledge
 

@@ -133,7 +133,7 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 | `ADMIN_SECRET` | no | unset (`/admin` disabled) | See [operations.md](operations.md#admin-api). |
 | `ADMIN_ENV_ALLOWLIST` | no | built-in non-secret key list | Keys settable via `set-env`. Tokens/keys/secrets are never readable or writable. |
 | `ADMIN_LOG_PATH` | no | `/var/log/telegram-devin-bridge.log` | Log file tailed by the `logs` action. |
-| `ADMIN_RESTART_COMMAND` | no | OpenRC `rc-service` restart | Command run by the `restart` action. |
+| `ADMIN_RESTART_COMMAND` | no | `rc-service` restart when root with OpenRC, else empty | Command run by the `restart` action. Empty exits the process so the supervisor (systemd, launchd, the Windows loop, Docker) respawns it. |
 | `SELF_UPDATE_COMMAND` | no | `sh deploy/self-update.sh` | Command run by `/update` and the admin `update` action. |
 | `SELF_UPDATE_CHANNEL` | no | unset | Release channel the updater tracks: a branch name, `stable`, `vX`, `vX.Y`, or a `vX.Y.Z` pin — see [versioning.md](versioning.md). Root-only, never admin-settable. |
 | `SELF_UPDATE_BRANCH` | no | `main` | Fallback when `SELF_UPDATE_CHANNEL` is unset (branch tracking only). |
