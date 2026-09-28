@@ -27,6 +27,9 @@ should not touch production Telegram/Devin.
   yourself — the settings flag only applies when `create_app` builds the client.
   With rich on, text sends go to `/sendRichMessage` under
   `body["rich_message"]["markdown"]`, not `body["text"]`.
+  Rich-message serialization normalizes single line breaks to Markdown hard
+  breaks (two spaces before the newline); exact payload assertions must account
+  for this formatting rather than comparing the raw command reply string.
 - Run `uvicorn.Server(uvicorn.Config(app, ...))` as an asyncio task in the same
   process: you get a real socket server AND can introspect
   `app.state.bridge` (janitor task, `_transcription_client`, in-memory dicts).
@@ -39,6 +42,9 @@ should not touch production Telegram/Devin.
   setMyShortDescription at startup — stub them ok. It does NOT call setWebhook.
 - Webhook updates are dispatched in background tasks — poll fake state with a
   `wait_for(pred)` helper instead of sleeping.
+  For busy-queue coalescing checks, set `telegram_debounce_seconds=0` and wait
+  for each individual queued turn before sending the next. Otherwise fragment
+  debouncing can merge the inputs before the busy queue is actually exercised.
 - Session correlation: record `(prompt, session_id)` from `POST /v1/sessions`
   responses; earlier test traffic also consumes session numbering, never assume
   `sess-N` ordering.
