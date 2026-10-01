@@ -24,8 +24,8 @@ required.
 | Variable | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `DEVIN_API_KEY` | yes | — | **v1** key (`apk_user_…` personal or `apk_…` service). A service-user token (`cog_…`) is NOT accepted by `/v1` (403). |
-| `DEVIN_SERVICE_USER_API_KEY` | no | unset | `cog_…` service-user token; only used by `/usage`. |
-| `DEVIN_ORG_ID` | no | unset | Required for `/usage`. |
+| `DEVIN_SERVICE_USER_API_KEY` | no | unset | `cog_…` service-user token; enables the v3 API surface (per-chat `devin_mode`/`repos`, `/usage`, v3 knowledge publishing). Without it the bridge falls back to v1. |
+| `DEVIN_ORG_ID` | no | unset | Required for the v3 API surface (`/usage`, `devin_mode`, `repos`). |
 | `DEVIN_API_BASE_URL` | no | `https://api.devin.ai` | |
 | `DEVIN_MAX_ACU_LIMIT` | no | `3` | ACU cap passed to new sessions. |
 | `DEVIN_SESSION_INSTRUCTIONS` | no | empty | Prepended verbatim to the prompt of every session the bridge starts — use it for org-specific guidance such as which injected secret grants Devin v3 API access for editing automations. |

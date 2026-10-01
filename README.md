@@ -98,7 +98,8 @@ deployment check list.
 | `/steer <text>` | Inject a message into the running session immediately |
 | `/retry` | Resend the last user message |
 | `/playbook [n] [text]` | List or start a Devin playbook |
-| `/settings` | Notification, draft, status-timer, and default-playbook settings |
+| `/settings` | Notification, draft, status-timer, playbook, mode, and repo settings |
+| `/repos [a/b,c/d]` | Show, set, or clear the repos list for new sessions (`/repos all` resets) |
 | `/usage` | Devin ACU usage (needs `DEVIN_ORG_ID` + service-user key) |
 | `/lang [code]` | Per-user voice-transcription language (`auto`, `off`) |
 | `/whoami` · `/sethome` | Show IDs; set the notification target chat |
