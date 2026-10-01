@@ -84,15 +84,28 @@ async def publish(
         # v3 names the field "trigger"; v1 expects "trigger_description"
         ("trigger" if v3 else "trigger_description"): trigger_description,
     }
-    list_response = await client.get(
-        notes_url, headers=headers, timeout=HTTP_TIMEOUT
-    )
-    list_response.raise_for_status()
     existing_id: str | None = None
-    for entry in _extract_entries(list_response.json()):
-        if entry.get("name") == name:
-            existing_id = _entry_id(entry)
+    after: str | None = None
+    while True:
+        params: dict[str, object] = {"first": 100} if v3 else {}
+        if after is not None:
+            params["after"] = after
+        list_response = await client.get(
+            notes_url, headers=headers, params=params, timeout=HTTP_TIMEOUT
+        )
+        list_response.raise_for_status()
+        page = list_response.json()
+        for entry in _extract_entries(page):
+            if entry.get("name") == name:
+                existing_id = _entry_id(entry)
+                break
+        # v1 knowledge has no pagination envelope; drain v3 pages only
+        if not v3 or existing_id is not None or not page.get("has_next_page"):
             break
+        cursor = page.get("end_cursor")
+        if not isinstance(cursor, str) or not cursor:
+            break
+        after = cursor
 
     if existing_id is not None:
         response = await client.put(

@@ -8,7 +8,7 @@ import httpx
 
 from app.access import is_allowed, is_topic_chat
 from app.config import Settings
-from app.devin import Playbook, SessionState
+from app.devin import DevinClient, Playbook, SessionState
 from app.store import Conversation, Store
 
 SYSTEM_PREAMBLE = (
@@ -34,6 +34,7 @@ _STATUS_LABELS = {
 class CommandRuntime(Protocol):
     settings: Settings
     store: Store
+    devin: DevinClient
     bot_topics_enabled: bool
     approved_users: set[int]
 
@@ -240,19 +241,25 @@ async def handle_command(
         await runtime.settings_menu(message)
     elif command == "repos":
         value = args.strip()
+        v3_hint = (
+            ""
+            if runtime.devin.v3_enabled
+            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
         if not value:
             current = runtime.store.get_settings(conv_key).repos
             await runtime.send_text(
                 message,
                 f"Repos: {current or 'all'}\n"
-                "/repos owner/repo,org/repo2 to set · /repos all to reset",
+                "/repos owner/repo,org/repo2 to set · /repos all to reset"
+                + v3_hint,
                 ephemeral=True,
             )
         elif value.casefold() in {"all", "clear", "default", "off"}:
             runtime.store.update_settings(conv_key, repos=None)
             await runtime.send_text(
                 message,
-                "Repos reset — new sessions see all repos.",
+                "Repos reset — new sessions see all repos." + v3_hint,
                 ephemeral=True,
             )
         else:
@@ -263,7 +270,8 @@ async def handle_command(
                 runtime.store.update_settings(conv_key, repos=",".join(repos))
                 await runtime.send_text(
                     message,
-                    f"Repos: {', '.join(repos)} — applies to the next new session.",
+                    f"Repos: {', '.join(repos)} — applies to the next new session."
+                    + v3_hint,
                     ephemeral=True,
                 )
             else:

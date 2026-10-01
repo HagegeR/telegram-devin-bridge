@@ -588,46 +588,23 @@ class Store:
         }
         if not fields or any(key not in allowed for key in fields):
             raise ValueError("Unknown conversation setting")
-        current = self.get_settings(conv_key)
-        values = {
-            "silent": int(fields.get("silent", current.silent)),
-            "drafts": fields.get("drafts", current.drafts),
-            "status_timer": fields.get("status_timer", current.status_timer),
-            "default_playbook": fields.get(
-                "default_playbook",
-                current.default_playbook,
-            ),
-            "devin_mode": fields.get("devin_mode", current.devin_mode),
-            "repos": fields.get("repos", current.repos),
-        }
+        # Write only the supplied columns so concurrent single-field updates
+        # (a settings callback vs /repos) can't clobber each other's reads.
         with self.lock, self.connection:
             self.connection.execute(
-                """
-                INSERT INTO conversation_settings(
-                    conv_key, silent, drafts, status_timer, default_playbook,
-                    devin_mode, repos
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(conv_key) DO UPDATE SET
-                    silent = excluded.silent,
-                    drafts = excluded.drafts,
-                    status_timer = excluded.status_timer,
-                    default_playbook = excluded.default_playbook,
-                    devin_mode = excluded.devin_mode,
-                    repos = excluded.repos
-                """,
-                (
-                    conv_key,
-                    values["silent"],
-                    None if values["drafts"] is None else int(bool(values["drafts"])),
-                    (
-                        None
-                        if values["status_timer"] is None
-                        else int(bool(values["status_timer"]))
-                    ),
-                    values["default_playbook"],
-                    values["devin_mode"],
-                    values["repos"],
-                ),
+                "INSERT OR IGNORE INTO conversation_settings(conv_key, silent) "
+                "VALUES (?, 0)",
+                (conv_key,),
+            )
+            assignments = ", ".join(f"{key} = ?" for key in fields)
+            params = [
+                int(value) if isinstance(value, bool) else value
+                for value in fields.values()
+            ]
+            self.connection.execute(
+                f"UPDATE conversation_settings SET {assignments} "
+                "WHERE conv_key = ?",
+                (*params, conv_key),
             )
 
     def get_access_request(self, user_id: int) -> AccessRequest | None:

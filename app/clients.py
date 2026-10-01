@@ -133,6 +133,36 @@ def _iso_epoch(value: object) -> str | None:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
 
 
+def _modes_from_422(response: httpx.Response) -> list[str] | None:
+    """Extract the accepted devin_mode set from a create-session 422 body."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    texts: list[str] = []
+    if isinstance(detail, list):
+        for entry in detail:
+            if not isinstance(entry, dict):
+                continue
+            loc = entry.get("loc")
+            if isinstance(loc, list) and loc and loc[-1] != "devin_mode":
+                continue
+            ctx = entry.get("ctx")
+            if isinstance(ctx, dict) and isinstance(ctx.get("expected"), str):
+                texts.append(ctx["expected"])
+            if isinstance(entry.get("msg"), str):
+                texts.append(entry["msg"])
+    elif isinstance(detail, str):
+        texts.append(detail)
+    modes = [
+        token
+        for text in texts
+        for token in re.findall(r"'([\w.-]+)'", text)
+    ]
+    return modes or None
+
+
 class DevinClient:
     def __init__(
         self,
@@ -164,6 +194,11 @@ class DevinClient:
         self._pr_cache: dict[
             tuple[str, str | None], tuple[float, dict[str, object]]
         ] = {}
+        # session_id -> event_id -> start-cursor of the messages page that
+        # contained it; lets polls resume near the marker instead of
+        # re-reading the whole history
+        self._page_cursors: dict[str, dict[str, str | None]] = {}
+        self._modes_cache: list[str] | None = None
 
     def _v3_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.service_user_api_key}"}
@@ -235,15 +270,39 @@ class DevinClient:
             json={"message": message},
         )
 
+    async def devin_modes(self) -> list[str]:
+        """Modes accepted by this org's API. No list endpoint exists, so the
+        set is read from the create-session literal-error once and cached."""
+        if self._modes_cache is not None:
+            return self._modes_cache
+        modes = list(DEVIN_MODES)
+        if self.v3_enabled:
+            try:
+                await self._call(
+                    "POST",
+                    self._v3("/sessions"),
+                    json={"prompt": "mode-probe", "devin_mode": "_"},
+                    headers=self._v3_headers(),
+                )
+            except httpx.HTTPStatusError as exc:
+                modes = _modes_from_422(exc.response) or modes
+            except httpx.HTTPError:
+                pass
+        self._modes_cache = modes
+        return modes
+
     async def get_session(
         self,
         session_id: str,
         *,
         since_event_id: str | None = None,
+        fetch_messages: bool = True,
     ) -> SessionState:
         if self.v3_enabled:
             return await self._get_session_v3(
-                session_id, since_event_id=since_event_id
+                session_id,
+                since_event_id=since_event_id,
+                fetch_messages=fetch_messages,
             )
         payload = await self._json("GET", f"/v1/sessions/{session_id}")
         messages_value = payload.get("messages", [])
@@ -308,6 +367,7 @@ class DevinClient:
         session_id: str,
         *,
         since_event_id: str | None = None,
+        fetch_messages: bool = True,
     ) -> SessionState:
         devin_id = self._devin_id(session_id)
         headers = self._v3_headers()
@@ -316,11 +376,17 @@ class DevinClient:
             self._v3(f"/sessions/{devin_id}"),
             headers=headers,
         )
-        # v1 returned the full message list inline; v3 paginates ascending,
-        # so drain every page then apply the same since_event_id marker rule
+        # v1 returned the full message list inline; v3 paginates ascending.
+        # Each fetched page's start-cursor is recorded per event_id so a poll
+        # with a known marker resumes at the marker's page instead of
+        # re-reading the whole history every interval.
         items: list[dict[str, object]] = []
-        after: str | None = None
-        while True:
+        cursors = self._page_cursors.setdefault(devin_id, {})
+        if len(cursors) > 5000:
+            cursors.clear()
+        after = cursors.get(since_event_id or "")
+        while fetch_messages:
+            page_start = after
             params: dict[str, object] = {"first": 100}
             if after is not None:
                 params["after"] = after
@@ -332,9 +398,13 @@ class DevinClient:
             )
             page_items = page.get("items")
             if isinstance(page_items, list):
-                items.extend(
-                    item for item in page_items if isinstance(item, dict)
-                )
+                for item in page_items:
+                    if not isinstance(item, dict):
+                        continue
+                    event_id = self._optional_str(item.get("event_id"))
+                    if event_id is not None:
+                        cursors[event_id] = page_start
+                    items.append(item)
             if not page.get("has_next_page"):
                 break
             after = self._optional_str(page.get("end_cursor"))
