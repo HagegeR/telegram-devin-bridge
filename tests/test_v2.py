@@ -17,7 +17,13 @@ from PIL import Image
 
 import app.main as main_module
 from app.access import is_allowed, is_topic_chat, should_respond_in_group
-from app.clients import DevinClient, DevinMessage, SessionState, TelegramClient
+from app.clients import (
+    DEVIN_MODES,
+    DevinClient,
+    DevinMessage,
+    SessionState,
+    TelegramClient,
+)
 from app.commands import handle_command
 from app.config import Settings
 from app.formatting import (
@@ -324,6 +330,133 @@ async def test_clients_use_injected_mock_transports() -> None:
 
 
 @pytest.mark.asyncio
+async def test_devin_client_uses_v3_when_service_key_configured() -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen.append(f"{request.method} {path}")
+        if path == "/v3/organizations/o1/sessions" and request.method == "POST":
+            body = json.loads(request.content)
+            assert request.headers["authorization"] == "Bearer svc-key"
+            assert body["devin_mode"] == "fast"
+            assert body["repos"] == ["a/b", "c/d"]
+            return httpx.Response(
+                200, json={"session_id": "devin-s1", "url": "https://x/s1"}
+            )
+        if path == "/v3/organizations/o1/sessions/devin-s1":
+            return httpx.Response(
+                200,
+                json={
+                    "status": "running",
+                    "status_detail": "working",
+                    "title": "t",
+                    "pull_requests": [{"pr_url": "https://pr/1"}],
+                    "updated_at": 1700000000,
+                },
+            )
+        if path == "/v3/organizations/o1/sessions/devin-s1/messages":
+            if "after" not in request.url.params:
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {
+                                "event_id": "e1",
+                                "source": "user",
+                                "message": "hi",
+                                "created_at": 1700000000,
+                            }
+                        ],
+                        "has_next_page": True,
+                        "end_cursor": "c1",
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "event_id": "e2",
+                            "source": "devin",
+                            "message": "done",
+                            "created_at": 1700000001,
+                        }
+                    ],
+                    "has_next_page": False,
+                },
+            )
+        return httpx.Response(200, json={})
+
+    devin = DevinClient(
+        "personal-key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc-key",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.create_session(
+        "prompt", "title", devin_mode="fast", repos=["a/b", "c/d"]
+    ) == ("devin-s1", "https://x/s1")
+    await devin.send_message("s1", "hi")  # adds the devin- prefix
+    state = await devin.get_session("s1", since_event_id="e1")
+    assert state.status_enum == "working"
+    assert state.pr_url == "https://pr/1"
+    assert [m.message for m in state.messages] == ["done"]
+    assert state.messages[0].message_type == "devin_message"
+    assert not any(path.startswith("GET /v1/") for path in seen)
+    assert "POST /v3/organizations/o1/sessions/devin-s1/messages" in seen
+    await devin.terminate("devin-s1")
+    assert "DELETE /v3/organizations/o1/sessions/devin-s1" in seen
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_devin_client_v1_ignores_mode_and_repos() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert request.url.path == "/v1/sessions"
+        assert "devin_mode" not in body
+        assert "repos" not in body
+        return httpx.Response(200, json={"session_id": "s1", "url": "u"})
+
+    devin = DevinClient(
+        "key", "https://devin.test", 3, transport=httpx.MockTransport(handler)
+    )
+    await devin.create_session("p", None, devin_mode="fast", repos=["a/b"])
+    await devin.close()
+
+
+def test_conversation_settings_mode_and_repos_round_trip() -> None:
+    store = Store(":memory:")
+    store.update_settings("222", devin_mode="ultra", repos="a/b,c/d")
+    current = store.get_settings("222")
+    assert current.devin_mode == "ultra"
+    assert current.repo_list == ["a/b", "c/d"]
+    store.update_settings("222", devin_mode=None, repos=None)
+    current = store.get_settings("222")
+    assert current.devin_mode is None
+    assert current.repo_list is None
+
+
+@pytest.mark.asyncio
+async def test_repos_command_sets_shows_and_clears(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/repos a/b,c/d"), "/repos a/b,c/d")
+    assert store.get_settings("222").repos == "a/b,c/d"
+    await handle_command(runtime, message("/repos"), "/repos")
+    assert "a/b,c/d" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/repos bogus"), "/repos bogus")
+    assert "Usage" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/repos all"), "/repos all")
+    assert store.get_settings("222").repos is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_telegram_topic_error_includes_description() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -392,7 +525,7 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
             self.calls = 0
 
         async def get_session(
-            self, _: str, since_event_id: str | None = None
+            self, _: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             messages = (
@@ -504,7 +637,7 @@ async def test_watcher_skips_finish_notice_when_turns_queued(
 ) -> None:
     class QueuedDevin(_FakeDevin):
         async def get_session(
-            self, _: str, since_event_id: str | None = None
+            self, _: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 status,
@@ -927,20 +1060,31 @@ class _FakeTelegram:
 
 
 class _FakeDevin:
+    v3_enabled = False
+
     def __init__(self) -> None:
         self.created: list[str] = []
         self.created_titles: list[str | None] = []
         self.created_playbooks: list[str | None] = []
+        self.created_modes: list[str | None] = []
+        self.created_repos: list[list[str] | None] = []
         self.sent: list[tuple[str, str]] = []
         self.terminated: list[str] = []
         self.playbooks: list[tuple[str, str]] = []
 
     async def create_session(
-        self, prompt: str, title: str | None, playbook_id: str | None = None
+        self,
+        prompt: str,
+        title: str | None,
+        playbook_id: str | None = None,
+        devin_mode: str | None = None,
+        repos: list[str] | None = None,
     ) -> tuple[str, str]:
         self.created.append(prompt)
         self.created_titles.append(title)
         self.created_playbooks.append(playbook_id)
+        self.created_modes.append(devin_mode)
+        self.created_repos.append(repos)
         return "s1", "https://devin.test/s1"
 
     async def send_message(self, session_id: str, text: str) -> None:
@@ -955,9 +1099,12 @@ class _FakeDevin:
         return f"https://files.test/{filename}"
 
     async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
         return SessionState("working", "title", None, [])
+
+    async def devin_modes(self) -> list[str]:
+        return list(DEVIN_MODES)
 
     async def terminate(self, session_id: str) -> None:
         self.terminated.append(session_id)
@@ -993,7 +1140,7 @@ async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> No
     store = Store(str(tmp_path / "lock.sqlite3"))
     class UntitledDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("working", None, None, [])
 
@@ -1024,7 +1171,7 @@ async def test_follow_up_reuses_idle_session(
 ) -> None:
     class StatusDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(status, "title", None, [])
 
@@ -1044,7 +1191,7 @@ async def test_gone_session_starts_new_one_keeping_queue(
 ) -> None:
     class RejectingDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("finished", "title", None, [])
 
@@ -1120,7 +1267,12 @@ async def test_topic_command_reports_disabled_topics(tmp_path: Path) -> None:
 async def test_dispatch_failure_notifies_and_reacts(tmp_path: Path) -> None:
     class FailingDevin(_FakeDevin):
         async def create_session(
-            self, prompt: str, title: str | None, playbook_id: str | None = None
+            self,
+            prompt: str,
+            title: str | None,
+            playbook_id: str | None = None,
+            devin_mode: str | None = None,
+            repos: list[str] | None = None,
         ) -> tuple[str, str]:
             raise RuntimeError("backend unavailable")
 
@@ -1243,7 +1395,7 @@ async def test_option_only_reply_and_pr_url_are_persisted(tmp_path: Path) -> Non
         calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             return SessionState(
@@ -1505,7 +1657,7 @@ async def test_private_watcher_draft_falls_back_to_typing(tmp_path: Path) -> Non
         calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             return SessionState("working" if self.calls == 1 else "finished", "title", None, [])
@@ -1597,7 +1749,7 @@ async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
 
     class TitledDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
@@ -1641,7 +1793,7 @@ async def test_watcher_keeps_manual_rename_during_auto_title(tmp_path: Path) -> 
 
     class TitledDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
@@ -1695,7 +1847,7 @@ async def test_watcher_retries_manual_title_after_failed_reconcile(
             self.calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             return SessionState(
@@ -1749,7 +1901,7 @@ async def test_watcher_retries_topic_rename_on_terminal_poll(tmp_path: Path) -> 
 
     class FinishedDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
@@ -1866,7 +2018,7 @@ async def test_watcher_preserves_manual_topic_title(tmp_path: Path) -> None:
 
     class TitledDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
@@ -1902,7 +2054,7 @@ async def test_watcher_persists_session_title_without_topic(tmp_path: Path) -> N
 
     class TitledDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
@@ -1998,7 +2150,7 @@ async def test_watcher_retries_title_past_finished_status(tmp_path: Path) -> Non
             self.calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             return SessionState("finished", "A useful session title", None, [])
@@ -2054,7 +2206,7 @@ async def test_watcher_exits_after_bounded_title_retries(tmp_path: Path) -> None
             self.calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             return SessionState("finished", "A useful session title", None, [])
@@ -2106,7 +2258,7 @@ async def test_watcher_terminal_cleanup_after_title_retry_deadline(
 
     class FinishedDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("finished", "A useful session title", None, [])
 
@@ -2171,7 +2323,7 @@ async def test_watcher_retries_topic_rename_after_failure(tmp_path: Path) -> Non
             self.calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             return SessionState(
@@ -2230,7 +2382,7 @@ async def test_watcher_tolerates_topic_rename_transport_errors(
 
     class ReplyDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 "finished",
@@ -2372,7 +2524,7 @@ async def test_second_options_message_clears_first_keyboard(tmp_path: Path) -> N
         calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             messages = [
@@ -2930,7 +3082,7 @@ async def test_watcher_adaptive_polling_resets_after_delivery(tmp_path: Path) ->
 
     class AdaptiveDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return states.pop(0)
 
@@ -2988,7 +3140,7 @@ async def test_watcher_status_callback_runs_after_delivery_and_persist(
         calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             if self.calls == 1:
@@ -3041,7 +3193,7 @@ async def test_blocked_status_does_not_drain_until_watcher_finishes(
             self.calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             status = (
@@ -3119,7 +3271,7 @@ async def test_watcher_generation_change_uses_new_reply_anchor(
         calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             if self.calls == 1:
@@ -3197,7 +3349,7 @@ async def test_watcher_status_and_cleanup(tmp_path: Path) -> None:
 
     class StatusDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return states.pop(0) if states else SessionState("finished", "title", None, [])
 
@@ -3253,7 +3405,7 @@ async def test_cancelled_watcher_cleans_transient_status_messages(
 
     class WorkingDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("working", "title", None, [])
 
@@ -3304,7 +3456,7 @@ async def test_watcher_private_draft_uses_status_text(tmp_path: Path) -> None:
 
     class DraftDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return (
                 SessionState("working", "title", None, [])
@@ -3412,7 +3564,7 @@ async def test_startup_resumes_watchers_for_recent_conversations(
 ) -> None:
     class BlockedDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 "blocked",
@@ -3472,7 +3624,7 @@ async def test_startup_resumes_watcher_without_cursor_delivers_downtime_reply(
 
     class BlockedDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 "blocked",
@@ -3819,7 +3971,7 @@ async def test_resume_survives_failed_topic_edit(tmp_path: Path) -> None:
 
     class FinishedDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState("finished", "Generated", "https://gh.test/pr/1", [])
 
@@ -3895,7 +4047,7 @@ async def test_watcher_anchors_only_first_reply_and_cleans_transient(
 
     class TwoMessageDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 "finished",
@@ -3938,7 +4090,7 @@ async def test_options_reply_does_not_paginate(tmp_path: Path) -> None:
 
     class OptionsDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 "finished",
@@ -3989,7 +4141,7 @@ async def test_queue_drains_when_watcher_status_becomes_blocked(
             self.calls = 0
 
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             self.calls += 1
             status = "working" if self.calls == 1 else "blocked"
@@ -4242,11 +4394,15 @@ async def test_pending_title_survives_create_failure(tmp_path: Path) -> None:
             prompt: str,
             title: str | None,
             playbook_id: str | None = None,
+            devin_mode: str | None = None,
+            repos: list[str] | None = None,
         ) -> tuple[str, str]:
             if self.fail_next:
                 self.fail_next = False
                 raise RuntimeError("create failed")
-            return await super().create_session(prompt, title, playbook_id)
+            return await super().create_session(
+                prompt, title, playbook_id, devin_mode, repos
+            )
 
     store = Store(":memory:")
     devin = FlakyDevin()
@@ -4496,7 +4652,7 @@ async def test_long_reply_extracts_document_and_pages(tmp_path: Path) -> None:
 
     class LongDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 "finished",
@@ -5721,7 +5877,7 @@ async def test_forum_reaction_resolves_document_message_index(tmp_path: Path) ->
 
     class DocumentDevin(_FakeDevin):
         async def get_session(
-            self, _session_id: str, since_event_id: str | None = None
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 "finished", "title", None,
@@ -5968,7 +6124,7 @@ async def test_watcher_finish_reaction_failure_is_not_reported_as_devin_error(
 ) -> None:
     class FakeDevin:
         async def get_session(
-            self, _: str, since_event_id: str | None = None
+            self, _: str, since_event_id: str | None = None, fetch_messages: bool = True
         ) -> SessionState:
             return SessionState(
                 "finished",

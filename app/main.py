@@ -456,6 +456,7 @@ class Bridge:
                 "close",
                 "rename",
                 "settings",
+                "repos",
                 "usage",
                 "users",
                 "revoke",
@@ -924,10 +925,13 @@ class Bridge:
         extra = self.settings.devin_session_instructions.strip()
         if extra:
             prompt = f"{extra}\n\n{prompt}"
+        conv_settings = self.store.get_settings(conv_key)
         session_id, session_url = await self.devin.create_session(
             prompt,
             title,
             playbook_id,
+            devin_mode=conv_settings.devin_mode,
+            repos=conv_settings.repo_list,
         )
         self.store.delete_setting(f"pending_title:{conv_key}")
         stored_title = (
@@ -1592,7 +1596,9 @@ class Bridge:
             return _sent_message_id(results)
 
     async def get_session_status(self, session_id: str) -> str:
-        return (await self.devin.get_session(session_id)).status_enum
+        return (
+            await self.devin.get_session(session_id, fetch_messages=False)
+        ).status_enum
 
     async def send_session_message(self, session_id: str, text: str) -> None:
         await self.devin.send_message(session_id, text)
@@ -1800,15 +1806,19 @@ class Bridge:
         current = self.store.get_settings(conv_key)
         drafts = "inherit" if current.drafts is None else ("on" if current.drafts else "off")
         timer = "inherit" if current.status_timer is None else ("on" if current.status_timer else "off")
-        markup = {
-            "inline_keyboard": [
-                [{"text": f"🔔 Notifications: {'silent' if current.silent else 'on'}", "callback_data": f"cfg:silent:{0 if current.silent else 1}"}],
-                [{"text": f"✍️ Drafts: {drafts}", "callback_data": "cfg:drafts:menu"}],
-                [{"text": f"⏱ Status timer: {timer}", "callback_data": "cfg:status_timer:menu"}],
-                [{"text": f"📘 Default playbook: {current.default_playbook or 'none'}", "callback_data": "cfg:playbook:menu"}],
-                [{"text": "Close", "callback_data": "cfg:close:1"}],
+        rows = [
+            [{"text": f"🔔 Notifications: {'silent' if current.silent else 'on'}", "callback_data": f"cfg:silent:{0 if current.silent else 1}"}],
+            [{"text": f"✍️ Drafts: {drafts}", "callback_data": "cfg:drafts:menu"}],
+            [{"text": f"⏱ Status timer: {timer}", "callback_data": "cfg:status_timer:menu"}],
+            [{"text": f"📘 Default playbook: {current.default_playbook or 'none'}", "callback_data": "cfg:playbook:menu"}],
+        ]
+        if self.devin.v3_enabled:
+            rows += [
+                [{"text": f"🤖 Devin mode: {current.devin_mode or 'org default'}", "callback_data": "cfg:mode:menu"}],
+                [{"text": f"📂 Repos: {current.repos or 'all'}", "callback_data": "cfg:repos:menu"}],
             ]
-        }
+        rows.append([{"text": "Close", "callback_data": "cfg:close:1"}])
+        markup = {"inline_keyboard": rows}
         if edit_message_id is not None:
             await self.telegram.edit_message_reply_markup(
                 _int(_mapping(message.get("chat")).get("id")),
@@ -1831,6 +1841,7 @@ class Bridge:
         if len(pieces) != 3:
             return
         field, value = pieces[1], pieces[2]
+        toast: str | None = None
         if field == "close":
             await self.telegram.edit_message_reply_markup(chat_id, message_id)
         elif value == "menu":
@@ -1845,6 +1856,29 @@ class Bridge:
                     chat_id,
                     message_id,
                     {"inline_keyboard": rows},
+                )
+            elif field == "mode":
+                modes = await self.devin.devin_modes()
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": [[{
+                        "text": "org default" if mode == "default" else mode,
+                        "callback_data": f"cfg:mode:{mode}",
+                    }] for mode in ("default", *modes)]},
+                )
+            elif field == "repos":
+                toast = (
+                    "Send /repos owner/repo,org/repo2 to set a list; "
+                    "tap below to reset"
+                )
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": [[{
+                        "text": "all repos (default)",
+                        "callback_data": "cfg:repos:all",
+                    }]]},
                 )
             else:
                 values = ["inherit", "on", "off"]
@@ -1867,8 +1901,18 @@ class Bridge:
                     conv_key,
                     default_playbook=None if value == "none" else value,
                 )
+            elif field == "mode":
+                self.store.update_settings(
+                    conv_key,
+                    devin_mode=None if value == "default" else value,
+                )
+            elif field == "repos":
+                self.store.update_settings(
+                    conv_key,
+                    repos=None if value == "all" else value,
+                )
             await self.settings_menu(callback_message, edit_message_id=message_id)
-        await self.telegram.answer_callback_query(callback_id)
+        await self.telegram.answer_callback_query(callback_id, toast)
 
     async def _handle_access_callback(
         self,
@@ -1988,7 +2032,9 @@ class Bridge:
     async def _is_finished(self, session_id: str) -> bool:
         # "finished" (idle, awaiting input) and suspended sessions resume when
         # messaged, keeping the conversation's context; only expired ones don't.
-        return (await self.devin.get_session(session_id)).status_enum == "expired"
+        return (
+            await self.devin.get_session(session_id, fetch_messages=False)
+        ).status_enum == "expired"
 
     @asynccontextmanager
     async def _lock(self, conv_key: str) -> AsyncIterator[None]:
@@ -2199,6 +2245,7 @@ def create_app(
             actual_settings.devin_api_base_url,
             actual_settings.devin_max_acu_limit,
             service_user_api_key=actual_settings.devin_service_user_api_key,
+            org_id=actual_settings.devin_org_id,
         ),
         telegram
         or TelegramClient(

@@ -46,6 +46,14 @@ class ConversationSettings:
     drafts: bool | None = None
     status_timer: bool | None = None
     default_playbook: str | None = None
+    devin_mode: str | None = None
+    repos: str | None = None
+
+    @property
+    def repo_list(self) -> list[str] | None:
+        if not self.repos:
+            return None
+        return [repo.strip() for repo in self.repos.split(",") if repo.strip()]
 
 
 @dataclass(frozen=True)
@@ -185,7 +193,9 @@ class Store:
                     silent INTEGER NOT NULL DEFAULT 0,
                     drafts INTEGER,
                     status_timer INTEGER,
-                    default_playbook TEXT
+                    default_playbook TEXT,
+                    devin_mode TEXT,
+                    repos TEXT
                 );
                 CREATE TABLE IF NOT EXISTS access_requests (
                     user_id INTEGER PRIMARY KEY,
@@ -258,6 +268,18 @@ class Store:
                 self.connection.execute(
                     "ALTER TABLE pending_choices ADD COLUMN message_id INTEGER"
                 )
+            settings_columns = {
+                str(row["name"])
+                for row in self.connection.execute(
+                    "PRAGMA table_info(conversation_settings)"
+                )
+            }
+            for new_column in ("devin_mode", "repos"):
+                if new_column not in settings_columns:
+                    self.connection.execute(
+                        "ALTER TABLE conversation_settings "
+                        f"ADD COLUMN {new_column} TEXT"
+                    )
             message_index_columns = {
                 str(row["name"])
                 for row in self.connection.execute(
@@ -529,7 +551,8 @@ class Store:
     def get_settings(self, conv_key: str) -> ConversationSettings:
         with self.lock:
             row = self.connection.execute(
-                "SELECT silent, drafts, status_timer, default_playbook "
+                "SELECT silent, drafts, status_timer, default_playbook, "
+                "devin_mode, repos "
                 "FROM conversation_settings WHERE conv_key = ?",
                 (conv_key,),
             ).fetchone()
@@ -546,45 +569,42 @@ class Store:
                 if row["default_playbook"] is None
                 else str(row["default_playbook"])
             ),
+            devin_mode=(
+                None
+                if row["devin_mode"] is None
+                else str(row["devin_mode"])
+            ),
+            repos=None if row["repos"] is None else str(row["repos"]),
         )
 
     def update_settings(self, conv_key: str, **fields: object) -> None:
-        allowed = {"silent", "drafts", "status_timer", "default_playbook"}
+        allowed = {
+            "silent",
+            "drafts",
+            "status_timer",
+            "default_playbook",
+            "devin_mode",
+            "repos",
+        }
         if not fields or any(key not in allowed for key in fields):
             raise ValueError("Unknown conversation setting")
-        current = self.get_settings(conv_key)
-        values = {
-            "silent": int(fields.get("silent", current.silent)),
-            "drafts": fields.get("drafts", current.drafts),
-            "status_timer": fields.get("status_timer", current.status_timer),
-            "default_playbook": fields.get(
-                "default_playbook",
-                current.default_playbook,
-            ),
-        }
+        # Write only the supplied columns so concurrent single-field updates
+        # (a settings callback vs /repos) can't clobber each other's reads.
         with self.lock, self.connection:
             self.connection.execute(
-                """
-                INSERT INTO conversation_settings(
-                    conv_key, silent, drafts, status_timer, default_playbook
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(conv_key) DO UPDATE SET
-                    silent = excluded.silent,
-                    drafts = excluded.drafts,
-                    status_timer = excluded.status_timer,
-                    default_playbook = excluded.default_playbook
-                """,
-                (
-                    conv_key,
-                    values["silent"],
-                    None if values["drafts"] is None else int(bool(values["drafts"])),
-                    (
-                        None
-                        if values["status_timer"] is None
-                        else int(bool(values["status_timer"]))
-                    ),
-                    values["default_playbook"],
-                ),
+                "INSERT OR IGNORE INTO conversation_settings(conv_key, silent) "
+                "VALUES (?, 0)",
+                (conv_key,),
+            )
+            assignments = ", ".join(f"{key} = ?" for key in fields)
+            params = [
+                int(value) if isinstance(value, bool) else value
+                for value in fields.values()
+            ]
+            self.connection.execute(
+                f"UPDATE conversation_settings SET {assignments} "
+                "WHERE conv_key = ?",
+                (*params, conv_key),
             )
 
     def get_access_request(self, user_id: int) -> AccessRequest | None:

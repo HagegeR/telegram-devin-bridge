@@ -47,7 +47,7 @@ def _extract_entries(payload: Any) -> list[Mapping[str, Any]]:
 
 
 def _entry_id(entry: Mapping[str, Any]) -> str | None:
-    for key in ("id", "knowledge_id"):
+    for key in ("id", "knowledge_id", "note_id"):
         value = entry.get(key)
         if isinstance(value, str) and value:
             return value
@@ -62,28 +62,54 @@ async def publish(
     name: str,
     body: str,
     trigger_description: str,
+    service_user_api_key: str | None = None,
+    org_id: str | None = None,
 ) -> tuple[str, str]:
     """Create or update a Devin Knowledge entry. Returns (action, id)."""
-    headers = {"Authorization": f"Bearer {api_key}"}
     root = base_url.rstrip("/")
+    v3 = bool(service_user_api_key and org_id)
+    headers = {
+        "Authorization": (
+            f"Bearer {service_user_api_key}" if v3 else f"Bearer {api_key}"
+        )
+    }
+    notes_url = (
+        f"{root}/v3/organizations/{org_id}/knowledge/notes"
+        if v3
+        else f"{root}/v1/knowledge"
+    )
     payload = {
         "name": name,
         "body": body,
-        "trigger_description": trigger_description,
+        # v3 names the field "trigger"; v1 expects "trigger_description"
+        ("trigger" if v3 else "trigger_description"): trigger_description,
     }
-    list_response = await client.get(
-        f"{root}/v1/knowledge", headers=headers, timeout=HTTP_TIMEOUT
-    )
-    list_response.raise_for_status()
     existing_id: str | None = None
-    for entry in _extract_entries(list_response.json()):
-        if entry.get("name") == name:
-            existing_id = _entry_id(entry)
+    after: str | None = None
+    while True:
+        params: dict[str, object] = {"first": 100} if v3 else {}
+        if after is not None:
+            params["after"] = after
+        list_response = await client.get(
+            notes_url, headers=headers, params=params, timeout=HTTP_TIMEOUT
+        )
+        list_response.raise_for_status()
+        page = list_response.json()
+        for entry in _extract_entries(page):
+            if entry.get("name") == name:
+                existing_id = _entry_id(entry)
+                break
+        # v1 knowledge has no pagination envelope; drain v3 pages only
+        if not v3 or existing_id is not None or not page.get("has_next_page"):
             break
+        cursor = page.get("end_cursor")
+        if not isinstance(cursor, str) or not cursor:
+            break
+        after = cursor
 
     if existing_id is not None:
         response = await client.put(
-            f"{root}/v1/knowledge/{existing_id}",
+            f"{notes_url}/{existing_id}",
             headers=headers,
             json=payload,
             timeout=HTTP_TIMEOUT,
@@ -97,7 +123,7 @@ async def publish(
         return "updated", existing_id
 
     response = await client.post(
-        f"{root}/v1/knowledge", headers=headers, json=payload, timeout=HTTP_TIMEOUT
+        notes_url, headers=headers, json=payload, timeout=HTTP_TIMEOUT
     )
     response.raise_for_status()
     result = response.json()
@@ -140,6 +166,8 @@ def main() -> int:
                 name=name,
                 body=body,
                 trigger_description=trigger_description,
+                service_user_api_key=settings.devin_service_user_api_key,
+                org_id=settings.devin_org_id,
             )
 
     action, entry_id = asyncio.run(run())

@@ -47,6 +47,7 @@ FINISH_NOTICES = {
     "blocked": "💬 Waiting for your reply",
     "finished": "✓ Finished",
     "expired": "⚠ Session expired",
+    "suspended": "💤 Session suspended — send a message to resume",
 }
 
 

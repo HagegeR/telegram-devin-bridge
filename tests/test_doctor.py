@@ -575,6 +575,79 @@ async def test_publish_put_unsupported_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_publish_v3_creates_with_service_key() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            assert request.headers["authorization"] == "Bearer svc"
+            return httpx.Response(
+                200, json={"items": [], "has_next_page": False}
+            )
+        body = json.loads(request.content)
+        assert body["trigger"] == "desc"
+        assert "trigger_description" not in body
+        return httpx.Response(200, json={"note_id": "kn-new"})
+
+    async with _telegram_client(handler) as client:
+        action, entry_id = await publish(
+            client,
+            "https://api.devin.ai",
+            "key",
+            name="bridge-runbook",
+            body="body",
+            trigger_description="desc",
+            service_user_api_key="svc",
+            org_id="o1",
+        )
+    assert action == "created"
+    assert entry_id == "kn-new"
+    assert ("POST", "/v3/organizations/o1/knowledge/notes") in calls
+
+
+@pytest.mark.asyncio
+async def test_publish_v3_updates_note_on_later_page() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            if "after" not in request.url.params:
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [{"note_id": "kn-0", "name": "other"}],
+                        "has_next_page": True,
+                        "end_cursor": "c1",
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"note_id": "kn-1", "name": "bridge-runbook"}],
+                    "has_next_page": False,
+                },
+            )
+        return httpx.Response(200, json={"note_id": "kn-1"})
+
+    async with _telegram_client(handler) as client:
+        action, entry_id = await publish(
+            client,
+            "https://api.devin.ai",
+            "key",
+            name="bridge-runbook",
+            body="body",
+            trigger_description="desc",
+            service_user_api_key="svc",
+            org_id="o1",
+        )
+    assert action == "updated"
+    assert entry_id == "kn-1"
+    assert ("PUT", "/v3/organizations/o1/knowledge/notes/kn-1") in calls
+
+
+@pytest.mark.asyncio
 async def test_transport_retry_succeeds_after_flaky() -> None:
     from app.clients import DevinClient
 
