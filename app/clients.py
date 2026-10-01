@@ -100,6 +100,39 @@ class Playbook:
     title: str
 
 
+DEVIN_MODES = (
+    "normal",
+    "fast",
+    "lite",
+    "ultra",
+    "fusion",
+    "swe-2-medium",
+    "swe-2-high",
+    "swe-2-max",
+)
+
+# v3 (status, status_detail) pairs that need no fallback rule
+_V3_STATUS = {
+    ("running", "working"): "working",
+    ("running", "waiting_for_user"): "blocked",
+    ("running", "waiting_for_approval"): "blocked",
+    ("running", "finished"): "finished",
+    ("exit", None): "finished",
+    ("error", None): "expired",
+    # not "expired": v3 auto-resumes a suspended session on the next message,
+    # so it must stay messageable instead of being recreated
+    ("suspended", None): "suspended",
+}
+
+_V3_MESSAGE_TYPES = {"devin": "devin_message", "user": "user_message"}
+
+
+def _iso_epoch(value: object) -> str | None:
+    if not isinstance(value, (int, float)):
+        return None
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
 class DevinClient:
     def __init__(
         self,
@@ -110,10 +143,13 @@ class DevinClient:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 30,
         service_user_api_key: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.max_acu_limit = max_acu_limit
         self.service_user_api_key = service_user_api_key
+        self.org_id = org_id
+        self.v3_enabled = bool(service_user_api_key and org_id)
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -129,11 +165,27 @@ class DevinClient:
             tuple[str, str | None], tuple[float, dict[str, object]]
         ] = {}
 
+    def _v3_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.service_user_api_key}"}
+
+    def _v3(self, path: str) -> str:
+        return f"/v3/organizations/{self.org_id}{path}"
+
+    @staticmethod
+    def _devin_id(session_id: str) -> str:
+        return (
+            session_id
+            if session_id.startswith("devin-")
+            else f"devin-{session_id}"
+        )
+
     async def create_session(
         self,
         prompt: str,
         title: str | None,
         playbook_id: str | None = None,
+        devin_mode: str | None = None,
+        repos: list[str] | None = None,
     ) -> tuple[str, str]:
         body: dict[str, object] = {
             "prompt": prompt,
@@ -144,12 +196,39 @@ class DevinClient:
             body["title"] = title
         if playbook_id is not None:
             body["playbook_id"] = playbook_id
-        payload = await self._json("POST", "/v1/sessions", json=body)
+        if self.v3_enabled:
+            if devin_mode is not None:
+                body["devin_mode"] = devin_mode
+            if repos:
+                body["repos"] = repos
+            payload = await self._json(
+                "POST",
+                self._v3("/sessions"),
+                json=body,
+                headers=self._v3_headers(),
+            )
+        else:
+            if devin_mode is not None or repos:
+                logger.warning(
+                    "devin_mode/repos need DEVIN_SERVICE_USER_API_KEY + "
+                    "DEVIN_ORG_ID; ignored on the v1 API"
+                )
+            payload = await self._json("POST", "/v1/sessions", json=body)
         return self._required_str(payload, "session_id"), self._required_str(
             payload, "url"
         )
 
     async def send_message(self, session_id: str, message: str) -> None:
+        if self.v3_enabled:
+            await self._call(
+                "POST",
+                self._v3(
+                    f"/sessions/{self._devin_id(session_id)}/messages"
+                ),
+                json={"message": message},
+                headers=self._v3_headers(),
+            )
+            return
         await self._call(
             "POST",
             f"/v1/sessions/{session_id}/message",
@@ -162,6 +241,10 @@ class DevinClient:
         *,
         since_event_id: str | None = None,
     ) -> SessionState:
+        if self.v3_enabled:
+            return await self._get_session_v3(
+                session_id, since_event_id=since_event_id
+            )
         payload = await self._json("GET", f"/v1/sessions/{session_id}")
         messages_value = payload.get("messages", [])
         messages: list[DevinMessage] = []
@@ -208,7 +291,132 @@ class DevinClient:
             updated_at=self._optional_str(payload.get("updated_at")),
         )
 
+    @staticmethod
+    def _v3_status_enum(status: object, status_detail: object) -> str:
+        detail = status_detail if isinstance(status_detail, str) else None
+        mapped = _V3_STATUS.get((status, detail))
+        if mapped is not None:
+            return mapped
+        if status == "running":
+            return "working"
+        if status in {"new", "claimed", "resuming"}:
+            return "resumed"
+        return _V3_STATUS.get((status, None), "expired")
+
+    async def _get_session_v3(
+        self,
+        session_id: str,
+        *,
+        since_event_id: str | None = None,
+    ) -> SessionState:
+        devin_id = self._devin_id(session_id)
+        headers = self._v3_headers()
+        payload = await self._json(
+            "GET",
+            self._v3(f"/sessions/{devin_id}"),
+            headers=headers,
+        )
+        # v1 returned the full message list inline; v3 paginates ascending,
+        # so drain every page then apply the same since_event_id marker rule
+        items: list[dict[str, object]] = []
+        after: str | None = None
+        while True:
+            params: dict[str, object] = {"first": 100}
+            if after is not None:
+                params["after"] = after
+            page = await self._json(
+                "GET",
+                self._v3(f"/sessions/{devin_id}/messages"),
+                params=params,
+                headers=headers,
+            )
+            page_items = page.get("items")
+            if isinstance(page_items, list):
+                items.extend(
+                    item for item in page_items if isinstance(item, dict)
+                )
+            if not page.get("has_next_page"):
+                break
+            after = self._optional_str(page.get("end_cursor"))
+            if after is None:
+                break
+        messages: list[DevinMessage] = []
+        seen_marker = since_event_id is None
+        for item in items:
+            if not seen_marker:
+                if self._optional_str(item.get("event_id")) == since_event_id:
+                    seen_marker = True
+                continue
+            messages.append(
+                DevinMessage(
+                    message_type=_V3_MESSAGE_TYPES.get(
+                        self._optional_str(item.get("source")) or "", ""
+                    ),
+                    event_id=self._optional_str(item.get("event_id")),
+                    message=self._optional_str(item.get("message")) or "",
+                    timestamp=_iso_epoch(item.get("created_at")),
+                )
+            )
+        if since_event_id is not None and not seen_marker:
+            # Marker vanished from history; return everything so no message
+            # is silently dropped.
+            messages = [
+                DevinMessage(
+                    message_type=_V3_MESSAGE_TYPES.get(
+                        self._optional_str(item.get("source")) or "", ""
+                    ),
+                    event_id=self._optional_str(item.get("event_id")),
+                    message=self._optional_str(item.get("message")) or "",
+                    timestamp=_iso_epoch(item.get("created_at")),
+                )
+                for item in items
+            ]
+        pr_url: str | None = None
+        pull_requests = payload.get("pull_requests")
+        if isinstance(pull_requests, list):
+            for pr in pull_requests:
+                if isinstance(pr, dict):
+                    pr_url = self._optional_str(pr.get("pr_url")) or pr_url
+        return SessionState(
+            status_enum=self._v3_status_enum(
+                payload.get("status"), payload.get("status_detail")
+            ),
+            title=self._optional_str(payload.get("title")) or "",
+            pr_url=pr_url,
+            messages=messages,
+            structured_output=payload.get("structured_output"),
+            updated_at=_iso_epoch(payload.get("updated_at")),
+        )
+
     async def list_playbooks(self) -> list[Playbook]:
+        if self.v3_enabled:
+            items: list[object] = []
+            after: str | None = None
+            while True:
+                params: dict[str, object] = {"first": 100}
+                if after is not None:
+                    params["after"] = after
+                page = await self._json(
+                    "GET",
+                    self._v3("/playbooks"),
+                    params=params,
+                    headers=self._v3_headers(),
+                )
+                page_items = page.get("items")
+                if isinstance(page_items, list):
+                    items.extend(page_items)
+                if not page.get("has_next_page"):
+                    break
+                after = self._optional_str(page.get("end_cursor"))
+                if after is None:
+                    break
+            return [
+                Playbook(playbook_id, title)
+                for item in items
+                if isinstance(item, dict)
+                and (playbook_id := self._optional_str(item.get("playbook_id")))
+                and (title := self._optional_str(item.get("title")))
+            ]
         response = await _with_transport_retry(
             lambda: self.client.get("/v1/playbooks"), idempotent=True
         )
@@ -229,6 +437,13 @@ class DevinClient:
         return result
 
     async def terminate(self, session_id: str) -> None:
+        if self.v3_enabled:
+            await self._call(
+                "DELETE",
+                self._v3(f"/sessions/{self._devin_id(session_id)}"),
+                headers=self._v3_headers(),
+            )
+            return
         await self._call("DELETE", f"/v1/sessions/{session_id}")
 
     async def upload_attachment(
@@ -237,6 +452,22 @@ class DevinClient:
         content: bytes,
         content_type: str,
     ) -> str:
+        if self.v3_enabled:
+            response = await _with_transport_retry(
+                lambda: self.client.post(
+                    self._v3("/attachments"),
+                    files={"file": (filename, content, content_type)},
+                    headers=self._v3_headers(),
+                ),
+                idempotent=False,
+            )
+            response.raise_for_status()
+            value = response.json()
+            if isinstance(value, dict):
+                url = self._optional_str(value.get("url"))
+                if url is not None:
+                    return url
+            raise TypeError("Devin attachment response had no url")
         response = await _with_transport_retry(
             lambda: self.client.post(
                 "/v1/attachments",
@@ -409,9 +640,10 @@ class DevinClient:
         path: str,
         *,
         json: Mapping[str, object] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         response = await _with_transport_retry(
-            lambda: self.client.request(method, path, json=json),
+            lambda: self.client.request(method, path, json=json, headers=headers),
             idempotent=method == "GET",
         )
         response.raise_for_status()
@@ -422,9 +654,13 @@ class DevinClient:
         path: str,
         *,
         json: Mapping[str, object] | None = None,
+        params: Mapping[str, object] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         response = await _with_transport_retry(
-            lambda: self.client.request(method, path, json=json),
+            lambda: self.client.request(
+                method, path, json=json, params=params, headers=headers
+            ),
             idempotent=method == "GET",
         )
         response.raise_for_status()

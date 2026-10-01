@@ -324,6 +324,133 @@ async def test_clients_use_injected_mock_transports() -> None:
 
 
 @pytest.mark.asyncio
+async def test_devin_client_uses_v3_when_service_key_configured() -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen.append(f"{request.method} {path}")
+        if path == "/v3/organizations/o1/sessions" and request.method == "POST":
+            body = json.loads(request.content)
+            assert request.headers["authorization"] == "Bearer svc-key"
+            assert body["devin_mode"] == "fast"
+            assert body["repos"] == ["a/b", "c/d"]
+            return httpx.Response(
+                200, json={"session_id": "devin-s1", "url": "https://x/s1"}
+            )
+        if path == "/v3/organizations/o1/sessions/devin-s1":
+            return httpx.Response(
+                200,
+                json={
+                    "status": "running",
+                    "status_detail": "working",
+                    "title": "t",
+                    "pull_requests": [{"pr_url": "https://pr/1"}],
+                    "updated_at": 1700000000,
+                },
+            )
+        if path == "/v3/organizations/o1/sessions/devin-s1/messages":
+            if "after" not in request.url.params:
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {
+                                "event_id": "e1",
+                                "source": "user",
+                                "message": "hi",
+                                "created_at": 1700000000,
+                            }
+                        ],
+                        "has_next_page": True,
+                        "end_cursor": "c1",
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "event_id": "e2",
+                            "source": "devin",
+                            "message": "done",
+                            "created_at": 1700000001,
+                        }
+                    ],
+                    "has_next_page": False,
+                },
+            )
+        return httpx.Response(200, json={})
+
+    devin = DevinClient(
+        "personal-key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc-key",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.create_session(
+        "prompt", "title", devin_mode="fast", repos=["a/b", "c/d"]
+    ) == ("devin-s1", "https://x/s1")
+    await devin.send_message("s1", "hi")  # adds the devin- prefix
+    state = await devin.get_session("s1", since_event_id="e1")
+    assert state.status_enum == "working"
+    assert state.pr_url == "https://pr/1"
+    assert [m.message for m in state.messages] == ["done"]
+    assert state.messages[0].message_type == "devin_message"
+    assert not any(path.startswith("GET /v1/") for path in seen)
+    assert "POST /v3/organizations/o1/sessions/devin-s1/messages" in seen
+    await devin.terminate("devin-s1")
+    assert "DELETE /v3/organizations/o1/sessions/devin-s1" in seen
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_devin_client_v1_ignores_mode_and_repos() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert request.url.path == "/v1/sessions"
+        assert "devin_mode" not in body
+        assert "repos" not in body
+        return httpx.Response(200, json={"session_id": "s1", "url": "u"})
+
+    devin = DevinClient(
+        "key", "https://devin.test", 3, transport=httpx.MockTransport(handler)
+    )
+    await devin.create_session("p", None, devin_mode="fast", repos=["a/b"])
+    await devin.close()
+
+
+def test_conversation_settings_mode_and_repos_round_trip() -> None:
+    store = Store(":memory:")
+    store.update_settings("222", devin_mode="ultra", repos="a/b,c/d")
+    current = store.get_settings("222")
+    assert current.devin_mode == "ultra"
+    assert current.repo_list == ["a/b", "c/d"]
+    store.update_settings("222", devin_mode=None, repos=None)
+    current = store.get_settings("222")
+    assert current.devin_mode is None
+    assert current.repo_list is None
+
+
+@pytest.mark.asyncio
+async def test_repos_command_sets_shows_and_clears(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/repos a/b,c/d"), "/repos a/b,c/d")
+    assert store.get_settings("222").repos == "a/b,c/d"
+    await handle_command(runtime, message("/repos"), "/repos")
+    assert "a/b,c/d" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/repos bogus"), "/repos bogus")
+    assert "Usage" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/repos all"), "/repos all")
+    assert store.get_settings("222").repos is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_telegram_topic_error_includes_description() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -931,16 +1058,25 @@ class _FakeDevin:
         self.created: list[str] = []
         self.created_titles: list[str | None] = []
         self.created_playbooks: list[str | None] = []
+        self.created_modes: list[str | None] = []
+        self.created_repos: list[list[str] | None] = []
         self.sent: list[tuple[str, str]] = []
         self.terminated: list[str] = []
         self.playbooks: list[tuple[str, str]] = []
 
     async def create_session(
-        self, prompt: str, title: str | None, playbook_id: str | None = None
+        self,
+        prompt: str,
+        title: str | None,
+        playbook_id: str | None = None,
+        devin_mode: str | None = None,
+        repos: list[str] | None = None,
     ) -> tuple[str, str]:
         self.created.append(prompt)
         self.created_titles.append(title)
         self.created_playbooks.append(playbook_id)
+        self.created_modes.append(devin_mode)
+        self.created_repos.append(repos)
         return "s1", "https://devin.test/s1"
 
     async def send_message(self, session_id: str, text: str) -> None:
@@ -1120,7 +1256,12 @@ async def test_topic_command_reports_disabled_topics(tmp_path: Path) -> None:
 async def test_dispatch_failure_notifies_and_reacts(tmp_path: Path) -> None:
     class FailingDevin(_FakeDevin):
         async def create_session(
-            self, prompt: str, title: str | None, playbook_id: str | None = None
+            self,
+            prompt: str,
+            title: str | None,
+            playbook_id: str | None = None,
+            devin_mode: str | None = None,
+            repos: list[str] | None = None,
         ) -> tuple[str, str]:
             raise RuntimeError("backend unavailable")
 
@@ -4242,11 +4383,15 @@ async def test_pending_title_survives_create_failure(tmp_path: Path) -> None:
             prompt: str,
             title: str | None,
             playbook_id: str | None = None,
+            devin_mode: str | None = None,
+            repos: list[str] | None = None,
         ) -> tuple[str, str]:
             if self.fail_next:
                 self.fail_next = False
                 raise RuntimeError("create failed")
-            return await super().create_session(prompt, title, playbook_id)
+            return await super().create_session(
+                prompt, title, playbook_id, devin_mode, repos
+            )
 
     store = Store(":memory:")
     devin = FlakyDevin()

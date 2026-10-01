@@ -265,6 +265,40 @@ async def check_devin_api(
     )
 
 
+async def check_devin_api_v3(
+    client: httpx.AsyncClient,
+    service_user_api_key: str,
+    base_url: str,
+    org_id: str,
+) -> CheckResult:
+    url = f"{base_url.rstrip('/')}/v3/organizations/{org_id}/sessions"
+    try:
+        response = await client.get(
+            url,
+            params={"first": 1},
+            headers={"Authorization": f"Bearer {service_user_api_key}"},
+            timeout=HTTP_TIMEOUT,
+        )
+    except httpx.HTTPError as exc:
+        return CheckResult(
+            "devin api v3",
+            "fail",
+            _redact(f"transport error: {_describe(exc)}", service_user_api_key),
+        )
+    if response.status_code == 200:
+        return CheckResult("devin api v3", "ok", "list sessions ok")
+    if response.status_code in {401, 403}:
+        return CheckResult(
+            "devin api v3",
+            "fail",
+            f"key rejected ({response.status_code})",
+            "check DEVIN_SERVICE_USER_API_KEY / DEVIN_ORG_ID",
+        )
+    return CheckResult(
+        "devin api v3", "fail", f"list sessions HTTP {response.status_code}"
+    )
+
+
 async def check_local_health(
     client: httpx.AsyncClient, port: int = 8000
 ) -> CheckResult:
@@ -559,6 +593,15 @@ async def run_all(
         results.append(
             await check_devin_api(
                 client, settings.devin_api_key, settings.devin_api_base_url
+            )
+        )
+    if settings.devin_service_user_api_key and settings.devin_org_id:
+        results.append(
+            await check_devin_api_v3(
+                client,
+                settings.devin_service_user_api_key,
+                settings.devin_api_base_url,
+                settings.devin_org_id,
             )
         )
     results.append(await check_local_health(client, port))

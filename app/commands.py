@@ -238,6 +238,40 @@ async def handle_command(
             )
     elif command == "settings":
         await runtime.settings_menu(message)
+    elif command == "repos":
+        value = args.strip()
+        if not value:
+            current = runtime.store.get_settings(conv_key).repos
+            await runtime.send_text(
+                message,
+                f"Repos: {current or 'all'}\n"
+                "/repos owner/repo,org/repo2 to set · /repos all to reset",
+                ephemeral=True,
+            )
+        elif value.casefold() in {"all", "clear", "default", "off"}:
+            runtime.store.update_settings(conv_key, repos=None)
+            await runtime.send_text(
+                message,
+                "Repos reset — new sessions see all repos.",
+                ephemeral=True,
+            )
+        else:
+            repos = [part.strip() for part in value.split(",") if part.strip()]
+            if repos and all(
+                re.fullmatch(r"[\w.-]+/[\w.-]+", repo) for repo in repos
+            ):
+                runtime.store.update_settings(conv_key, repos=",".join(repos))
+                await runtime.send_text(
+                    message,
+                    f"Repos: {', '.join(repos)} — applies to the next new session.",
+                    ephemeral=True,
+                )
+            else:
+                await runtime.send_text(
+                    message,
+                    "Usage: /repos owner/repo[,org/repo2] · /repos all",
+                    ephemeral=True,
+                )
     elif command == "lang":
         user_id = _int(_mapping(message.get("from")).get("id"))
         key = f"lang:{user_id}"
@@ -579,7 +613,8 @@ def _help_text() -> str:
         "/close — close this topic's session\n\n"
         "# Setup and admin\n"
         "/playbook [n] [text] — list or run a playbook\n"
-        "/settings — notifications, drafts, defaults\n"
+        "/settings — notifications, drafts, mode, defaults\n"
+        "/repos [a/b,c/d] — restrict sessions to repos\n"
         "/lang [code] — voice-note language\n"
         "/usage — Devin ACU usage\n"
         "/whoami — your IDs and access\n"

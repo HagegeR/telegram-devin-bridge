@@ -28,7 +28,7 @@ from app.access import (
 from app.admin import _sanitize_update_output, register_admin_route
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
-from app.devin import DevinClient, Playbook, SessionState
+from app.devin import DEVIN_MODES, DevinClient, Playbook, SessionState
 from app.doctor import register_doctor_route
 from app.formatting import (
     chunk,
@@ -924,10 +924,13 @@ class Bridge:
         extra = self.settings.devin_session_instructions.strip()
         if extra:
             prompt = f"{extra}\n\n{prompt}"
+        conv_settings = self.store.get_settings(conv_key)
         session_id, session_url = await self.devin.create_session(
             prompt,
             title,
             playbook_id,
+            devin_mode=conv_settings.devin_mode,
+            repos=conv_settings.repo_list,
         )
         self.store.delete_setting(f"pending_title:{conv_key}")
         stored_title = (
@@ -1806,6 +1809,8 @@ class Bridge:
                 [{"text": f"✍️ Drafts: {drafts}", "callback_data": "cfg:drafts:menu"}],
                 [{"text": f"⏱ Status timer: {timer}", "callback_data": "cfg:status_timer:menu"}],
                 [{"text": f"📘 Default playbook: {current.default_playbook or 'none'}", "callback_data": "cfg:playbook:menu"}],
+                [{"text": f"🤖 Devin mode: {current.devin_mode or 'org default'}", "callback_data": "cfg:mode:menu"}],
+                [{"text": f"📂 Repos: {current.repos or 'all'}", "callback_data": "cfg:repos:menu"}],
                 [{"text": "Close", "callback_data": "cfg:close:1"}],
             ]
         }
@@ -1831,6 +1836,7 @@ class Bridge:
         if len(pieces) != 3:
             return
         field, value = pieces[1], pieces[2]
+        toast: str | None = None
         if field == "close":
             await self.telegram.edit_message_reply_markup(chat_id, message_id)
         elif value == "menu":
@@ -1845,6 +1851,28 @@ class Bridge:
                     chat_id,
                     message_id,
                     {"inline_keyboard": rows},
+                )
+            elif field == "mode":
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": [[{
+                        "text": "org default" if mode == "default" else mode,
+                        "callback_data": f"cfg:mode:{mode}",
+                    }] for mode in ("default", *DEVIN_MODES)]},
+                )
+            elif field == "repos":
+                toast = (
+                    "Send /repos owner/repo,org/repo2 to set a list; "
+                    "tap below to reset"
+                )
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": [[{
+                        "text": "all repos (default)",
+                        "callback_data": "cfg:repos:all",
+                    }]]},
                 )
             else:
                 values = ["inherit", "on", "off"]
@@ -1867,8 +1895,18 @@ class Bridge:
                     conv_key,
                     default_playbook=None if value == "none" else value,
                 )
+            elif field == "mode":
+                self.store.update_settings(
+                    conv_key,
+                    devin_mode=None if value == "default" else value,
+                )
+            elif field == "repos":
+                self.store.update_settings(
+                    conv_key,
+                    repos=None if value == "all" else value,
+                )
             await self.settings_menu(callback_message, edit_message_id=message_id)
-        await self.telegram.answer_callback_query(callback_id)
+        await self.telegram.answer_callback_query(callback_id, toast)
 
     async def _handle_access_callback(
         self,
@@ -2199,6 +2237,7 @@ def create_app(
             actual_settings.devin_api_base_url,
             actual_settings.devin_max_acu_limit,
             service_user_api_key=actual_settings.devin_service_user_api_key,
+            org_id=actual_settings.devin_org_id,
         ),
         telegram
         or TelegramClient(
