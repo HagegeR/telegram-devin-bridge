@@ -24,7 +24,8 @@ and deployment update channels.
   through `/v3/organizations/{org}/...`; v1 remains the fallback for
   deployments without a service key and still serves attachment downloads.
 - `/settings` gains a **Devin mode** submenu (org default plus every mode
-  the API accepts — discovered live, not hardcoded) and a **Repos** row;
+  the API accepts, discovered live with a built-in fallback list) and a
+  **Repos** row;
   `/repos [a/b,c/d]` shows, sets, or clears a per-chat repo list applied to
   the next new session.
 - `/doctor` adds a `devin api v3` check when the service key and org are
