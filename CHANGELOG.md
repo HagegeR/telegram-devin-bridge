@@ -17,6 +17,19 @@ and deployment update channels.
   `python3` is older than 3.12 (versioned package, else a uv-managed
   interpreter). CI installs it on Alpine, Debian, Ubuntu, Fedora, Rocky,
   Arch and openSUSE containers, and runs macOS and Windows jobs.
+- **Devin API v3**: when `DEVIN_SERVICE_USER_API_KEY` + `DEVIN_ORG_ID` are
+  configured, session create/message/read/playbooks/terminate/upload run
+  through `/v3/organizations/{org}/...`; v1 remains the fallback for
+  deployments without a service key and still serves attachment downloads.
+- `/settings` gains a **Devin mode** submenu (org default plus every mode
+  the API accepts — discovered live, not hardcoded) and a **Repos** row;
+  `/repos [a/b,c/d]` shows, sets, or clears a per-chat repo list applied to
+  the next new session.
+- `/doctor` adds a `devin api v3` check when the service key and org are
+  set.
+- `python -m app.publish_knowledge` publishes to
+  `/v3/.../knowledge/notes` (paginated lookup) when a service key is
+  configured, else the v1 endpoint.
 
 ### Changed
 
@@ -25,13 +38,18 @@ and deployment update channels.
 - `ADMIN_RESTART_COMMAND` now defaults to `rc-service` only when running as
   root with OpenRC; otherwise empty, which exits the process for the
   supervisor (systemd, launchd, the Windows loop, Docker) to respawn.
-
 - Queued turns for the same conversation are now coalesced into a single
   Devin message per batch (turns carrying attachments still get their own
   batch), cutting the number of Devin turns spent flushing the queue.
 - `/new [title]` no longer creates a Devin session just to greet — it
   stores a pending title and replies immediately; the next message you send
   starts the session with that title.
+- v3 `suspended` sessions show 💤 and auto-resume on the next message
+  instead of being treated as expired and recreated.
+- Conversation-settings writes are atomic per column — concurrent updates
+  (a `/settings` tap vs `/repos`) can't clobber each other, and v3 session
+  polls resume at the last delivered message page instead of re-reading
+  the full history.
 
 ## [v1.1.0] - 2026-09-23
 
