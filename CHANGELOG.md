@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v1.2.0] - 2026-10-01
+
 ### Added
 
 - **macOS and Windows installs**: `deploy/macos/install.sh` (per-user
