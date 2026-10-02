@@ -7047,6 +7047,33 @@ def test_chunk_reopens_expandable_quote_at_boundary() -> None:
     assert parts[-1].rsplit(" (", 1)[0].rstrip().endswith("last||")
 
 
+def test_chunk_splits_long_quote_line_and_stays_inside() -> None:
+    # A single continuation line over the limit: each fragment needs the
+    # quote marker, the boundary part a synthetic closer, the last part
+    # the reopen and the real closer.
+    parts = chunk("**>open\n>" + "x" * 200 + "||", limit=120)
+    assert len(parts) > 1
+    assert parts[0].startswith("**>")
+    assert parts[0].rsplit(" (", 1)[0].rstrip().endswith("||")
+    for part in parts[1:]:
+        lines = part.rsplit(" (", 1)[0].splitlines()
+        assert lines[0] == "**>"
+        assert all(line.startswith(">") for line in lines[1:])
+    assert parts[-1].rsplit(" (", 1)[0].rstrip().endswith("||")
+
+
+def test_markdown_v2_expandable_quote_preserves_indent() -> None:
+    # Indentation inside the quote is content; only the '>' marker and
+    # one separator space are stripped.
+    assert markdown_to_telegram_markdown_v2(
+        "**>Example\n>    if ready:\n>        run()||"
+    ) == "**>Example\n>   if ready:\n>       run\\(\\)||"
+    # Bare indented continuations keep every leading space too.
+    assert markdown_to_telegram_markdown_v2(
+        "**>Example\n    indented\nlast||"
+    ) == "**>Example\n>    indented\n>last||"
+
+
 @pytest.mark.asyncio
 async def test_send_markdown_expandable_quote_skips_rich() -> None:
     calls: list[str] = []
