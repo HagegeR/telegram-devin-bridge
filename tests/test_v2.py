@@ -3869,6 +3869,112 @@ def test_watcher_set_trigger_resets_delivery(tmp_path: Path) -> None:
     assert watcher.delivered is False
 
 
+def _iso(seconds_ago: float) -> str:
+    return datetime.fromtimestamp(
+        time.time() - seconds_ago, tz=timezone.utc
+    ).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_watcher_pre_trigger_reply_not_attributed(tmp_path: Path) -> None:
+    # A reply emitted before the new trigger (an orphaned message from the
+    # previous turn) must be delivered unattributed and must not mark the
+    # turn answered — otherwise the new message looks instantly resolved.
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_event_id="e0",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    stale = DevinMessage("devin_message", "e1", "old reply", _iso(300))
+    fresh = DevinMessage("devin_message", "e2", "real answer", _iso(-60))
+    settled = SessionState("blocked", "title", None, [stale, fresh])
+    states = [
+        SessionState("suspended", "title", None, [stale]),
+        SessionState("working", "title", None, [stale, fresh]),
+        settled,
+    ]
+
+    class SequenceDevin(_FakeDevin):
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return states.pop(0) if states else settled
+
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        SequenceDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, devin_watch_timeout_seconds=10),
+        trigger_message_id=9,
+        trigger_at=time.time(),
+    ).run()
+    texts = [item["text"] for item in telegram.sent]
+    stale_index = texts.index("old reply")
+    fresh_index = texts.index("real answer")
+    assert stale_index < fresh_index
+    assert telegram.sent[stale_index].get("reply_to_message_id") is None
+    assert telegram.sent[fresh_index]["reply_to_message_id"] == 9
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dead_status", ["suspended", "blocked", "finished"])
+async def test_watcher_survives_stale_only_close(
+    tmp_path: Path, dead_status: str
+) -> None:
+    # Without the trigger boundary, a stale delivery flips `delivered` and
+    # the watcher closes + exits at the first non-active poll, orphaning the
+    # real reply until the next user message.
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_event_id="e0",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    stale = DevinMessage("devin_message", "e1", "old reply", _iso(300))
+    fresh = DevinMessage("devin_message", "e2", "real answer", _iso(-60))
+    settled = SessionState("blocked", "title", None, [stale, fresh])
+    states = [
+        SessionState(dead_status, "title", None, [stale]),
+        SessionState(dead_status, "title", None, [stale]),
+        SessionState("working", "title", None, [stale, fresh]),
+        settled,
+    ]
+
+    class SequenceDevin(_FakeDevin):
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return states.pop(0) if states else settled
+
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        SequenceDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, devin_watch_timeout_seconds=10),
+        trigger_message_id=9,
+        trigger_at=time.time(),
+    ).run()
+    texts = [item["text"] for item in telegram.sent]
+    assert "real answer" in texts
+
+
 @pytest.mark.asyncio
 async def test_topic_close_and_rename_commands(tmp_path: Path) -> None:
     store = Store(":memory:")
