@@ -414,16 +414,18 @@ def extract_controls(text: str) -> tuple[str, dict[str, object]]:
     controls: dict[str, object] = {}
     kept: list[str] = []
     in_fence = False
-    in_details = False
+    in_section: str | None = None
     for line in text.split("\n"):
         stripped = line.strip()
         # Marker-looking lines inside code fences or a DETAILS:/SUGGEST:
-        # body are literal content, not commands.
+        # body are literal content, not commands — and only the section's
+        # own terminator closes it (a mismatched END stays literal too).
         if not in_fence and (
-            _END_DETAILS.match(stripped) or _END_SUGGEST.match(stripped)
+            (in_section == "details" and _END_DETAILS.match(stripped))
+            or (in_section == "suggest" and _END_SUGGEST.match(stripped))
         ):
-            in_details = False
-        if in_fence or in_details:
+            in_section = None
+        if in_fence or in_section:
             if _FENCE.match(stripped):
                 in_fence = not in_fence
             kept.append(line)
@@ -432,8 +434,12 @@ def extract_controls(text: str) -> tuple[str, dict[str, object]]:
             in_fence = True
             kept.append(line)
             continue
-        if stripped.startswith(("DETAILS:", "SUGGEST:")):
-            in_details = True
+        if stripped.startswith("DETAILS:"):
+            in_section = "details"
+            kept.append(line)
+            continue
+        if stripped.startswith("SUGGEST:"):
+            in_section = "suggest"
             kept.append(line)
             continue
         match = _CONTROL_LINE.match(stripped)
@@ -539,9 +545,13 @@ def parse_rich_segments(text: str) -> list[dict[str, object]] | None:
             summary = stripped[len("DETAILS:") :].strip() or "Details"
             index += 1
             raw = []
-            while index < len(lines) and not _END_DETAILS.match(
-                lines[index].strip()
-            ):
+            body_fence = False
+            while index < len(lines):
+                inner = lines[index].strip()
+                if _FENCE.match(inner):
+                    body_fence = not body_fence
+                elif not body_fence and _END_DETAILS.match(inner):
+                    break
                 raw.append(lines[index])
                 index += 1
             if index < len(lines):
@@ -569,9 +579,13 @@ def parse_rich_segments(text: str) -> list[dict[str, object]] | None:
             summary = stripped[len("SUGGEST:") :].strip() or "Suggestion"
             index += 1
             raw = []
-            while index < len(lines) and not _END_SUGGEST.match(
-                lines[index].strip()
-            ):
+            body_fence = False
+            while index < len(lines):
+                inner = lines[index].strip()
+                if _FENCE.match(inner):
+                    body_fence = not body_fence
+                elif not body_fence and _END_SUGGEST.match(inner):
+                    break
                 raw.append(lines[index])
                 index += 1
             if index < len(lines):

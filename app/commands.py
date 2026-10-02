@@ -28,7 +28,7 @@ SYSTEM_PREAMBLE = (
     "self-contained .html file; the bridge serves it and adds an Open button. "
     "To collapse a long section inline, use a Telegram expandable quote: first line "
     "prefixed `**>`, the rest prefixed `>`, and end with `||`. Inline `||spoiler||` "
-    "hides text until tapped. Two markers render "
+    "hides text until tapped. Markers that render "
     "native blocks: `DETAILS: <summary>` on its own line, then content lines, then "
     "`END DETAILS` gives a tap-to-expand section; `TABLE:` on its own line, then "
     "`| col | col |` pipe rows, then `END TABLE` gives a real table; "
