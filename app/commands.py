@@ -10,6 +10,13 @@ import httpx
 from app.access import is_allowed, is_topic_chat
 from app.config import Settings
 from app.devin import DevinClient, Playbook, SessionState
+from app.formatting import (
+    rich_details,
+    rich_paragraph,
+    rich_text_bold,
+    rich_text_code,
+    rich_text_link,
+)
 from app.store import Conversation, Store
 
 SYSTEM_PREAMBLE = (
@@ -58,6 +65,7 @@ class CommandRuntime(Protocol):
         silent: bool = False,
         ephemeral: bool = False,
         html: bool = False,
+        rich: list[dict[str, object]] | None = None,
     ) -> int | None: ...
 
     async def create_session_for_message(
@@ -150,11 +158,11 @@ class CommandRuntime(Protocol):
 
     async def list_users(self, message: Mapping[str, object]) -> None: ...
 
-    async def revoke_user(self, message: Mapping[str, object], user_id: int) -> None: ...
-
-    async def self_update(
-        self, message: Mapping[str, object], args: str
+    async def revoke_user(
+        self, message: Mapping[str, object], user_id: int
     ) -> None: ...
+
+    async def self_update(self, message: Mapping[str, object], args: str) -> None: ...
 
 
 async def handle_command(
@@ -173,16 +181,25 @@ async def handle_command(
     conversation = runtime.store.get_conversation(conv_key)
     if command in {"start", "help"}:
         help_text = _start_text() if command == "start" else _help_html()
-        if (
+        tip = (
+            "Tip: enable Topics for this bot to run several Devin sessions "
+            "side by side."
+        )
+        needs_tip = (
             _mapping(message.get("chat")).get("type") == "private"
             and not runtime.bot_topics_enabled
-        ):
-            help_text += (
-                "\nTip: enable Topics for this bot to run several Devin sessions "
-                "side by side."
-            )
+        )
+        if needs_tip:
+            help_text += f"\n{tip}"
+        rich = _help_rich() if command == "help" else None
+        if rich is not None and needs_tip:
+            rich.append(rich_paragraph(tip))
         await runtime.send_text(
-            message, help_text, ephemeral=True, html=command == "help"
+            message,
+            help_text,
+            ephemeral=True,
+            html=command == "help",
+            rich=rich,
         )
     elif command == "new":
         runtime.clear_queued_turns(conv_key)
@@ -253,9 +270,10 @@ async def handle_command(
                 )
 
             # The HTML send path has no chunker, so keep the reply under
-            # Telegram's 4096 cap: drop the detail block first, then shrink
-            # the user-supplied title — removing a raw char removes at least
-            # one escaped char, so a single proportional cut always fits.
+            # Telegram's 4096 cap: shrink the user-supplied title first —
+            # removing a raw char removes at least one escaped char, so a
+            # single proportional cut always fits — then keep as many
+            # detail entries as fit inside the expandable block.
             body = head(conversation.title)
             if len(body) > 4000:
                 body = head(
@@ -263,14 +281,17 @@ async def handle_command(
                         : max(1, len(conversation.title) - (len(body) - 3900))
                     ]
                 )
-            details = _expandable(_status_details(conversation, state))
-            if len(body + details) <= 4000:
-                body += details
+            details = _status_details(conversation, state)
+            while details and len(body + _expandable(details)) > 4000:
+                details.pop()
+            if details:
+                body += _expandable(details)
             await runtime.send_text(
                 message,
                 body,
                 ephemeral=True,
                 html=True,
+                rich=_status_rich(conversation, state, status, queued_line),
             )
     elif command == "settings":
         await runtime.settings_menu(message)
@@ -446,24 +467,41 @@ async def _sessions(
         return
     rows: list[str] = []
     details: list[str] = []
+    links: list[dict[str, object]] = []
     for index, entry in enumerate(history, start=1):
         try:
             status = await runtime.get_session_status(entry.session_id)
         except Exception:  # noqa: BLE001
             status = "unknown"
-        marker = "*" if conversation is not None and entry.session_id == conversation.session_id else " "
+        marker = (
+            "*"
+            if conversation is not None and entry.session_id == conversation.session_id
+            else " "
+        )
         title = entry.title if len(entry.title) <= 200 else entry.title[:200] + "…"
-        rows.append(f"{marker}{index}. {escape(title)} — {escape(status)}")
+        rows.append(f"{marker}{index}. {title} — {status}")
         details.append(f"{index}. {escape(entry.session_url)}")
+        links.append(
+            rich_paragraph(
+                [f"{index}. ", rich_text_link(entry.session_url, entry.session_url)]
+            )
+        )
     # send_message's HTML path has no chunker: keep the rows under the
-    # 4096 cap (oldest entries drop first), then the details block only
-    # if it still fits.
+    # 4096 cap (oldest entries drop first), then keep as many details
+    # entries as still fit.
     while len(rows) > 1 and len("\n".join(rows)) > 3900:
         rows.pop()
-    body = "\n".join(rows)
-    if len(body + _expandable(details)) <= 4000:
+        details.pop()
+        links.pop()
+    body = "\n".join(escape(row) for row in rows)
+    while details and len(body + _expandable(details)) > 4000:
+        details.pop()
+        links.pop()
+    if details:
         body += _expandable(details)
-    await runtime.send_text(message, body, ephemeral=True, html=True)
+    rich = [rich_paragraph(row) for row in rows]
+    rich.append(rich_details("Links", links))
+    await runtime.send_text(message, body, ephemeral=True, html=True, rich=rich)
 
 
 async def _resume(
@@ -675,45 +713,89 @@ def _status_details(conversation: Conversation, state: SessionState) -> list[str
     return lines
 
 
-def _help_html() -> str:
-    sections = (
-        (
-            "Sessions",
-            [
-                "/new [title] — start a fresh session on your next message",
-                "/status — what Devin is doing",
-                "/stop (/cancel) — terminate the session",
-                "/retry — resend your last message",
-                "/steer &lt;text&gt; — inject into the running session",
-                "/sessions · /resume &lt;n&gt; — history and switching",
-            ],
-        ),
-        (
-            "Topics",
-            [
-                "/topic &lt;name&gt; — new topic with its own session",
-                "/rename &lt;name&gt; — rename this topic",
-                "/close — close this topic's session",
-            ],
-        ),
-        (
-            "Setup and admin",
-            [
-                "/playbook [n] [text] — list or run a playbook",
-                "/settings — notifications, drafts, mode, defaults",
-                "/repos [a/b,c/d] — restrict sessions to repos",
-                "/lang [code] — voice-note language",
-                "/usage — Devin ACU usage",
-                "/whoami — your IDs and access",
-                "/sethome — route notifications here",
-                "/users · /revoke &lt;id&gt; — approved users (admin)",
-                "/update [check] [channel] — self-update (admin)",
-            ],
-        ),
+def _status_rich(
+    conversation: Conversation,
+    state: SessionState,
+    status: str,
+    queued_line: str,
+) -> list[dict[str, object]]:
+    detail_blocks: list[dict[str, object]] = [
+        rich_paragraph(["id: ", rich_text_code(conversation.session_id)])
+    ]
+    if state.status_detail:
+        detail_blocks.append(rich_paragraph(f"detail: {state.status_detail}"))
+    if state.acus_consumed:
+        detail_blocks.append(rich_paragraph(f"ACUs: {state.acus_consumed:g}"))
+    if state.updated_at:
+        detail_blocks.append(rich_paragraph(f"updated: {state.updated_at}"))
+    detail_blocks.extend(
+        rich_paragraph(["PR: ", rich_text_link(url, url)])
+        for url in (state.pr_urls or ((state.pr_url,) if state.pr_url else ()))
     )
-    parts = [f"<b>{title}</b>" + _expandable(items) for title, items in sections]
+    return [
+        rich_paragraph(rich_text_bold(conversation.title)),
+        rich_paragraph(f"Status: {status}"),
+        rich_paragraph(f"Session: {conversation.session_url}{queued_line}"),
+        rich_details("Details", detail_blocks),
+    ]
+
+
+_HELP_SECTIONS = (
+    (
+        "Sessions",
+        [
+            "/new [title] — start a fresh session on your next message",
+            "/status — what Devin is doing",
+            "/stop (/cancel) — terminate the session",
+            "/retry — resend your last message",
+            "/steer <text> — inject into the running session",
+            "/sessions · /resume <n> — history and switching",
+        ],
+    ),
+    (
+        "Topics",
+        [
+            "/topic <name> — new topic with its own session",
+            "/rename <name> — rename this topic",
+            "/close — close this topic's session",
+        ],
+    ),
+    (
+        "Setup and admin",
+        [
+            "/playbook [n] [text] — list or run a playbook",
+            "/settings — notifications, drafts, mode, defaults",
+            "/repos [a/b,c/d] — restrict sessions to repos",
+            "/lang [code] — voice-note language",
+            "/usage — Devin ACU usage",
+            "/whoami — your IDs and access",
+            "/sethome — route notifications here",
+            "/users · /revoke <id> — approved users (admin)",
+            "/update [check] [channel] — self-update (admin)",
+        ],
+    ),
+)
+
+
+def _help_html() -> str:
+    parts = [
+        f"<b>{title}</b>" + _expandable([escape(item) for item in items])
+        for title, items in _HELP_SECTIONS
+    ]
     parts.append("Reactions: 🔁 retry · 🛑 stop")
     return "\n".join(parts)
+
+
+def _help_rich() -> list[dict[str, object]]:
+    blocks = [
+        rich_details(
+            rich_text_bold(title),
+            [rich_paragraph(item) for item in items],
+        )
+        for title, items in _HELP_SECTIONS
+    ]
+    blocks.append(rich_paragraph("Reactions: 🔁 retry · 🛑 stop"))
+    return blocks
 
 
 def _mapping(value: object) -> Mapping[str, object]:

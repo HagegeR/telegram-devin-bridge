@@ -35,6 +35,7 @@ from app.formatting import (
     chunk,
     extract_large_code_blocks,
     markdown_to_telegram_markdown_v2,
+    rich_paragraph,
     split_long_text,
 )
 from app.notify import register_notify_route
@@ -1513,7 +1514,31 @@ class Bridge:
         disable_notification: bool,
         receiver_user_id: int | None,
         html: bool,
+        rich: list[dict[str, object]] | None,
     ) -> list[dict[str, object]]:
+        if rich is not None and self.telegram.rich_enabled:
+            try:
+                result = await self.telegram.send_rich_message(
+                    chat_id,
+                    blocks=rich,
+                    thread_id=thread_id,
+                    disable_notification=disable_notification,
+                    receiver_user_id=receiver_user_id,
+                )
+                return [result]
+            except RuntimeError as exc:
+                reason = str(exc).casefold()
+                if (
+                    "method not found" in reason
+                    or ("method" in reason and "not found" in reason)
+                    or "unknown method" in reason
+                ):
+                    self.telegram.rich_enabled = False
+                else:
+                    logger.warning(
+                        "send_rich_message blocks failed, falling back: %s",
+                        exc,
+                    )
         if html:
             result = await self.telegram.send_message(
                 chat_id,
@@ -1540,6 +1565,7 @@ class Bridge:
         silent: bool = False,
         ephemeral: bool = False,
         html: bool = False,
+        rich: list[dict[str, object]] | None = None,
     ) -> int | None:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
@@ -1559,6 +1585,7 @@ class Bridge:
                 ),
                 receiver_user_id=receiver_user_id,
                 html=html,
+                rich=rich,
             )
             conv_key = self._conversation_key(message)
             for result in results:
@@ -1578,6 +1605,7 @@ class Bridge:
                 ),
                 receiver_user_id=None,
                 html=html,
+                rich=rich,
             )
             conv_key = self._conversation_key(message)
             for result in results:
@@ -1724,12 +1752,15 @@ class Bridge:
                     daily.append((date, float(amount)))
         daily = daily[-7:]
         lines = [f"Session ACUs: {total_acus:.2f} (last 30 days)"]
+        rich: list[dict[str, object]] = [rich_paragraph(lines[0])]
         if not daily and total_acus == 0:
-            lines.append(
+            no_data = (
                 "No consumption data returned — the Devin API reports consumption "
                 "only for Enterprise-plan organizations (service user needs "
                 "ViewOrgConsumption)."
             )
+            lines.append(no_data)
+            rich.append(rich_paragraph(no_data))
         if daily:
             lines.append(
                 "<blockquote expandable>"
@@ -1738,10 +1769,28 @@ class Bridge:
                 )
                 + "</blockquote>"
             )
+            rich.append(
+                {
+                    "type": "table",
+                    "is_compact": True,
+                    "is_striped": True,
+                    "cells": [
+                        [
+                            {"text": "Date", "is_header": True},
+                            {"text": "ACUs", "is_header": True},
+                        ],
+                        *[
+                            [{"text": date}, {"text": f"{amount:.2f}"}]
+                            for date, amount in reversed(daily)
+                        ],
+                    ],
+                }
+            )
         lines.append(
             "Usage is aggregated daily and refreshed roughly hourly — not real-time."
         )
-        await self.send_text(message, "\n".join(lines), html=True)
+        rich.append(rich_paragraph(lines[-1]))
+        await self.send_text(message, "\n".join(lines), html=True, rich=rich)
 
     async def list_users(self, message: Mapping[str, object]) -> None:
         sender_id = _int(_mapping(message.get("from")).get("id"))

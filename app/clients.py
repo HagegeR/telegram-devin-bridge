@@ -830,8 +830,9 @@ class TelegramClient:
     async def send_rich_message(
         self,
         chat_id: int,
-        markdown: str,
+        markdown: str = "",
         *,
+        blocks: list[dict[str, object]] | None = None,
         thread_id: int | None = None,
         reply_to_message_id: int | None = None,
         reply_markup: dict[str, object] | None = None,
@@ -840,7 +841,11 @@ class TelegramClient:
     ) -> dict[str, object]:
         body: dict[str, object] = {
             "chat_id": chat_id,
-            "rich_message": {"markdown": normalize_rich_linebreaks(markdown)},
+            "rich_message": (
+                {"blocks": blocks}
+                if blocks is not None
+                else {"markdown": normalize_rich_linebreaks(markdown)}
+            ),
             "disable_notification": disable_notification,
         }
         if thread_id is not None:
