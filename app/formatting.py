@@ -99,6 +99,7 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
     lines = text.splitlines()
     result: list[str] = []
     in_fence = False
+    in_expandable = False
     fence_language = ""
     for line in lines:
         if line.startswith("```"):
@@ -114,8 +115,38 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
             result.append(line.replace("\\", "\\\\").replace("`", "\\`"))
             continue
         if line.startswith("**>"):
-            result.append("**>" + _inline(line[3:].lstrip()))
-        elif line.startswith("#"):
+            body = line[3:].lstrip()
+            if body.rstrip().endswith("||"):
+                result.append(
+                    "**>" + _inline(body.rstrip()[:-2].rstrip()) + "||"
+                )
+            else:
+                result.append("**>" + _inline(body))
+                in_expandable = True
+            continue
+        if in_expandable and line.strip() == "||":
+            # Telegram closes an expandable quote with || at the end of the
+            # last quote line, not on a line of its own.
+            index = len(result) - 1
+            while index >= 0 and not result[index].strip():
+                index -= 1
+            if index >= 0:
+                result[index] += "||"
+            else:
+                result.append("||")
+            in_expandable = False
+            continue
+        # A line ending in || inside an expandable quote is the closer —
+        # unless the || pairs a spoiler on the same line (odd count left).
+        quote_close = (
+            in_expandable
+            and line.rstrip().endswith("||")
+            and not line.lstrip().startswith("||")
+            and line.rstrip()[:-2].count("||") % 2 == 0
+        )
+        if quote_close:
+            line = line.rstrip()[:-2]
+        if line.startswith("#"):
             result.append(f"*{_escape(line.lstrip('#').strip())}*")
         elif line.startswith(">"):
             closer = line[1:].lstrip()
@@ -129,6 +160,9 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
             result.append("||")
         else:
             result.append(_inline(line))
+        if quote_close:
+            result[-1] += "||"
+            in_expandable = False
     if in_fence:
         result.append("```")
     return "\n".join(result)

@@ -626,13 +626,14 @@ class SessionWatcher:
             body = body.replace(f"\n{url}\n", "\n")
             if body == url:
                 body = ""
-        pr_urls = re.findall(
-            r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
-            body,
+        pr_url_list = list(
+            dict.fromkeys(
+                re.findall(
+                    r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+                    body,
+                )
+            )
         )
-        if state.pr_url and state.pr_url.startswith("https://github.com/"):
-            pr_urls.append(state.pr_url)
-        pr_url_list = list(dict.fromkeys(pr_urls))
         pr_metadata = await asyncio.gather(
             *(
                 self.devin.fetch_github_pr(

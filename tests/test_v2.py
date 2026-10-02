@@ -6991,3 +6991,41 @@ def test_markdown_v2_spoiler_and_expandable_quote() -> None:
     assert rendered[:3] == ["**>Long part", ">more", ">||"]
     assert "||secret||" in rendered[3]
     assert rendered[4] == "||"
+
+
+def test_markdown_v2_expandable_quote_closer_line() -> None:
+    # Telegram closes the quote with || at the end of the last line, so a
+    # standalone '||' line is glued onto the previous content line.
+    assert markdown_to_telegram_markdown_v2(
+        "**>Tap to expand\nsecond line\n||"
+    ) == "**>Tap to expand\nsecond line||"
+    # Single-line form.
+    assert (
+        markdown_to_telegram_markdown_v2("**>one liner||")
+        == "**>one liner||"
+    )
+    # A spoiler line inside a quote is content, not the closer.
+    assert markdown_to_telegram_markdown_v2(
+        "**>q\n||hidden||\nlast||"
+    ) == "**>q\n||hidden||\nlast||"
+    # Outside a quote a '||' line stays literal.
+    assert markdown_to_telegram_markdown_v2("a\n||") == "a\n||"
+
+
+@pytest.mark.asyncio
+async def test_send_markdown_expandable_quote_skips_rich() -> None:
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = TelegramClient(
+        "token-placeholder",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    # Rich markdown cannot render **> expandable quotes: go straight to
+    # sendMessage/MarkdownV2.
+    await client.send_markdown(222, "**>expand me\nbody||")
+    assert calls == ["/botfake/sendMessage"]

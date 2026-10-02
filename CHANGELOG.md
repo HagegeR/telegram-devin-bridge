@@ -14,6 +14,15 @@ and deployment update channels.
   `Open <name>` report button (`/r/<token>`), or as a document when
   `PUBLIC_BASE_URL` is unset.
 
+### Fixed
+
+- Expandable quotes (`**>` … `||`) in Devin replies now render as real
+  collapsible blocks: a `||` on its own line is glued to the last quote
+  line (Telegram requires the closer at the end of the line), and such
+  replies bypass `sendRichMessage`, whose markdown cannot render them.
+- The `🔗 PR` status card is no longer appended to every reply once the
+  session has a PR — it now only appears when the reply links a PR.
+
 ### Changed
 
 - `/status` now shows the v3 `status_detail` reason (idle timeout, paused
