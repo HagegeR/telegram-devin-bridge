@@ -8,6 +8,7 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
+from typing import cast
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -49,6 +50,17 @@ FINISH_NOTICES = {
     "expired": "⚠ Session expired",
     "suspended": "💤 Session suspended — send a message to resume",
 }
+
+
+def _prepend_buttons(
+    markup: dict[str, object] | None, buttons: list[dict[str, str]]
+) -> dict[str, object] | None:
+    if not buttons:
+        return markup
+    rows: list[object] = []
+    if markup is not None and isinstance(markup.get("inline_keyboard"), list):
+        rows = cast(list[object], markup["inline_keyboard"])
+    return {"inline_keyboard": [[button] for button in buttons] + rows}
 
 
 class SessionWatcher:
@@ -541,7 +553,8 @@ class SessionWatcher:
                     token,
                     self.conversation.conv_key,
                     self.conversation.chat_id,
-                    content.decode("utf-8", "replace"),
+                    content,
+                    content_type,
                 )
                 report_buttons.append({
                     "text": f"Open {filename}",
@@ -679,6 +692,7 @@ class SessionWatcher:
                 self.conversation.chat_id,
                 body[:500],
                 thread_id=self.conversation.thread_id,
+                reply_markup=_prepend_buttons(None, report_buttons),
                 disable_notification=(
                     self.silent
                     or (
@@ -708,13 +722,7 @@ class SessionWatcher:
                         }
                     ]]
                 }
-        if report_buttons:
-            rows: list[object] = []
-            if markup is not None and isinstance(markup["inline_keyboard"], list):
-                rows = markup["inline_keyboard"]
-            markup = {
-                "inline_keyboard": [[button] for button in report_buttons] + rows
-            }
+        markup = _prepend_buttons(markup, report_buttons)
         delivery_kwargs: dict[str, object] = {
             "thread_id": self.conversation.thread_id,
             "reply_markup": markup,

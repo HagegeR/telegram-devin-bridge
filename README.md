@@ -73,6 +73,8 @@ Then pick one of two modes:
 ```bash
 # .env: TELEGRAM_MODE=polling
 python -m app.poll
+# or, to also serve HTTP (/health, /notify, /admin, HTML report links):
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 **Webhook** — needs HTTPS routing your `PUBLIC_BASE_URL` to port 8000:
@@ -121,7 +123,7 @@ message-formatting knobs — lives in
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from @BotFather |
 | `DEVIN_API_KEY` | yes | Devin **v1** API key |
 | `TELEGRAM_MODE` | no | `webhook` (default) or `polling` |
-| `PUBLIC_BASE_URL` | webhook | Public HTTPS base URL; when set in polling mode too, `.html` attachments from Devin are served at `/r/<token>` (30 days) behind an `Open <file>` button instead of being sent as documents |
+| `PUBLIC_BASE_URL` | webhook | Public HTTPS base URL; when set (and the app runs under uvicorn, which also polls in polling mode), `.html` attachments from Devin are served at `/r/<token>` (30 days) behind an `Open <file>` button instead of being sent as documents |
 | `TELEGRAM_WEBHOOK_SECRET` | webhook | Random token verifying updates |
 | `DATABASE_PATH` | no | SQLite path (default `./bridge.sqlite3`) |
 
