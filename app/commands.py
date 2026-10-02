@@ -181,20 +181,25 @@ async def handle_command(
     conversation = runtime.store.get_conversation(conv_key)
     if command in {"start", "help"}:
         help_text = _start_text() if command == "start" else _help_html()
-        if (
+        tip = (
+            "Tip: enable Topics for this bot to run several Devin sessions "
+            "side by side."
+        )
+        needs_tip = (
             _mapping(message.get("chat")).get("type") == "private"
             and not runtime.bot_topics_enabled
-        ):
-            help_text += (
-                "\nTip: enable Topics for this bot to run several Devin sessions "
-                "side by side."
-            )
+        )
+        if needs_tip:
+            help_text += f"\n{tip}"
+        rich = _help_rich() if command == "help" else None
+        if rich is not None and needs_tip:
+            rich.append(rich_paragraph(tip))
         await runtime.send_text(
             message,
             help_text,
             ephemeral=True,
             html=command == "help",
-            rich=_help_rich() if command == "help" else None,
+            rich=rich,
         )
     elif command == "new":
         runtime.clear_queued_turns(conv_key)
@@ -265,9 +270,10 @@ async def handle_command(
                 )
 
             # The HTML send path has no chunker, so keep the reply under
-            # Telegram's 4096 cap: drop the detail block first, then shrink
-            # the user-supplied title — removing a raw char removes at least
-            # one escaped char, so a single proportional cut always fits.
+            # Telegram's 4096 cap: shrink the user-supplied title first —
+            # removing a raw char removes at least one escaped char, so a
+            # single proportional cut always fits — then keep as many
+            # detail entries as fit inside the expandable block.
             body = head(conversation.title)
             if len(body) > 4000:
                 body = head(
@@ -275,9 +281,11 @@ async def handle_command(
                         : max(1, len(conversation.title) - (len(body) - 3900))
                     ]
                 )
-            details = _expandable(_status_details(conversation, state))
-            if len(body + details) <= 4000:
-                body += details
+            details = _status_details(conversation, state)
+            while details and len(body + _expandable(details)) > 4000:
+                details.pop()
+            if details:
+                body += _expandable(details)
             await runtime.send_text(
                 message,
                 body,
@@ -459,38 +467,40 @@ async def _sessions(
         return
     rows: list[str] = []
     details: list[str] = []
+    links: list[dict[str, object]] = []
     for index, entry in enumerate(history, start=1):
         try:
             status = await runtime.get_session_status(entry.session_id)
         except Exception:  # noqa: BLE001
             status = "unknown"
-        marker = "*" if conversation is not None and entry.session_id == conversation.session_id else " "
+        marker = (
+            "*"
+            if conversation is not None and entry.session_id == conversation.session_id
+            else " "
+        )
         title = entry.title if len(entry.title) <= 200 else entry.title[:200] + "…"
-        rows.append(f"{marker}{index}. {escape(title)} — {escape(status)}")
+        rows.append(f"{marker}{index}. {title} — {status}")
         details.append(f"{index}. {escape(entry.session_url)}")
+        links.append(
+            rich_paragraph(
+                [f"{index}. ", rich_text_link(entry.session_url, entry.session_url)]
+            )
+        )
     # send_message's HTML path has no chunker: keep the rows under the
-    # 4096 cap (oldest entries drop first), then the details block only
-    # if it still fits.
+    # 4096 cap (oldest entries drop first), then keep as many details
+    # entries as still fit.
     while len(rows) > 1 and len("\n".join(rows)) > 3900:
         rows.pop()
-    body = "\n".join(rows)
-    if len(body + _expandable(details)) <= 4000:
+        details.pop()
+        links.pop()
+    body = "\n".join(escape(row) for row in rows)
+    while details and len(body + _expandable(details)) > 4000:
+        details.pop()
+        links.pop()
+    if details:
         body += _expandable(details)
     rich = [rich_paragraph(row) for row in rows]
-    rich.append(
-        rich_details(
-            "Links",
-            [
-                rich_paragraph(
-                    [
-                        f"{index}. ",
-                        rich_text_link(entry.session_url, entry.session_url),
-                    ]
-                )
-                for index, entry in enumerate(history, start=1)
-            ],
-        )
-    )
+    rich.append(rich_details("Links", links))
     await runtime.send_text(message, body, ephemeral=True, html=True, rich=rich)
 
 

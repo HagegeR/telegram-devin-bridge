@@ -1681,6 +1681,9 @@ async def test_commands_send_rich_blocks_and_html_fallback(
     assert isinstance(blocks, list)
     assert blocks[-1]["type"] == "details"
     assert "devin.test/s1" in str(blocks[-1]["blocks"])
+    # Rich rows carry raw text, not HTML-escaped text.
+    assert "<b& title" in str(blocks)
+    assert "&lt;" not in str(blocks)
 
     async def consumption(*_: object, **__: object) -> dict[str, object]:
         return {
@@ -1704,6 +1707,28 @@ async def test_commands_send_rich_blocks_and_html_fallback(
     assert isinstance(blocks, list)
     assert sum(b["type"] == "details" for b in blocks) == 3
     assert blocks[0]["summary"] == {"type": "bold", "text": "Sessions"}
+    # Private chat without Topics enabled: the tip reaches the rich path too.
+    assert "Tip: enable Topics" in str(blocks[-1]["text"])
+
+    # Detail entries trim one-by-one to fit the cap — a giant PR list keeps
+    # as many links as fit rather than dropping the whole block.
+    async def pr_heavy_state(_: str) -> SessionState:
+        return SessionState(
+            "suspended",
+            "title",
+            None,
+            [],
+            pr_urls=tuple(f"https://github.test/pr/{i}" for i in range(200)),
+        )
+
+    runtime.get_state = pr_heavy_state  # type: ignore[method-assign]
+    telegram.rich_enabled = False
+    await handle_command(runtime, message("/status"), "/status")
+    text = str(telegram.sent[-1]["text"])
+    assert len(text) <= 4096
+    assert "PR: https://github.test/pr/1" in text
+    runtime.get_state = state  # type: ignore[method-assign]
+    telegram.rich_enabled = True
 
     # HTML fallback when rich messages are unavailable.
     telegram.rich_enabled = False

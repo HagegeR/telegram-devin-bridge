@@ -1528,7 +1528,11 @@ class Bridge:
                 return [result]
             except RuntimeError as exc:
                 reason = str(exc).casefold()
-                if "not found" in reason or "unknown method" in reason:
+                if (
+                    "method not found" in reason
+                    or ("method" in reason and "not found" in reason)
+                    or "unknown method" in reason
+                ):
                     self.telegram.rich_enabled = False
                 else:
                     logger.warning(
