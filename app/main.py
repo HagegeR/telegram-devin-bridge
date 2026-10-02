@@ -852,6 +852,7 @@ class Bridge:
             text = f"{text}\n\nAttached file: {url} ({filename})".strip()
         if not text:
             text = "Please inspect the attached file."
+        sent_at: float | None = None
         if conversation is not None and await self._is_finished(conversation.session_id):
             conversation = None
         if conversation is not None:
@@ -862,6 +863,7 @@ class Bridge:
                 last_user_message_id=message_id,
             )
             try:
+                sent_at = time.time()
                 await self.send_session_message(conversation.session_id, text)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code not in {404, 410}:
@@ -901,7 +903,9 @@ class Bridge:
                     )
                 finally:
                     self.implicit_topics.pop((chat_id, thread_id), None)
-        await self.start_watcher(conversation, trigger_message_id=message_id)
+        await self.start_watcher(
+            conversation, trigger_message_id=message_id, trigger_at=sent_at
+        )
 
     async def create_session_for_message(
         self,
@@ -1031,13 +1035,14 @@ class Bridge:
         trigger_message_id: int | None = None,
         poll_seconds: float | None = None,
         resume_from: float | None = None,
+        trigger_at: float | None = None,
     ) -> None:
         existing = self.watchers.get(conversation.session_id)
         if existing is not None and not existing.done():
             watcher = self.active_watchers.get(conversation.session_id)
             if watcher is not None and trigger_message_id is not None:
                 old_trigger = watcher.trigger_message_id
-                watcher.set_trigger(trigger_message_id)
+                watcher.set_trigger(trigger_message_id, at=trigger_at)
                 if old_trigger is not None and old_trigger != trigger_message_id:
                     await self._react(conversation.chat_id, old_trigger, "👍")
             return
@@ -1067,6 +1072,7 @@ class Bridge:
             silent=conv_settings.silent,
             has_queued=lambda: self.queued_count(conversation.conv_key) > 0,
             resume_from=resume_from,
+            trigger_at=trigger_at,
         )
         task = asyncio.create_task(watcher.run())
         self.watchers[conversation.session_id] = task
@@ -1334,6 +1340,7 @@ class Bridge:
                 last_user_text=text,
                 last_user_message_id=message_id,
             )
+            sent_at = time.time()
             await self.devin.send_message(
                 conversation.session_id,
                 f"Correction to my previous message: {text}",
@@ -1344,6 +1351,7 @@ class Bridge:
             await self.start_watcher(
                 updated,
                 trigger_message_id=message_id,
+                trigger_at=sent_at,
             )
 
     async def retry_conversation(
@@ -1365,6 +1373,7 @@ class Bridge:
             last_user_text=conversation.last_user_text,
         )
         try:
+            sent_at = time.time()
             await self.devin.send_message(
                 conversation.session_id,
                 conversation.last_user_text,
@@ -1376,6 +1385,7 @@ class Bridge:
         await self.start_watcher(
             conversation,
             trigger_message_id=trigger_message_id,
+            trigger_at=sent_at,
         )
 
     async def detach_conversation(self, conversation: Conversation) -> None:
