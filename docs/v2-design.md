@@ -1,11 +1,13 @@
 # Bridge v2 design (lead-authored; implementation brief)
 
 > **Status note (v1.2.0+):** the deployed key is now a **v3 service key** — the
-> "v1 only" facts below are historical. `DevinClient` talks v3 (`/v3/...`) and
-> transparently falls back to v1 when the key is old; v3-only features
-> (devin_mode, repos, `status_detail`, `acus_consumed`, structured blocks)
-> degrade quietly on v1 deployments. `devin.py`/`telegram.py` are re-export
-> shims — both clients live in `clients.py`.
+> "v1 only" facts below are historical. `DevinClient` selects its API version
+> at init: v3 (`/v3/...`) when the service-key + org settings are present
+> (`v3_enabled`), v1 when they are absent — a rejected v3 request does not
+> retry v1. v3-only features (devin_mode, repos, `status_detail`,
+> `acus_consumed`, structured blocks) degrade quietly on v1 deployments.
+> `devin.py`/`telegram.py` are re-export shims — both clients live in
+> `clients.py`.
 
 ## Grounded API facts (verified against api.devin.ai with the deployed key)
 

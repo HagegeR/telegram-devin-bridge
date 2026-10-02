@@ -15,7 +15,7 @@ the deploy).
 ## Commands
 
 ```bash
-python -m venv .venv && pip install -r requirements.txt -r requirements-dev.txt
+python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q      # ~75s, ~375 tests, httpx.MockTransport — no live APIs
 .venv/bin/ruff check app/ tests/
 ```
@@ -55,9 +55,11 @@ PYTHONPATH=. .venv/bin/pytest -q      # ~75s, ~375 tests, httpx.MockTransport �
   and quotes at boundaries); file upload limit 20 MB (Telegram `getFile`).
 - **Reactions**: Telegram accepts a fixed emoji set — `react()` degrades
   off-set emojis to 👍.
-- **v1 fallback**: `DevinClient` still supports v1 keys; v3-only features
-  (modes, repos, `status_detail`, blocks) must degrade — check how
-  `v3_available`/`rich_enabled` are gated before assuming v3.
+- **v1 fallback**: the client picks its API version at init — v3 when the
+  service-key + org settings exist (`v3_enabled`), v1 when they don't (no
+  per-request retry). v3-only features (modes, repos, `status_detail`,
+  blocks) must degrade — check `v3_enabled`/`rich_enabled` gating before
+  assuming v3.
 
 ## Style
 
