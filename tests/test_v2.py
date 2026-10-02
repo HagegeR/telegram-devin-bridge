@@ -941,6 +941,8 @@ class _FakeTelegram:
         self.rich_error: Exception | None = None
         self.pinned: list[tuple[int, int]] = []
         self.polls: list[dict[str, object]] = []
+        self.reaction_targets: list[int] = []
+        self.edit_kwargs: list[dict[str, object]] = []
 
     async def send_message(
         self,
@@ -1032,9 +1034,10 @@ class _FakeTelegram:
         )
 
     async def set_message_reaction(
-        self, _chat_id: int, _message_id: int, emoji: str
+        self, _chat_id: int, message_id: int, emoji: str
     ) -> None:
         self.reactions.append(emoji)
+        self.reaction_targets.append(message_id)
 
     async def react(
         self, chat_id: int, message_id: int | None, emoji: str | None
@@ -1054,9 +1057,10 @@ class _FakeTelegram:
             self.answers.append(text)
 
     async def edit_message_text(
-        self, _chat_id: int, _message_id: int, text: str, **_: object
+        self, _chat_id: int, _message_id: int, text: str, **kwargs: object
     ) -> None:
         self.edits.append(text)
+        self.edit_kwargs.append(kwargs)
 
     async def delete_message(self, chat_id: int, message_id: int) -> None:
         self.deleted.append((chat_id, message_id))
@@ -6830,6 +6834,21 @@ def test_extract_controls() -> None:
     assert "REACT:" in body and "POLL:" in body and "URGENT: nope" in body
     assert controls == {}
 
+    # Marker-looking lines inside code fences or DETAILS: bodies are literal.
+    body, controls = extract_controls(
+        "```\nPIN:\n```\nDETAILS: x\nURGENT:\nEND DETAILS\ndone"
+    )
+    assert controls == {}
+    assert "PIN:" in body and "URGENT:" in body
+
+    # Polls outside Telegram's limits stay text instead of silently failing.
+    body, controls = extract_controls("POLL: " + "q" * 301 + " | a | b")
+    assert controls == {} and "POLL:" in body
+    body, controls = extract_controls(
+        "POLL: q | " + " | ".join(f"o{i}" for i in range(11))
+    )
+    assert controls == {} and "POLL:" in body
+
 
 @pytest.mark.asyncio
 async def test_watcher_delivers_control_markers(tmp_path: Path) -> None:
@@ -6887,7 +6906,9 @@ async def test_watcher_delivers_control_markers(tmp_path: Path) -> None:
         trigger_message_id=7,
         silent=True,
     ).run()
-    assert telegram.reactions[0] == "👀"
+    # REACT: counts as the turn's reaction, so the close-reaction is skipped.
+    assert telegram.reactions == ["👀"]
+    assert telegram.reaction_targets == [7]
     assert telegram.sent[0]["text"] == "Result"
     assert telegram.sent[0]["disable_notification"] is False
     assert telegram.pinned == [(222, 1)]
@@ -6900,7 +6921,9 @@ async def test_watcher_delivers_control_markers(tmp_path: Path) -> None:
 async def test_watcher_progress_edits_previous_message(tmp_path: Path) -> None:
     replies = [
         DevinMessage("devin_message", "event-1", "step 1\nPROGRESS:", None),
-        DevinMessage("devin_message", "event-2", "step 2\nPROGRESS:", None),
+        DevinMessage(
+            "devin_message", "event-2", "step 2\nPROGRESS:\nREACT: 🎉", None
+        ),
     ]
 
     class FakeDevin:
@@ -6953,6 +6976,12 @@ async def test_watcher_progress_edits_previous_message(tmp_path: Path) -> None:
     assert bodies[0] == "step 1"
     assert "step 2" not in bodies  # second PROGRESS: edited instead of sent
     assert telegram.edits == ["step 2"]
+    # The edit clears any stale keyboard the replaced message carried.
+    assert telegram.edit_kwargs[0]["reply_markup"] == {"inline_keyboard": []}
+    # A non-stale later reply can still react to the turn's trigger message,
+    # and an explicit REACT: suppresses the automatic close-reaction.
+    assert telegram.reactions == ["🎉"]
+    assert telegram.reaction_targets == [7]
 
 
 def test_markdown_v2_spoiler_and_expandable_quote() -> None:

@@ -328,8 +328,28 @@ def extract_controls(text: str) -> tuple[str, dict[str, object]]:
     """
     controls: dict[str, object] = {}
     kept: list[str] = []
+    in_fence = False
+    in_details = False
     for line in text.split("\n"):
-        match = _CONTROL_LINE.match(line.strip())
+        stripped = line.strip()
+        # Marker-looking lines inside code fences or a DETAILS: body are
+        # literal content, not commands.
+        if not in_fence and _END_DETAILS.match(stripped):
+            in_details = False
+        if in_fence or in_details:
+            if _FENCE.match(stripped):
+                in_fence = not in_fence
+            kept.append(line)
+            continue
+        if _FENCE.match(stripped):
+            in_fence = True
+            kept.append(line)
+            continue
+        if stripped.startswith("DETAILS:"):
+            in_details = True
+            kept.append(line)
+            continue
+        match = _CONTROL_LINE.match(stripped)
         if match is None:
             kept.append(line)
             continue
@@ -346,7 +366,11 @@ def extract_controls(text: str) -> tuple[str, dict[str, object]]:
             controls["progress"] = True
         elif name == "POLL":
             parts = [part.strip() for part in value.split("|") if part.strip()]
-            if len(parts) >= 3:
+            if (
+                len(parts) in range(3, 12)
+                and len(parts[0]) <= 300
+                and all(len(part) <= 100 for part in parts[1:])
+            ):
                 controls["poll"] = parts
                 continue
             kept.append(line)

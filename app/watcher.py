@@ -133,6 +133,7 @@ class SessionWatcher:
         self._closed_gen = -1
         self.delivered = False
         self.draft_used = False
+        self.devin_reacted = False
         self.progress_message_id: int | None = None
         self.last_status: str | None = None
         self.started_at = self.clock()
@@ -147,6 +148,7 @@ class SessionWatcher:
             else None
         )
         self.delivered = False
+        self.devin_reacted = False
         self.started_at = self.clock()
         self.generation += 1
 
@@ -246,6 +248,9 @@ class SessionWatcher:
                             turn_trigger
                             if not delivery_delivered and not stale
                             else None
+                        ),
+                        react_message_id=(
+                            turn_trigger if not stale else None
                         ),
                     )
                     if not stale:
@@ -525,17 +530,18 @@ class SessionWatcher:
         state: SessionState,
         *,
         reply_to_message_id: int | None = None,
+        react_message_id: int | None = None,
     ) -> None:
         body, attachment_urls = extract_attachments(message.message)
         metadata_urls = set(attachment_urls)
         body, options = extract_options(body)
         body, controls = extract_controls(body)
-        if "react" in controls:
-            await self.telegram.react(
-                self.conversation.chat_id,
-                reply_to_message_id,
-                str(controls["react"]),
-            )
+        if "react" in controls and await self.telegram.react(
+            self.conversation.chat_id,
+            react_message_id,
+            str(controls["react"]),
+        ):
+            self.devin_reacted = True
         notify_disabled = (
             self.silent
             or "silent" in controls
@@ -599,6 +605,7 @@ class SessionWatcher:
                         caption=filename,
                         reply_to=reply_to_message_id,
                         content_type=content_type,
+                        disable_notification=notify_disabled,
                     )
                 else:
                     result = await self.telegram.send_document(
@@ -608,6 +615,7 @@ class SessionWatcher:
                         content_type=content_type,
                         thread_id=self.conversation.thread_id,
                         reply_to=reply_to_message_id,
+                        disable_notification=notify_disabled,
                     )
             except (httpx.HTTPError, RuntimeError):
                 logger.exception("Failed to send attachment %s", filename)
@@ -695,6 +703,7 @@ class SessionWatcher:
                 content,
                 thread_id=self.conversation.thread_id,
                 reply_to=reply_to_message_id if index == 0 else None,
+                disable_notification=notify_disabled,
             )
             self._index_outbound(result)
         limit = max(1, self.settings.telegram_long_reply_chars)
@@ -705,6 +714,7 @@ class SessionWatcher:
                 body.encode(),
                 thread_id=self.conversation.thread_id,
                 reply_to=reply_to_message_id,
+                disable_notification=notify_disabled,
             )
             self._index_outbound(result)
             results = await self.telegram.send_markdown(
@@ -758,9 +768,11 @@ class SessionWatcher:
                     self.progress_message_id,
                     markdown_to_telegram_markdown_v2(body[:4096]),
                     parse_mode="MarkdownV2",
-                    reply_markup=markup,
+                    reply_markup=markup or {"inline_keyboard": []},
                 )
                 edited = True
+                if not options:
+                    self.store.delete_choices(self.conversation.conv_key)
             except (RuntimeError, httpx.HTTPError):
                 logger.warning("progress edit failed, sending a new message")
                 self.progress_message_id = None
@@ -1004,6 +1016,8 @@ class SessionWatcher:
         await self._finish_reaction(trigger, expired=status == "expired")
 
     async def _finish_reaction(self, trigger: int | None, *, expired: bool) -> None:
+        if self.devin_reacted:
+            return
         await self.telegram.react(
             self.conversation.chat_id,
             trigger,

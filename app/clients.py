@@ -1151,6 +1151,7 @@ class TelegramClient:
         caption: str | None = None,
         reply_to: int | None = None,
         content_type: str = "image/jpeg",
+        disable_notification: bool = False,
     ) -> dict[str, object]:
         """Send an image as a photo, downscaling it to Telegram's sendPhoto limits
         (10 MB, width+height <= 10000, ratio <= 20). Images that cannot fit, or
@@ -1165,11 +1166,14 @@ class TelegramClient:
                 caption=caption,
                 reply_to=reply_to,
                 content_type=content_type,
+                disable_notification=disable_notification,
             )
         photo, photo_type = fitted
         data: dict[str, str] = {"chat_id": str(chat_id)}
         if thread_id is not None:
             data["message_thread_id"] = str(thread_id)
+        if disable_notification:
+            data["disable_notification"] = "true"
         if caption is not None:
             data["caption"] = cast(str, _caption(caption))
         if reply_to is not None:
