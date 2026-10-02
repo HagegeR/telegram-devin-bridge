@@ -1504,6 +1504,34 @@ class Bridge:
             await self.telegram.answer_callback_query(callback_id)
             self.store.delete_long_text(token)
 
+    async def _send_parts(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        thread_id: int | None,
+        disable_notification: bool,
+        receiver_user_id: int | None,
+        html: bool,
+    ) -> list[dict[str, object]]:
+        if html:
+            result = await self.telegram.send_message(
+                chat_id,
+                text,
+                thread_id=thread_id,
+                parse_mode="HTML",
+                disable_notification=disable_notification,
+                receiver_user_id=receiver_user_id,
+            )
+            return [result]
+        return await self.telegram.send_markdown(
+            chat_id,
+            text,
+            thread_id=thread_id,
+            disable_notification=disable_notification,
+            receiver_user_id=receiver_user_id,
+        )
+
     async def send_text(
         self,
         message: Mapping[str, object],
@@ -1511,6 +1539,7 @@ class Bridge:
         *,
         silent: bool = False,
         ephemeral: bool = False,
+        html: bool = False,
     ) -> int | None:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
@@ -1521,7 +1550,7 @@ class Bridge:
             else None
         )
         try:
-            results = await self.telegram.send_markdown(
+            results = await self._send_parts(
                 chat_id,
                 text,
                 thread_id=_thread_id(message),
@@ -1529,6 +1558,7 @@ class Bridge:
                     silent or self._conversation_silent(self._conversation_key(message))
                 ),
                 receiver_user_id=receiver_user_id,
+                html=html,
             )
             conv_key = self._conversation_key(message)
             for result in results:
@@ -1539,13 +1569,15 @@ class Bridge:
         except RuntimeError as exc:
             if receiver_user_id is None or "ephemeral" not in str(exc).casefold():
                 raise
-            results = await self.telegram.send_markdown(
+            results = await self._send_parts(
                 chat_id,
                 text,
                 thread_id=_thread_id(message),
                 disable_notification=(
                     silent or self._conversation_silent(self._conversation_key(message))
                 ),
+                receiver_user_id=None,
+                html=html,
             )
             conv_key = self._conversation_key(message)
             for result in results:
@@ -1698,11 +1730,18 @@ class Bridge:
                 "only for Enterprise-plan organizations (service user needs "
                 "ViewOrgConsumption)."
             )
-        lines.extend(f"{date} · {amount:.2f}" for date, amount in reversed(daily))
+        if daily:
+            lines.append(
+                "<blockquote expandable>"
+                + "\n".join(
+                    f"{date} · {amount:.2f}" for date, amount in reversed(daily)
+                )
+                + "</blockquote>"
+            )
         lines.append(
             "Usage is aggregated daily and refreshed roughly hourly — not real-time."
         )
-        await self.send_text(message, "\n".join(lines))
+        await self.send_text(message, "\n".join(lines), html=True)
 
     async def list_users(self, message: Mapping[str, object]) -> None:
         sender_id = _int(_mapping(message.get("from")).get("id"))
