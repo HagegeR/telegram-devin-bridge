@@ -6674,6 +6674,49 @@ def test_parse_rich_segments_unterminated_details() -> None:
     assert segments[0]["blocks"][0]["summary"] == "open"
 
 
+def test_parse_rich_segments_edge_cases() -> None:
+    # Markers inside a code fence are literal text, not live markers.
+    assert parse_rich_segments("```\nTABLE:\n| A |\nEND TABLE\n```") is None
+
+    # A mismatched closer stays content; only END DETAILS ends details.
+    segments = parse_rich_segments(
+        "DETAILS: Notes\nfirst\nEND TABLE\nsecond\nEND DETAILS"
+    )
+    assert segments is not None
+    detail = segments[0]["blocks"][0]
+    assert [b["text"] for b in detail["blocks"]] == [
+        "first",
+        "END TABLE",
+        "second",
+    ]
+
+    # Blank lines before END TABLE still consume the terminator.
+    segments = parse_rich_segments("TABLE:\n| A |\n| 1 |\n\nEND TABLE\ntail")
+    assert segments is not None
+    assert segments[1] == {"markdown": "tail"}
+
+    # An empty details section keeps its marker + summary as plain text.
+    assert parse_rich_segments(
+        "DETAILS: Summary\nEND DETAILS\nTABLE:\n| A |\n| 1 |"
+    ) == [
+        {"markdown": "DETAILS: Summary"},
+        {
+            "blocks": [
+                {
+                    "type": "table",
+                    "is_compact": True,
+                    "is_striped": True,
+                    "cells": [
+                        [{"text": "A", "is_header": True}],
+                        [{"text": "1", "is_header": False}],
+                    ],
+                }
+            ],
+            "fallback": "| A |\n| 1 |",
+        },
+    ]
+
+
 @pytest.mark.asyncio
 async def test_watcher_delivers_table_marker_as_blocks(tmp_path: Path) -> None:
     reply = "Intro line\nTABLE:\n| A | B |\n| - | - |\n| 1 | 2 |\nEND TABLE\nTail line"

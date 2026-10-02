@@ -299,8 +299,10 @@ def rich_text_link(text: str, url: str) -> dict[str, object]:
     return {"type": "url", "text": text, "url": url}
 
 
-_SEGMENT_END = re.compile(r"^END\s+(DETAILS|TABLE)\s*$", re.IGNORECASE)
+_END_DETAILS = re.compile(r"^END\s+DETAILS\s*$", re.IGNORECASE)
+_END_TABLE = re.compile(r"^END\s+TABLE\s*$", re.IGNORECASE)
 _TABLE_SEPARATOR = re.compile(r":?-+:?")
+_FENCE = re.compile(r"^```")
 
 
 def parse_rich_segments(text: str) -> list[dict[str, object]] | None:
@@ -326,15 +328,20 @@ def parse_rich_segments(text: str) -> list[dict[str, object]] | None:
             segments.append({"markdown": "\n".join(plain)})
             plain.clear()
 
+    in_fence = False
     while index < len(lines):
         stripped = lines[index].strip()
-        if stripped == "TABLE:":
+        if _FENCE.match(stripped):
+            in_fence = not in_fence
+        if stripped == "TABLE:" and not in_fence:
             index += 1
             raw: list[str] = []
             while index < len(lines) and _is_pipe_table_line(lines[index]):
                 raw.append(lines[index])
                 index += 1
-            if index < len(lines) and _SEGMENT_END.match(lines[index].strip()):
+            while index < len(lines) and not lines[index].strip():
+                index += 1
+            if index < len(lines) and _END_TABLE.match(lines[index].strip()):
                 index += 1
             cells: list[list[dict[str, object]]] = []
             for row in raw:
@@ -364,11 +371,14 @@ def parse_rich_segments(text: str) -> list[dict[str, object]] | None:
                 plain.append("TABLE:")
                 plain.extend(raw)
             continue
-        if stripped.startswith("DETAILS:"):
+        if stripped.startswith("DETAILS:") and not in_fence:
+            marker = lines[index]
             summary = stripped[len("DETAILS:") :].strip() or "Details"
             index += 1
             raw = []
-            while index < len(lines) and not _SEGMENT_END.match(lines[index].strip()):
+            while index < len(lines) and not _END_DETAILS.match(
+                lines[index].strip()
+            ):
                 raw.append(lines[index])
                 index += 1
             if index < len(lines):
@@ -388,6 +398,7 @@ def parse_rich_segments(text: str) -> list[dict[str, object]] | None:
                     }
                 )
             else:
+                plain.append(marker)
                 plain.extend(raw)
             continue
         plain.append(lines[index])
