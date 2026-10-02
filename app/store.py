@@ -177,6 +177,13 @@ class Store:
                     text TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS reports (
+                    token TEXT PRIMARY KEY,
+                    conv_key TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    html TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -972,6 +979,30 @@ class Store:
         with self.lock, self.connection:
             self.connection.execute(
                 "DELETE FROM long_texts WHERE created_at < ?",
+                (time.time() - max_age_seconds,),
+            )
+
+    def add_report(self, token: str, conv_key: str, chat_id: int, html: str) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO reports(token, conv_key, chat_id, html, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (token, conv_key, chat_id, html, time.time()),
+            )
+
+    def get_report(self, token: str) -> str | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT html FROM reports WHERE token = ?", (token,)
+            ).fetchone()
+        return None if row is None else str(row["html"])
+
+    def cleanup_reports(self, max_age_seconds: float = 30 * 86400) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM reports WHERE created_at < ?",
                 (time.time() - max_age_seconds,),
             )
 

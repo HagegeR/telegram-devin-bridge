@@ -18,6 +18,7 @@ from typing import cast
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
 
 from app.access import (
     is_allowed,
@@ -186,6 +187,7 @@ class Bridge:
             self.settings.telegram_allow_all_users,
         )
         self.store.cleanup_long_texts()
+        self.store.cleanup_reports()
         self.store.cleanup_message_index()
         self.approved_users = {
             request.user_id
@@ -2285,6 +2287,13 @@ def create_app(
     @application.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @application.get("/r/{token}", response_class=HTMLResponse)
+    async def report(token: str) -> str:
+        html = runtime.store.get_report(token)
+        if html is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        return html
 
     @application.post("/telegram/webhook")
     async def telegram_webhook(

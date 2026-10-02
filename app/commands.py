@@ -16,7 +16,9 @@ SYSTEM_PREAMBLE = (
     "Telegram renders Markdown. When you need the user to pick between a small set "
     "of options, end your message with one line exactly like `OPTIONS: first option | "
     "second option | third option` (max 8, each under 60 chars); the bridge turns it "
-    "into buttons. Never ask the user to open a UI; they only see your messages.\n\n"
+    "into buttons. For rich or long results (tables, charts, reports), attach a "
+    "self-contained .html file; the bridge serves it and adds an Open button. "
+    "Never ask the user to open a UI; they only see your messages.\n\n"
     "User message: "
 )
 
