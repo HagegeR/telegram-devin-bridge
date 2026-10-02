@@ -243,15 +243,32 @@ async def handle_command(
                 if runtime.queued_count(conv_key)
                 else ""
             )
-            await runtime.send_text(
-                message,
-                (
-                    f"<b>{escape(conversation.title)}</b>\n"
+
+            def head(title: str) -> str:
+                return (
+                    f"<b>{escape(title)}</b>\n"
                     f"Status: {escape(status)}\n"
                     f"Session: {escape(conversation.session_url)}"
                     f"{queued_line}"
-                    f"{_expandable(_status_details(conversation, state))}"
-                ),
+                )
+
+            # The HTML send path has no chunker, so keep the reply under
+            # Telegram's 4096 cap: drop the detail block first, then shrink
+            # the user-supplied title — removing a raw char removes at least
+            # one escaped char, so a single proportional cut always fits.
+            body = head(conversation.title)
+            if len(body) > 4000:
+                body = head(
+                    conversation.title[
+                        : max(1, len(conversation.title) - (len(body) - 3900))
+                    ]
+                )
+            details = _expandable(_status_details(conversation, state))
+            if len(body + details) <= 4000:
+                body += details
+            await runtime.send_text(
+                message,
+                body,
                 ephemeral=True,
                 html=True,
             )
@@ -435,14 +452,17 @@ async def _sessions(
         except Exception:  # noqa: BLE001
             status = "unknown"
         marker = "*" if conversation is not None and entry.session_id == conversation.session_id else " "
-        rows.append(f"{marker}{index}. {escape(entry.title)} — {escape(status)}")
+        title = entry.title if len(entry.title) <= 200 else entry.title[:200] + "…"
+        rows.append(f"{marker}{index}. {escape(title)} — {escape(status)}")
         details.append(f"{index}. {escape(entry.session_url)}")
+    # send_message's HTML path has no chunker: keep the rows under the
+    # 4096 cap (oldest entries drop first), then the details block only
+    # if it still fits.
+    while len(rows) > 1 and len("\n".join(rows)) > 3900:
+        rows.pop()
     body = "\n".join(rows)
-    with_details = body + _expandable(details)
-    # send_message's HTML path has no chunker: drop the block if it would
-    # overflow the 4096-char cap rather than split a tag mid-message.
-    if len(with_details) <= 4000:
-        body = with_details
+    if len(body + _expandable(details)) <= 4000:
+        body += _expandable(details)
     await runtime.send_text(message, body, ephemeral=True, html=True)
 
 

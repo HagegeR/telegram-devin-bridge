@@ -1601,6 +1601,96 @@ async def test_status_shows_v3_detail_acus_and_prs(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_commands_send_html_expandable_details(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "html.sqlite3"))
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="<b& title",
+    )
+    store.add_history(
+        conv_key="222",
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="<b& title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path, devin_org_id="org"), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+
+    async def state(_: str) -> SessionState:
+        return SessionState(
+            "suspended",
+            "title",
+            None,
+            [],
+            status_detail="inactivity",
+            acus_consumed=1.5,
+            pr_urls=("https://github.test/pr/1",),
+        )
+
+    runtime.get_state = state  # type: ignore[method-assign]
+    await handle_command(runtime, message("/status"), "/status")
+    item = telegram.sent[-1]
+    assert item.get("parse_mode") == "HTML"
+    text = str(item["text"])
+    assert "<b>&lt;b&amp; title</b>" in text
+    assert "<blockquote expandable>" in text
+    assert "id: <code>s1</code>" in text
+    assert "detail: inactivity" in text
+    assert "ACUs: 1.5" in text
+    assert "PR: https://github.test/pr/1" in text
+
+    await handle_command(runtime, message("/sessions"), "/sessions")
+    item = telegram.sent[-1]
+    assert item.get("parse_mode") == "HTML"
+    text = str(item["text"])
+    assert "&lt;b&amp; title" in text
+    assert "<blockquote expandable>" in text
+    assert "1. https://devin.test/s1" in text
+
+    async def consumption(*_: object, **__: object) -> dict[str, object]:
+        return {
+            "total_acus": 4.0,
+            "consumption_by_date": [{"date": "2025-09-19", "acus": 4.0}],
+        }
+
+    runtime.devin.session_consumption = consumption  # type: ignore[method-assign]
+    await runtime.usage(message("/usage"))
+    item = telegram.sent[-1]
+    assert item.get("parse_mode") == "HTML"
+    text = str(item["text"])
+    assert "Session ACUs: 4.00" in text
+    assert "<blockquote expandable>" in text
+    assert "2025-09-19 · 4.00" in text
+
+    await handle_command(runtime, message("/help"), "/help")
+    item = telegram.sent[-1]
+    assert item.get("parse_mode") == "HTML"
+    text = str(item["text"])
+    assert "<b>Sessions</b>" in text
+    assert "<blockquote expandable>" in text
+
+    # An oversized title must not make /status fail to reply: the details
+    # block is dropped and the title is proportionally truncated.
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="t" * 5000,
+    )
+    await handle_command(runtime, message("/status"), "/status")
+    text = str(telegram.sent[-1]["text"])
+    assert len(text) <= 4096
+    assert "Status:" in text
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_replacing_conversation_cancels_old_watcher(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "replace.sqlite3"))
     store.save_conversation(
