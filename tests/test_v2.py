@@ -6407,3 +6407,56 @@ async def test_html_attachment_served_as_report_link(tmp_path: Path, body: str) 
         assert (await client.get("/r/nope")).status_code == 404
     store.cleanup_reports(max_age_seconds=0)
     assert store.get_report(url.rsplit("/", 1)[-1]) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("base_url", ["http://localhost", None])
+async def test_notify_html_report(tmp_path: Path, base_url: str | None) -> None:
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    config = settings(
+        tmp_path, public_base_url=base_url, telegram_mode="webhook" if base_url else "polling"
+    )
+    app = create_app(config, store=store, devin=_FakeDevin(), telegram=telegram)  # type: ignore[arg-type]
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        bad = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={"text": "x", "chat_id": 222, "html": "<p>x</p>", "html_name": "evil.exe"},
+        )
+        assert bad.status_code == 400
+        ok = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={"text": "eod", "chat_id": 222, "html": "<p>hi</p>", "html_name": "eod.html"},
+        )
+        assert ok.json() == {"sent": 1}
+        too_big = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={"text": "x", "chat_id": 222, "html": "a" * (2 * 1024 * 1024 + 1)},
+        )
+        assert too_big.status_code == 413
+        empty = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={"text": "", "chat_id": 222, "html": "<p>e</p>", "silent": True},
+        )
+        assert empty.json() == {"sent": 1}
+        assert telegram.sent[-1]["text"] == "Report: report.html"
+        if base_url is None:
+            assert telegram.documents[-1]["disable_notification"] is True
+            telegram.documents.pop()
+            assert telegram.sent[-2]["reply_markup"] is None
+            assert [(d["filename"], d["content"]) for d in telegram.documents] == [
+                ("eod.html", b"<p>hi</p>")
+            ]
+            return
+        assert telegram.documents == []
+        markup = cast(dict[str, object], telegram.sent[-2]["reply_markup"])
+        button = cast(list[list[dict[str, str]]], markup["inline_keyboard"])[0][0]
+        assert button["text"] == "Open eod.html"
+        response = await client.get(button["url"].replace(base_url, ""))
+        assert response.status_code == 200
+        assert response.content == b"<p>hi</p>"

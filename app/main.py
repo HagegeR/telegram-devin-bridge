@@ -2014,6 +2014,8 @@ class Bridge:
         thread_id: int | None,
         silent: bool,
         markdown: bool,
+        html: str | None = None,
+        html_name: str = "report.html",
     ) -> int:
         target_chat = chat_id
         target_thread = thread_id
@@ -2029,17 +2031,42 @@ class Bridge:
                 target_thread = int(stored_thread)
         if target_chat is None:
             raise ValueError("No notification target configured")
+        if html is not None and not text.strip():
+            text, markdown = f"Report: {html_name}", False
         rendered = markdown_to_telegram_markdown_v2(text) if markdown else text
+        markup: dict[str, object] | None = None
+        if html is not None and self.settings.public_base_url:
+            token = secrets.token_urlsafe(16)
+            self.store.add_report(
+                token,
+                f"notify:{target_chat}",
+                target_chat,
+                html.encode("utf-8"),
+                "text/html; charset=utf-8",
+            )
+            url = f"{self.settings.public_base_url.rstrip('/')}/r/{token}"
+            markup = {"inline_keyboard": [[{"text": f"Open {html_name}", "url": url}]]}
+        parts = chunk(rendered)
         sent = 0
-        for part in chunk(rendered):
+        for index, part in enumerate(parts):
             await self.telegram.send_message(
                 target_chat,
                 part,
                 thread_id=target_thread,
                 parse_mode="MarkdownV2" if markdown else None,
                 disable_notification=silent,
+                reply_markup=markup if index == len(parts) - 1 else None,
             )
             sent += 1
+        if html is not None and markup is None:
+            await self.telegram.send_document(
+                target_chat,
+                html_name,
+                html.encode("utf-8"),
+                thread_id=target_thread,
+                content_type="text/html",
+                disable_notification=silent,
+            )
         return sent
 
     async def _is_finished(self, session_id: str) -> bool:

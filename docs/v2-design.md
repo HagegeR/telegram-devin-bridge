@@ -87,7 +87,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 - Unknown `/cmd` – "Unknown command; /help".
 
 ### `/notify` (notify.py)
-`POST /notify` with `Authorization: Bearer <NOTIFY_SECRET>` (403 otherwise; if `NOTIFY_SECRET` unset, route returns 404). JSON `{text: str, chat_id?: int, thread_id?: int, silent?: bool, markdown?: bool=true}`. Target = provided chat or `settings.home_*` or `TELEGRAM_HOME_CHANNEL` env; 400 if none. Chunk + format like normal messages. Returns `{sent: N}`.
+`POST /notify` with `Authorization: Bearer <NOTIFY_SECRET>` (403 otherwise; if `NOTIFY_SECRET` unset, route returns 404). JSON `{text: str, chat_id?: int, thread_id?: int, silent?: bool, markdown?: bool=true, html?: str, html_name?: str="report.html"}`. `html` is stored as a report and linked with an `Open` URL button when `PUBLIC_BASE_URL` is set, otherwise sent as a document. Target = provided chat or `settings.home_*` or `TELEGRAM_HOME_CHANNEL` env; 400 if none. Chunk + format like normal messages. Returns `{sent: N}`.
 
 ### Env (config.py) – add:
 `TELEGRAM_ALLOWED_USERS` (csv ints), `TELEGRAM_ALLOW_ALL_USERS` (bool, default false), `TELEGRAM_FREE_RESPONSE_CHATS` (csv), `TELEGRAM_HOME_CHANNEL` (int|None), `TELEGRAM_NOTIFICATION_MODE` (`all|important`, default `important`), `TELEGRAM_RICH_MESSAGES` (bool, default true), `TELEGRAM_DRAFTS` (bool, default false), `NOTIFY_SECRET` (str|None), `DEVIN_WATCH_TIMEOUT_SECONDS` (1800), `DEVIN_POLL_SECONDS` (3), `BOT_USERNAME` (optional; if unset call `getMe` at startup). Keep existing ones; `DEVIN_REPLY_TIMEOUT_SECONDS` is removed.

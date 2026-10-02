@@ -8,6 +8,12 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- `POST /notify` accepts `html` (+ `html_name`) and delivers it as an
+  `Open <name>` report button (`/r/<token>`), or as a document when
+  `PUBLIC_BASE_URL` is unset.
+
 ### Changed
 
 - `/status` now shows the v3 `status_detail` reason (idle timeout, paused

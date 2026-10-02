@@ -1070,10 +1070,13 @@ class TelegramClient:
         caption: str | None = None,
         reply_to: int | None = None,
         content_type: str = "text/markdown",
+        disable_notification: bool = False,
     ) -> dict[str, object]:
         data: dict[str, str] = {"chat_id": str(chat_id)}
         if thread_id is not None:
             data["message_thread_id"] = str(thread_id)
+        if disable_notification:
+            data["disable_notification"] = "true"
         if caption is not None:
             data["caption"] = cast(str, _caption(caption))
         if reply_to is not None:

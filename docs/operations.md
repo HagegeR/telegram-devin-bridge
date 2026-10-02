@@ -28,6 +28,11 @@ curl -X POST http://localhost:8000/notify \
 The target is `chat_id`/`thread_id` in the request, the `/sethome` target, or
 `TELEGRAM_HOME_CHANNEL`. Set `markdown` to `false` for plain text.
 
+Add `html` (a self-contained HTML page as a string, optional `html_name`
+ending in `.html`) to attach a report: with `PUBLIC_BASE_URL` set the last
+message gets an `Open <html_name>` button pointing at `/r/<token>` (kept 30
+days); without it the page is sent as a document.
+
 ### `/doctor`
 
 `GET /doctor` requires `DOCTOR_SECRET` (Bearer auth, separate from
