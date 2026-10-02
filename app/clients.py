@@ -93,7 +93,7 @@ class SessionState:
     structured_output: object | None = None
     updated_at: str | None = None
     # v3-only detail: suspend/wait reason, ACU burn, every PR the session
-    # opened (pr_url keeps the first for single-link consumers).
+    # opened (pr_url keeps the last for the watcher's new-PR announce).
     status_detail: str | None = None
     acus_consumed: float | None = None
     pr_urls: tuple[str, ...] = ()
@@ -461,7 +461,9 @@ class DevinClient:
                 payload.get("status"), payload.get("status_detail")
             ),
             title=self._optional_str(payload.get("title")) or "",
-            pr_url=pr_urls[0] if pr_urls else None,
+            # keep pr_url on the LAST entry: the watcher announces a PR by
+            # diffing it, so a newly appended PR must change the value
+            pr_url=pr_urls[-1] if pr_urls else None,
             messages=messages,
             structured_output=payload.get("structured_output"),
             updated_at=_iso_epoch(payload.get("updated_at")),

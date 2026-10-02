@@ -30,14 +30,13 @@ _STATUS_LABELS = {
     "expired": "⚠ expired",
 }
 
-# v3 status_detail rendered as a suffix when it adds information the
-# coarse label doesn't already carry ("working" is implied by ⏳).
+# v3 status_detail rendered as a suffix only when it adds information the
+# coarse label doesn't already carry ("working"/"waiting_for_user"/
+# "finished" are implied by their labels).
 _STATUS_DETAIL = {
-    "waiting_for_user": "your reply",
     "waiting_for_approval": "approval",
     "inactivity": "idle timeout",
     "user_request": "paused on request",
-    "finished": "finished",
 }
 
 
