@@ -18,6 +18,7 @@ from typing import cast
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import Response
 
 from app.access import (
     is_allowed,
@@ -186,6 +187,7 @@ class Bridge:
             self.settings.telegram_allow_all_users,
         )
         self.store.cleanup_long_texts()
+        self.store.cleanup_reports()
         self.store.cleanup_message_index()
         self.approved_users = {
             request.user_id
@@ -751,6 +753,7 @@ class Bridge:
                         self.implicit_topics.pop(key, None)
                 self.store.cleanup_message_index()
                 self.store.cleanup_long_texts()
+                self.store.cleanup_reports()
             except Exception:
                 logger.exception("Janitor sweep failed")
 
@@ -2285,6 +2288,18 @@ def create_app(
     @application.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @application.get("/r/{token}")
+    async def report(token: str) -> Response:
+        stored = runtime.store.get_report(token)
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Not found")
+        content, content_type = stored
+        return Response(
+            content,
+            media_type=content_type,
+            headers={"Content-Security-Policy": "sandbox allow-scripts"},
+        )
 
     @application.post("/telegram/webhook")
     async def telegram_webhook(

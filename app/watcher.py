@@ -8,6 +8,7 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
+from typing import cast
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -49,6 +50,17 @@ FINISH_NOTICES = {
     "expired": "⚠ Session expired",
     "suspended": "💤 Session suspended — send a message to resume",
 }
+
+
+def _prepend_buttons(
+    markup: dict[str, object] | None, buttons: list[dict[str, str]]
+) -> dict[str, object] | None:
+    if not buttons:
+        return markup
+    rows: list[object] = []
+    if markup is not None and isinstance(markup.get("inline_keyboard"), list):
+        rows = cast(list[object], markup["inline_keyboard"])
+    return {"inline_keyboard": [[button] for button in buttons] + rows}
 
 
 class SessionWatcher:
@@ -527,6 +539,7 @@ class SessionWatcher:
         downloads = await asyncio.gather(
             *(self.devin.download_attachment(url) for url in attachment_urls)
         )
+        report_buttons: list[dict[str, str]] = []
         for url, downloaded in zip(attachment_urls, downloads, strict=True):
             if downloaded is None:
                 if url in metadata_urls and url not in body:
@@ -534,6 +547,23 @@ class SessionWatcher:
                 continue
             content, content_type = downloaded
             filename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+            if content_type.startswith("text/html") and self.settings.public_base_url:
+                token = secrets.token_urlsafe(16)
+                self.store.add_report(
+                    token,
+                    self.conversation.conv_key,
+                    self.conversation.chat_id,
+                    content,
+                    content_type,
+                )
+                report_buttons.append({
+                    "text": f"Open {filename}",
+                    "url": f"{self.settings.public_base_url.rstrip('/')}/r/{token}",
+                })
+                body = body.replace(f"\n{url}\n", "\n")
+                if body == url:
+                    body = ""
+                continue
             try:
                 if (
                     content_type.startswith("image/")
@@ -608,6 +638,8 @@ class SessionWatcher:
                 f"\n\n🔗 PR #{number} · {title} · {status} · "
                 f"+{additions} −{deletions} · {base_name}←{head_name}"
             )
+        if not body.strip() and report_buttons:
+            body = "Report ready:"
         if not body.strip() and not options:
             return
         markup: dict[str, object] | None = None
@@ -660,6 +692,7 @@ class SessionWatcher:
                 self.conversation.chat_id,
                 body[:500],
                 thread_id=self.conversation.thread_id,
+                reply_markup=_prepend_buttons(None, report_buttons),
                 disable_notification=(
                     self.silent
                     or (
@@ -689,6 +722,7 @@ class SessionWatcher:
                         }
                     ]]
                 }
+        markup = _prepend_buttons(markup, report_buttons)
         delivery_kwargs: dict[str, object] = {
             "thread_id": self.conversation.thread_id,
             "reply_markup": markup,

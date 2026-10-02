@@ -177,6 +177,14 @@ class Store:
                     text TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS reports (
+                    token TEXT PRIMARY KEY,
+                    conv_key TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    content BLOB NOT NULL,
+                    content_type TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -972,6 +980,38 @@ class Store:
         with self.lock, self.connection:
             self.connection.execute(
                 "DELETE FROM long_texts WHERE created_at < ?",
+                (time.time() - max_age_seconds,),
+            )
+
+    def add_report(
+        self,
+        token: str,
+        conv_key: str,
+        chat_id: int,
+        content: bytes,
+        content_type: str,
+    ) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO reports(
+                    token, conv_key, chat_id, content, content_type, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (token, conv_key, chat_id, content, content_type, time.time()),
+            )
+
+    def get_report(self, token: str) -> tuple[bytes, str] | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT content, content_type FROM reports WHERE token = ?", (token,)
+            ).fetchone()
+        return None if row is None else (bytes(row["content"]), str(row["content_type"]))
+
+    def cleanup_reports(self, max_age_seconds: float = 30 * 86400) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM reports WHERE created_at < ?",
                 (time.time() - max_age_seconds,),
             )
 

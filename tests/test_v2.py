@@ -6312,3 +6312,56 @@ async def test_watcher_finish_reaction_failure_is_not_reported_as_devin_error(
     ).run()
     texts = [item["text"] for item in telegram.sent]
     assert not any("Couldn't reach Devin" in text for text in texts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", ["Report\nOPTIONS: Yes | No", "", "x" * 20000])
+async def test_html_attachment_served_as_report_link(tmp_path: Path, body: str) -> None:
+    class HtmlDevin(_FakeDevin):
+        async def download_attachment(self, _url: str) -> tuple[bytes, str] | None:
+            return b"<h1>caf\xe9</h1>", "text/html; charset=iso-8859-1"
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None, session_id="s1",
+        session_url="https://devin.test/s1", title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    watcher = SessionWatcher(
+        conversation, store, HtmlDevin(), telegram, settings(tmp_path)
+    )
+    await watcher._deliver(
+        DevinMessage(
+            "devin_message",
+            "html",
+            f"{body}\n"
+            'ATTACHMENT:{"url":"https://app.devin.ai/attachments/1/report.html","fileSize":5}',
+            None,
+        ),
+        SessionState("finished", "title", None, []),
+    )
+    assert [doc["filename"] for doc in telegram.documents] == (
+        ["reply.md"] if len(body) > 4 * 3500 else []
+    )
+    markup = cast(dict[str, object], telegram.sent[-1]["reply_markup"])
+    keyboard = cast(list[list[dict[str, str]]], markup["inline_keyboard"])
+    assert len(keyboard) == (3 if "OPTIONS" in body else 1)
+    assert keyboard[0][0]["text"] == "Open report.html"
+    url = keyboard[0][0]["url"]
+    assert url.startswith("http://localhost/r/")
+    if not body:
+        assert telegram.sent[-1]["text"] == "Report ready:"
+
+    app = create_app(settings(tmp_path), store=store, devin=HtmlDevin(), telegram=telegram)  # type: ignore[arg-type]
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(url.replace("http://localhost", ""))
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "text/html; charset=iso-8859-1"
+        assert response.headers["content-security-policy"] == "sandbox allow-scripts"
+        assert response.content == b"<h1>caf\xe9</h1>"
+        assert (await client.get("/r/nope")).status_code == 404
+    store.cleanup_reports(max_age_seconds=0)
+    assert store.get_report(url.rsplit("/", 1)[-1]) is None
