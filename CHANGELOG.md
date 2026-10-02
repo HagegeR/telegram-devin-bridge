@@ -11,8 +11,9 @@ and deployment update channels.
 ### Changed
 
 - `/status` now shows the v3 `status_detail` reason (idle timeout, paused
-  on request, waiting on your reply/approval), live `ACUs` consumed, and
-  every PR the session opened instead of only the first.
+  on request, waiting on your reply/approval), `ACUs` consumed when the
+  API reports non-zero usage, and every PR the session opened instead
+  of only the first.
 
 ## [v1.2.0] - 2026-10-01
 
