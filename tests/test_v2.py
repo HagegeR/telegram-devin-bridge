@@ -1590,6 +1590,13 @@ async def test_status_shows_v3_detail_acus_and_prs(tmp_path: Path) -> None:
     assert "ACUs: 3.25" in text
     assert "PR: https://github.test/pr/1" in text
     assert "PR: https://github.test/pr/2" in text
+
+    async def zero_acu_state(_: str) -> SessionState:
+        return SessionState("working", "title", None, [], acus_consumed=0.0)
+
+    runtime.get_state = zero_acu_state  # type: ignore[method-assign]
+    await handle_command(runtime, message("/status"), "/status")
+    assert "ACUs" not in str(telegram.sent[-1]["text"])
     await runtime.shutdown()
 
 
