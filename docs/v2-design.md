@@ -1,5 +1,12 @@
 # Bridge v2 design (lead-authored; implementation brief)
 
+> **Status note (v1.2.0+):** the deployed key is now a **v3 service key** — the
+> "v1 only" facts below are historical. `DevinClient` talks v3 (`/v3/...`) and
+> transparently falls back to v1 when the key is old; v3-only features
+> (devin_mode, repos, `status_detail`, `acus_consumed`, structured blocks)
+> degrade quietly on v1 deployments. `devin.py`/`telegram.py` are re-export
+> shims — both clients live in `clients.py`.
+
 ## Grounded API facts (verified against api.devin.ai with the deployed key)
 
 The key is a **v1** key; every `/v3/...` call returns 403. Use only:

@@ -13,6 +13,12 @@ and deployment update channels.
 - `POST /notify` accepts `html` (+ `html_name`) and delivers it as an
   `Open <name>` report button (`/r/<token>`), or as a document when
   `PUBLIC_BASE_URL` is unset.
+- `AGENTS.md` — agent-facing orientation: module map, test/lint commands, and
+  the invariants that bite (marker surface ↔ preamble ↔ design doc sync,
+  MarkdownV2 expandable-quote rules, v1/v3 degradation).
+- `docs/v2-design.md` — status note clarifying the deployment is now on a v3
+  service key and that `devin.py`/`telegram.py` are re-export shims for
+  `clients.py` (the "v1 only" facts are historical).
 
 ### Fixed
 
