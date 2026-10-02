@@ -297,3 +297,101 @@ def rich_text_code(text: str) -> dict[str, object]:
 
 def rich_text_link(text: str, url: str) -> dict[str, object]:
     return {"type": "url", "text": text, "url": url}
+
+
+_SEGMENT_END = re.compile(r"^END\s+(DETAILS|TABLE)\s*$", re.IGNORECASE)
+_TABLE_SEPARATOR = re.compile(r":?-+:?")
+
+
+def parse_rich_segments(text: str) -> list[dict[str, object]] | None:
+    """Split reply text on ``TABLE:``/``DETAILS:`` markers into ordered segments.
+
+    Returns ``None`` when no marker is present so callers keep the plain
+    send path. Each segment is ``{"markdown": str}`` or
+    ``{"blocks": [...], "fallback": str}`` — fallback is marker-free text
+    for deployments where rich messages are unavailable.
+    """
+    lines = text.split("\n")
+    segments: list[dict[str, object]] = []
+    plain: list[str] = []
+    found = False
+    index = 0
+
+    def flush() -> None:
+        while plain and not plain[0].strip():
+            plain.pop(0)
+        while plain and not plain[-1].strip():
+            plain.pop()
+        if plain:
+            segments.append({"markdown": "\n".join(plain)})
+            plain.clear()
+
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped == "TABLE:":
+            index += 1
+            raw: list[str] = []
+            while index < len(lines) and _is_pipe_table_line(lines[index]):
+                raw.append(lines[index])
+                index += 1
+            if index < len(lines) and _SEGMENT_END.match(lines[index].strip()):
+                index += 1
+            cells: list[list[dict[str, object]]] = []
+            for row in raw:
+                values = [cell.strip() for cell in row.strip().strip("|").split("|")]
+                if all(_TABLE_SEPARATOR.fullmatch(cell) for cell in values):
+                    continue
+                cells.append(
+                    [{"text": value, "is_header": not cells} for value in values]
+                )
+            if cells:
+                found = True
+                flush()
+                segments.append(
+                    {
+                        "blocks": [
+                            {
+                                "type": "table",
+                                "is_compact": True,
+                                "is_striped": True,
+                                "cells": cells,
+                            }
+                        ],
+                        "fallback": "\n".join(raw),
+                    }
+                )
+            else:
+                plain.append("TABLE:")
+                plain.extend(raw)
+            continue
+        if stripped.startswith("DETAILS:"):
+            summary = stripped[len("DETAILS:") :].strip() or "Details"
+            index += 1
+            raw = []
+            while index < len(lines) and not _SEGMENT_END.match(lines[index].strip()):
+                raw.append(lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1  # skip the END DETAILS line
+            if any(row.strip() for row in raw):
+                found = True
+                flush()
+                segments.append(
+                    {
+                        "blocks": [
+                            rich_details(
+                                summary,
+                                [rich_paragraph(row) for row in raw if row.strip()],
+                            )
+                        ],
+                        "fallback": "\n".join([summary, *raw]),
+                    }
+                )
+            else:
+                plain.extend(raw)
+            continue
+        plain.append(lines[index])
+        index += 1
+    if found:
+        flush()
+    return segments if found else None

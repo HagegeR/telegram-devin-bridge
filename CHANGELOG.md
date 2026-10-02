@@ -33,6 +33,13 @@ and deployment update channels.
 - `/help`, `/status`, `/sessions`, `/repos`, and `/lang` are registered
   with `is_ephemeral`, so their invocations and replies stay private in
   group chats.
+- Devin replies can emit two structured markers: `TABLE:` + `| col |`
+  pipe rows + `END TABLE` renders a native rich-message table, and
+  `DETAILS: <summary>` + lines + `END DETAILS` renders a tap-to-expand
+  `details` block; the session preamble now documents both plus the
+  expandable-quote syntax. Marker-free text around them keeps the
+  normal Markdown path, and unsupported deployments get marker-free
+  fallback text.
 
 ## [v1.2.0] - 2026-10-01
 
