@@ -15,7 +15,7 @@ required.
 | `TELEGRAM_BOT_TOKEN` | yes | — | From @BotFather. Use a dedicated token — sharing one with another consumer conflicts. |
 | `TELEGRAM_MODE` | no | `webhook` | `webhook` or `polling`. |
 | `TELEGRAM_WEBHOOK_SECRET` | webhook | — | Random token (`openssl rand -hex 32`); verified via the `X-Telegram-Bot-Api-Secret-Token` header. |
-| `PUBLIC_BASE_URL` | webhook | — | Public HTTPS base URL routed to port 8000. |
+| `PUBLIC_BASE_URL` | webhook | — | Public HTTPS base URL routed to port 8000. Also enables HTML report links (`/r/<token>`) in polling mode. |
 | `DATABASE_PATH` | no | `./bridge.sqlite3` | Use an absolute path in production; `/data/bridge.sqlite3` on Fly. |
 | `BOT_USERNAME` | no | fetched from Telegram at startup | Set to skip the `getMe` call. |
 
