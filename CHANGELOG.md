@@ -33,6 +33,17 @@ and deployment update channels.
   stores a pending title and replies immediately; the next message you send
   starts the session with that title.
 
+### Fixed
+
+- Devin replies emitted before your new message was forwarded (leftovers
+  of the previous turn that the prior watcher never delivered) are now
+  delivered unattributed: they no longer thread as the answer to your
+  message and no longer mark the turn answered, which previously made the
+  bridge close the turn instantly and orphan the real reply until your
+  next message. Watchers triggered on a `finished`/`expired` session also
+  wait out the settle window before closing so an in-flight resume can
+  register.
+
 ## [v1.1.0] - 2026-09-23
 
 ### Added

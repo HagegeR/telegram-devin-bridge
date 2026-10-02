@@ -99,6 +99,16 @@ class SessionWatcher:
         )
         self.silent = silent
         self.resume_from = resume_from
+        # Messages emitted before the trigger was set belong to the previous
+        # turn: they are delivered but must not be attributed to (or close)
+        # this one. Only meaningful when the session already has delivered
+        # history (a last_event_id marker).
+        self.trigger_at = (
+            time.time()
+            if trigger_message_id is not None
+            and conversation.last_event_id is not None
+            else None
+        )
         self.draft_id = secrets.randbelow(2**31 - 1) + 1
         self.status_message_id: int | None = None
         self.last_status_text: str | None = None
@@ -116,6 +126,7 @@ class SessionWatcher:
 
     def set_trigger(self, message_id: int) -> None:
         self.trigger_message_id = message_id
+        self.trigger_at = time.time()
         self.delivered = False
         self.started_at = self.clock()
         self.generation += 1
@@ -206,16 +217,21 @@ class SessionWatcher:
                     )
                 delivery_delivered = turn_delivered
                 for message in new_messages:
-                    if not delivery_delivered:
+                    stale = self._pre_trigger(message)
+                    if not delivery_delivered and not stale:
                         await self._cleanup_transients()
                     await self._deliver(
                         message,
                         state,
                         reply_to_message_id=(
-                            turn_trigger if not delivery_delivered else None
+                            turn_trigger
+                            if not delivery_delivered and not stale
+                            else None
                         ),
                     )
-                    delivery_delivered = True
+                    if not stale:
+                        delivery_delivered = True
+                        self.delivered = True
                     if message.event_id is not None:
                         last_event_id = message.event_id
                         self.conversation = replace(
@@ -227,7 +243,6 @@ class SessionWatcher:
                             self.conversation.session_id,
                             last_event_id=message.event_id,
                         )
-                    self.delivered = True
                     self.delivered_count += 1
                 if status_changed and self.on_status_change is not None:
                     await self.on_status_change(state.status_enum)
@@ -252,7 +267,17 @@ class SessionWatcher:
                     title_retries_after_finish -= 1
                     await self.sleep(max(interval, 0.001))
                     continue
-                if state.status_enum in {"expired", "finished"}:
+                settled = (
+                    self.clock() - self.started_at
+                    >= self.settings.devin_settle_seconds
+                )
+                # A user-triggered watcher on a session with delivered history
+                # may be watching a resume still in flight: hold the close
+                # until a post-trigger reply lands or the settle window
+                # expires. Other watchers close as before.
+                if state.status_enum in {"expired", "finished"} and (
+                    self.trigger_at is None or self.delivered or settled
+                ):
                     await self._cleanup_transients()
                     if self.generation != gen:
                         await self.sleep(interval)
@@ -265,10 +290,6 @@ class SessionWatcher:
                         continue
                     return
                 if state.status_enum not in ACTIVE_STATUSES:
-                    settled = (
-                        self.clock() - self.started_at
-                        >= self.settings.devin_settle_seconds
-                    )
                     if self.delivered or settled:
                         await self._cleanup_transients()
                         if self.generation != gen:
@@ -781,20 +802,33 @@ class SessionWatcher:
             if self._recent(message.timestamp, wall_started_at)
         ]
 
+    def _pre_trigger(self, message: DevinMessage) -> bool:
+        # True when the message was emitted before the current trigger was
+        # set, i.e. it answers an earlier turn, not this one.
+        if self.trigger_at is None:
+            return False
+        value = self._message_ts(message.timestamp)
+        return value is not None and value < self.trigger_at - 5
+
     @staticmethod
-    def _recent(timestamp: str | None, wall_started_at: float) -> bool:
+    def _message_ts(timestamp: str | None) -> float | None:
         if timestamp is None:
-            return True
+            return None
         try:
-            value = float(timestamp)
+            return float(timestamp)
         except ValueError:
-            try:
-                value = datetime.datetime.fromisoformat(
-                    timestamp.replace("Z", "+00:00")
-                ).timestamp()
-            except ValueError:
-                return True
-        return value >= wall_started_at - 5
+            pass
+        try:
+            return datetime.datetime.fromisoformat(
+                timestamp.replace("Z", "+00:00")
+            ).timestamp()
+        except ValueError:
+            return None
+
+    @classmethod
+    def _recent(cls, timestamp: str | None, wall_started_at: float) -> bool:
+        value = cls._message_ts(timestamp)
+        return value is None or value >= wall_started_at - 5
 
     async def _send_finish_notice(self, status: str) -> None:
         try:
