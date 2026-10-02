@@ -8,6 +8,14 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- `SUGGEST:` reply marker — `SUGGEST: <what> — <why>` … `END SUGGEST` renders
+  a 💡 suggestion card (native `details` block, plain-text fallback) for
+  proposing skills, knowledge entries, or environment changes; paired with
+  `OPTIONS:` the session gets a complete propose → approve loop in-chat.
+  Markers inside its body stay literal, like `DETAILS:`.
+
 ## [v1.3.0] - 2026-10-02
 
 ### Added

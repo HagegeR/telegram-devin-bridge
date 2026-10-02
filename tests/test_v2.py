@@ -6693,6 +6693,41 @@ def test_parse_rich_segments_unterminated_details() -> None:
     assert segments[0]["blocks"][0]["summary"] == "open"
 
 
+def test_parse_rich_segments_suggest() -> None:
+    segments = parse_rich_segments(
+        "Heads up\nSUGGEST: knowledge — bridge quirks\nthe why\nmore detail\n"
+        "END SUGGEST\nTail"
+    )
+    assert segments is not None
+    assert ["markdown" in s for s in segments] == [True, False, True]
+    block = segments[1]["blocks"][0]
+    assert block["type"] == "details"
+    assert block["summary"] == "💡 knowledge — bridge quirks"
+    assert [b["text"] for b in block["blocks"]] == ["the why", "more detail"]
+    assert segments[1]["fallback"] == (
+        "💡 knowledge — bridge quirks\nthe why\nmore detail"
+    )
+
+    # Markers inside a fence stay literal.
+    assert (
+        parse_rich_segments("```\nSUGGEST: x\nbody\nEND SUGGEST\n```") is None
+    )
+
+    # A mismatched closer stays content; only END SUGGEST ends the section.
+    segments = parse_rich_segments(
+        "SUGGEST: x\nfirst\nEND DETAILS\nsecond\nEND SUGGEST"
+    )
+    assert segments is not None
+    assert [
+        b["text"] for b in segments[0]["blocks"][0]["blocks"]
+    ] == ["first", "END DETAILS", "second"]
+
+    # An empty suggestion keeps its marker as plain text — with no block
+    # produced, the reply takes the plain send path entirely (same as
+    # a lone empty DETAILS:).
+    assert parse_rich_segments("SUGGEST: x\nEND SUGGEST\nkeep") is None
+
+
 def test_parse_rich_segments_edge_cases() -> None:
     # Markers inside a code fence are literal text, not live markers.
     assert parse_rich_segments("```\nTABLE:\n| A |\nEND TABLE\n```") is None
@@ -6841,6 +6876,13 @@ def test_extract_controls() -> None:
     )
     assert controls == {}
     assert "PIN:" in body and "URGENT:" in body
+
+    # Same inside a SUGGEST: body — a quoted marker must not trigger.
+    body, controls = extract_controls(
+        "SUGGEST: skill — marker docs\nPIN:\nEND SUGGEST\ndone"
+    )
+    assert controls == {}
+    assert "PIN:" in body
 
     # Polls outside Telegram's limits stay text instead of silently failing.
     body, controls = extract_controls("POLL: " + "q" * 301 + " | a | b")
@@ -7023,6 +7065,7 @@ def test_preamble_documents_every_marker() -> None:
         "||spoiler||",
         "DETAILS:",
         "TABLE:",
+        "SUGGEST:",
         "REACT:",
         "PIN:",
         "URGENT:",
