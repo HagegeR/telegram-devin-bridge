@@ -17,11 +17,15 @@ and deployment update channels.
 ### Fixed
 
 - Expandable quotes (`**>` … `||`) in Devin replies now render as real
-  collapsible blocks: a `||` on its own line is glued to the last quote
-  line (Telegram requires the closer at the end of the line), a trailing
-  spoiler is not mistaken for the closer, such replies bypass
-  `sendRichMessage` (whose markdown cannot render them), and a quote
-  that crosses a message split is closed and reopened at the boundary.
+  collapsible blocks: every continuation line gets a `>` prefix (a bare
+  line ends the quote and Telegram rejects the message), a `||` on its
+  own line is glued to the last quote line (Telegram requires the closer
+  at the end of the line), a trailing spoiler is not mistaken for the
+  closer, such replies bypass `sendRichMessage` (whose markdown cannot
+  render them), and a quote that crosses a message split is closed and
+  reopened at the boundary.
+- `REACT:` with an emoji outside Telegram's fixed reaction set no longer
+  fails silently — the reaction degrades to 👍.
 - The `🔗 PR` status card is no longer appended to every reply once the
   session has a PR — it now only appears when the reply links a PR.
 

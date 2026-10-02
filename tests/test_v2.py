@@ -6996,10 +6996,12 @@ def test_markdown_v2_spoiler_and_expandable_quote() -> None:
 
 def test_markdown_v2_expandable_quote_closer_line() -> None:
     # Telegram closes the quote with || at the end of the last line, so a
-    # standalone '||' line is glued onto the previous content line.
+    # standalone '||' line is glued onto the previous content line, and
+    # every continuation line carries its own '>' prefix (a bare line
+    # would end the quote and turn the || into an unclosed spoiler).
     assert markdown_to_telegram_markdown_v2(
         "**>Tap to expand\nsecond line\n||"
-    ) == "**>Tap to expand\nsecond line||"
+    ) == "**>Tap to expand\n>second line||"
     # Single-line form.
     assert (
         markdown_to_telegram_markdown_v2("**>one liner||")
@@ -7008,7 +7010,7 @@ def test_markdown_v2_expandable_quote_closer_line() -> None:
     # A spoiler line inside a quote is content, not the closer.
     assert markdown_to_telegram_markdown_v2(
         "**>q\n||hidden||\nlast||"
-    ) == "**>q\n||hidden||\nlast||"
+    ) == "**>q\n>||hidden||\n>last||"
     # Outside a quote a '||' line stays literal.
     assert markdown_to_telegram_markdown_v2("a\n||") == "a\n||"
 
@@ -7021,7 +7023,7 @@ def test_markdown_v2_expandable_quote_trailing_spoiler() -> None:
     # Same ambiguity on a continuation line.
     assert markdown_to_telegram_markdown_v2(
         "**>q\ntext ||spoiler||\nlast||"
-    ) == "**>q\ntext ||spoiler||\nlast||"
+    ) == "**>q\n>text ||spoiler||\n>last||"
 
 
 def test_has_expandable_quote_ignores_fences_and_inline() -> None:
@@ -7062,6 +7064,32 @@ async def test_send_markdown_expandable_quote_skips_rich() -> None:
     # sendMessage/MarkdownV2.
     await client.send_markdown(222, "**>expand me\nbody||")
     assert calls == ["/botfake/sendMessage"]
+
+
+@pytest.mark.asyncio
+async def test_react_falls_back_to_thumbs_up_on_invalid_emoji() -> None:
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        emoji = json.loads(request.content)["reaction"][0]["emoji"]
+        calls.append(emoji)
+        if emoji == "\U0001f3ac":
+            return httpx.Response(
+                400,
+                json={
+                    "ok": False,
+                    "description": "Bad Request: REACTION_INVALID",
+                },
+            )
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    client = TelegramClient(
+        "token-placeholder",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await client.react(222, 5, "\U0001f3ac") is True
+    assert calls == ["\U0001f3ac", "\U0001f44d"]
 
 
 @pytest.mark.asyncio

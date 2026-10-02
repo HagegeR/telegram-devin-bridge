@@ -139,16 +139,25 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
                 result.append("||")
             in_expandable = False
             continue
-        # A line ending in || inside an expandable quote is the closer —
-        # unless the || pairs a spoiler on the same line (odd count left).
-        quote_close = (
-            in_expandable
-            and line.rstrip().endswith("||")
-            and not line.lstrip().startswith("||")
-            and line.rstrip()[:-2].count("||") % 2 == 0
-        )
-        if quote_close:
-            line = line.rstrip()[:-2]
+        if in_expandable:
+            # Every continuation line of an expandable quote needs its own
+            # '>' prefix: a bare line ends the quote in Telegram's parser,
+            # and a trailing '||' then reads as an unclosed spoiler.
+            # A line ending in || is the closer — unless the || pairs a
+            # spoiler on the same line (odd count left).
+            closer = (
+                line.rstrip().endswith("||")
+                and not line.lstrip().startswith("||")
+                and line.rstrip()[:-2].count("||") % 2 == 0
+            )
+            body = line.rstrip()[:-2].rstrip() if closer else line
+            content = body.lstrip()
+            if content.startswith(">"):
+                content = content[1:].lstrip()
+            result.append(">" + _inline(content) + ("||" if closer else ""))
+            if closer:
+                in_expandable = False
+            continue
         if line.startswith("#"):
             result.append(f"*{_escape(line.lstrip('#').strip())}*")
         elif line.startswith(">"):
@@ -163,9 +172,6 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
             result.append("||")
         else:
             result.append(_inline(line))
-        if quote_close:
-            result[-1] += "||"
-            in_expandable = False
     if in_fence:
         result.append("```")
     return "\n".join(result)
