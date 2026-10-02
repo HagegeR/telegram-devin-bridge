@@ -15,6 +15,7 @@ import httpx
 
 from app.formatting import (
     chunk,
+    has_expandable_quote,
     markdown_to_telegram_markdown_v2,
     normalize_rich_linebreaks,
 )
@@ -874,7 +875,13 @@ class TelegramClient:
         disable_notification: bool = False,
         receiver_user_id: int | None = None,
     ) -> list[dict[str, object]]:
-        if self.rich_enabled and 0 < len(text) <= 32768:
+        # Rich markdown can't render expandable quotes (**>): send them
+        # through the MarkdownV2 path instead.
+        if (
+            self.rich_enabled
+            and 0 < len(text) <= 32768
+            and not has_expandable_quote(text)
+        ):
             try:
                 return [
                     await self.send_rich_message(
