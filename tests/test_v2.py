@@ -3915,6 +3915,7 @@ async def test_watcher_pre_trigger_reply_not_attributed(tmp_path: Path) -> None:
         telegram,  # type: ignore[arg-type]
         settings(tmp_path, devin_watch_timeout_seconds=10),
         trigger_message_id=9,
+        trigger_at=time.time(),
     ).run()
     texts = [item["text"] for item in telegram.sent]
     stale_index = texts.index("old reply")
@@ -3968,6 +3969,7 @@ async def test_watcher_survives_stale_only_close(
         telegram,  # type: ignore[arg-type]
         settings(tmp_path, devin_watch_timeout_seconds=10),
         trigger_message_id=9,
+        trigger_at=time.time(),
     ).run()
     texts = [item["text"] for item in telegram.sent]
     assert "real answer" in texts

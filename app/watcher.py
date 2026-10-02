@@ -69,6 +69,7 @@ class SessionWatcher:
         status_after_seconds: float | None = None,
         silent: bool = False,
         resume_from: float | None = None,
+        trigger_at: float | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -99,15 +100,13 @@ class SessionWatcher:
         )
         self.silent = silent
         self.resume_from = resume_from
-        # Messages emitted before the trigger was set belong to the previous
-        # turn: they are delivered but must not be attributed to (or close)
-        # this one. Only meaningful when the session already has delivered
-        # history (a last_event_id marker).
+        # Messages emitted before trigger_at belong to a previous turn: they
+        # are delivered but must not be attributed to (or close) this one.
+        # Set to the moment the user message was forwarded to Devin; left
+        # None for recovery watchers (restart), where undelivered downtime
+        # replies legitimately answer the persisted trigger.
         self.trigger_at = (
-            time.time()
-            if trigger_message_id is not None
-            and conversation.last_event_id is not None
-            else None
+            trigger_at if conversation.last_event_id is not None else None
         )
         self.draft_id = secrets.randbelow(2**31 - 1) + 1
         self.status_message_id: int | None = None
@@ -124,9 +123,13 @@ class SessionWatcher:
         self.generation = 0
         self.topic_title_stale = False
 
-    def set_trigger(self, message_id: int) -> None:
+    def set_trigger(self, message_id: int, *, at: float | None = None) -> None:
         self.trigger_message_id = message_id
-        self.trigger_at = time.time()
+        self.trigger_at = (
+            (time.time() if at is None else at)
+            if self.conversation.last_event_id is not None
+            else None
+        )
         self.delivered = False
         self.started_at = self.clock()
         self.generation += 1
