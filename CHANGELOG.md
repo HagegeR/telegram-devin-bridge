@@ -25,6 +25,14 @@ and deployment update channels.
   detail, ACUs, and PRs under `/status`; the per-day breakdown under
   `/usage`; session links under `/sessions`; and per-section command
   lists under `/help`.
+- Bot API 10.x structured Rich Messages: the same four commands now
+  prefer `sendRichMessage` `blocks` — native `details` collapsibles for
+  `/status`, `/sessions`, and `/help`, and a real striped table for the
+  `/usage` daily breakdown — falling back to the HTML expandable text
+  when rich messages are unavailable.
+- `/help`, `/status`, `/sessions`, `/repos`, and `/lang` are registered
+  with `is_ephemeral`, so their invocations and replies stay private in
+  group chats.
 
 ## [v1.2.0] - 2026-10-01
 

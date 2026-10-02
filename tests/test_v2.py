@@ -933,6 +933,10 @@ class _FakeTelegram:
         self.photos: list[dict[str, object]] = []
         self.topic_error: Exception | None = None
         self.draft_error: Exception | None = None
+        # Rich blocks off by default so existing tests exercise the HTML
+        # fallback; tests for the blocks path opt in.
+        self.rich_enabled = False
+        self.rich_error: Exception | None = None
 
     async def send_message(
         self,
@@ -948,6 +952,26 @@ class _FakeTelegram:
     ) -> list[dict[str, object]]:
         await self.send_message(chat_id, text, **kwargs)
         return [{**self.sent[-1], "message_id": len(self.sent)}]
+
+    async def send_rich_message(
+        self,
+        chat_id: int,
+        markdown: str = "",
+        *,
+        blocks: list[dict[str, object]] | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        if self.rich_error is not None:
+            raise self.rich_error
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "text": markdown,
+                "blocks": blocks,
+                **kwargs,
+            }
+        )
+        return {"message_id": len(self.sent)}
 
     async def send_document(
         self,
@@ -1601,7 +1625,9 @@ async def test_status_shows_v3_detail_acus_and_prs(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_commands_send_html_expandable_details(tmp_path: Path) -> None:
+async def test_commands_send_rich_blocks_and_html_fallback(
+    tmp_path: Path,
+) -> None:
     store = Store(str(tmp_path / "html.sqlite3"))
     store.save_conversation(
         conv_key="222",
@@ -1632,24 +1658,29 @@ async def test_commands_send_html_expandable_details(tmp_path: Path) -> None:
         )
 
     runtime.get_state = state  # type: ignore[method-assign]
+    telegram.rich_enabled = True
+
+    # Rich blocks path: structured details/table blocks, no escaping needed.
     await handle_command(runtime, message("/status"), "/status")
-    item = telegram.sent[-1]
-    assert item.get("parse_mode") == "HTML"
-    text = str(item["text"])
-    assert "<b>&lt;b&amp; title</b>" in text
-    assert "<blockquote expandable>" in text
-    assert "id: <code>s1</code>" in text
-    assert "detail: inactivity" in text
-    assert "ACUs: 1.5" in text
-    assert "PR: https://github.test/pr/1" in text
+    blocks = telegram.sent[-1]["blocks"]
+    assert isinstance(blocks, list)
+    assert blocks[0] == {
+        "type": "paragraph",
+        "text": {"type": "bold", "text": "<b& title"},
+    }
+    details = blocks[-1]
+    assert details["type"] == "details"
+    detail_text = str(details["blocks"])
+    assert "s1" in detail_text
+    assert "inactivity" in detail_text
+    assert "1.5" in detail_text
+    assert "github.test/pr/1" in detail_text
 
     await handle_command(runtime, message("/sessions"), "/sessions")
-    item = telegram.sent[-1]
-    assert item.get("parse_mode") == "HTML"
-    text = str(item["text"])
-    assert "&lt;b&amp; title" in text
-    assert "<blockquote expandable>" in text
-    assert "1. https://devin.test/s1" in text
+    blocks = telegram.sent[-1]["blocks"]
+    assert isinstance(blocks, list)
+    assert blocks[-1]["type"] == "details"
+    assert "devin.test/s1" in str(blocks[-1]["blocks"])
 
     async def consumption(*_: object, **__: object) -> dict[str, object]:
         return {
@@ -1659,19 +1690,38 @@ async def test_commands_send_html_expandable_details(tmp_path: Path) -> None:
 
     runtime.devin.session_consumption = consumption  # type: ignore[method-assign]
     await runtime.usage(message("/usage"))
-    item = telegram.sent[-1]
-    assert item.get("parse_mode") == "HTML"
-    text = str(item["text"])
-    assert "Session ACUs: 4.00" in text
-    assert "<blockquote expandable>" in text
-    assert "2025-09-19 · 4.00" in text
+    blocks = telegram.sent[-1]["blocks"]
+    assert isinstance(blocks, list)
+    table = next(b for b in blocks if b["type"] == "table")
+    assert table["cells"][0] == [
+        {"text": "Date", "is_header": True},
+        {"text": "ACUs", "is_header": True},
+    ]
+    assert [{"text": "2025-09-19"}, {"text": "4.00"}] in table["cells"]
 
     await handle_command(runtime, message("/help"), "/help")
+    blocks = telegram.sent[-1]["blocks"]
+    assert isinstance(blocks, list)
+    assert sum(b["type"] == "details" for b in blocks) == 3
+    assert blocks[0]["summary"] == {"type": "bold", "text": "Sessions"}
+
+    # HTML fallback when rich messages are unavailable.
+    telegram.rich_enabled = False
+    await handle_command(runtime, message("/status"), "/status")
     item = telegram.sent[-1]
     assert item.get("parse_mode") == "HTML"
     text = str(item["text"])
-    assert "<b>Sessions</b>" in text
+    assert "<b>&lt;b&amp; title</b>" in text
     assert "<blockquote expandable>" in text
+    assert "id: <code>s1</code>" in text
+    assert "PR: https://github.test/pr/1" in text
+    await handle_command(runtime, message("/sessions"), "/sessions")
+    item = telegram.sent[-1]
+    assert "&lt;b&amp; title" in str(item["text"])
+    assert "1. https://devin.test/s1" in str(item["text"])
+    await handle_command(runtime, message("/help"), "/help")
+    assert "<b>Sessions</b>" in str(telegram.sent[-1]["text"])
+    assert "<blockquote expandable>" in str(telegram.sent[-1]["text"])
 
     # An oversized title must not make /status fail to reply: the details
     # block is dropped and the title is proportionally truncated.

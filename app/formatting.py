@@ -273,3 +273,27 @@ def split_long_text(text: str, limit: int) -> tuple[str, str]:
     if boundary <= 0:
         boundary = limit
     return text[:boundary].rstrip(), text[boundary:].lstrip()
+
+
+# InputRichBlock / RichText builders for sendRichMessage's `blocks` field.
+# Structured blocks need no escaping — values are JSON, not markup.
+
+
+def rich_paragraph(text: object) -> dict[str, object]:
+    return {"type": "paragraph", "text": text}
+
+
+def rich_details(summary: object, blocks: list[dict[str, object]]) -> dict[str, object]:
+    return {"type": "details", "summary": summary, "blocks": blocks}
+
+
+def rich_text_bold(text: str) -> dict[str, object]:
+    return {"type": "bold", "text": text}
+
+
+def rich_text_code(text: str) -> dict[str, object]:
+    return {"type": "code", "text": text}
+
+
+def rich_text_link(text: str, url: str) -> dict[str, object]:
+    return {"type": "url", "text": text, "url": url}
