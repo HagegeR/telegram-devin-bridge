@@ -139,16 +139,28 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
                 result.append("||")
             in_expandable = False
             continue
-        # A line ending in || inside an expandable quote is the closer —
-        # unless the || pairs a spoiler on the same line (odd count left).
-        quote_close = (
-            in_expandable
-            and line.rstrip().endswith("||")
-            and not line.lstrip().startswith("||")
-            and line.rstrip()[:-2].count("||") % 2 == 0
-        )
-        if quote_close:
-            line = line.rstrip()[:-2]
+        if in_expandable:
+            # Every continuation line of an expandable quote needs its own
+            # '>' prefix: a bare line ends the quote in Telegram's parser,
+            # and a trailing '||' then reads as an unclosed spoiler.
+            # A line ending in || is the closer — unless the || pairs a
+            # spoiler on the same line (odd count left).
+            closer = (
+                line.rstrip().endswith("||")
+                and not line.lstrip().startswith("||")
+                and line.rstrip()[:-2].count("||") % 2 == 0
+            )
+            body = line.rstrip()[:-2].rstrip() if closer else line
+            # Strip only the '>' marker and one separator space — leading
+            # whitespace past that is quote content (indented code/columns).
+            content = body
+            if content.startswith(">"):
+                content = content[1:]
+                content = content.removeprefix(" ")
+            result.append(">" + _inline(content) + ("||" if closer else ""))
+            if closer:
+                in_expandable = False
+            continue
         if line.startswith("#"):
             result.append(f"*{_escape(line.lstrip('#').strip())}*")
         elif line.startswith(">"):
@@ -163,9 +175,6 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
             result.append("||")
         else:
             result.append(_inline(line))
-        if quote_close:
-            result[-1] += "||"
-            in_expandable = False
     if in_fence:
         result.append("```")
     return "\n".join(result)
@@ -235,39 +244,42 @@ def chunk(text: str, limit: int = 4096) -> list[str]:
             else:
                 in_fence = False
             continue
-        if not in_fence and line.startswith("**>"):
-            if not (
-                line.rstrip().endswith("||")
-                and line.rstrip()[:-2].count("||") % 2 == 0
-            ):
-                in_expandable = True
-        elif (
+        opens_quote = not in_fence and line.startswith("**>")
+        closes_quote = (
             not in_fence
-            and in_expandable
+            and (in_expandable or opens_quote)
             and line.rstrip().endswith("||")
             and not line.lstrip().startswith("||")
             and line.rstrip()[:-2].count("||") % 2 == 0
-        ):
-            in_expandable = False
+        )
+        # A long line stays inside the quote while it is split: the closer
+        # only applies after its last fragment lands, otherwise a fragment
+        # would carry a bare trailing || (an unclosed spoiler).
+        line_in_quote = in_expandable or opens_quote
         remaining = line
         if not remaining:
             if current_len + (1 if current else 0) >= capacity:
-                flush(close=in_fence or in_expandable)
+                flush(close=in_fence or line_in_quote)
                 reopen()
             current.append("")
             current_len += 1 if len(current) > 1 else 0
             continue
         while remaining:
-            reserve = 3 if (in_fence or in_expandable) else 0
+            reserve = 3 if (in_fence or line_in_quote) else 0
             available = capacity - current_len - reserve
             if available <= 0:
-                flush(close=in_fence or in_expandable)
+                flush(close=in_fence or line_in_quote)
                 reopen()
                 continue
             piece = remaining[:available]
+            if line_in_quote and remaining != line:
+                # Split fragments become their own lines — each needs the
+                # quote marker to stay inside the expandable quote.
+                piece = ">" + piece
             current.append(piece)
             current_len += len(piece) + (1 if len(current) > 1 else 0)
             remaining = remaining[len(piece) :]
+        in_expandable = line_in_quote and not closes_quote
     if current:
         flush()
     if len(chunks) <= 1:

@@ -1053,8 +1053,16 @@ class TelegramClient:
         try:
             await self.set_message_reaction(chat_id, message_id, emoji)
         except Exception as exc:  # noqa: BLE001 - reactions are best-effort
-            logger.warning("reaction %r failed: %s", emoji, exc)
-            return False
+            # Telegram allows a fixed reaction emoji set; an off-set emoji
+            # degrades to 👍 instead of failing silently.
+            if "REACTION_INVALID" not in str(exc) or emoji == "👍":
+                logger.warning("reaction %r failed: %s", emoji, exc)
+                return False
+            try:
+                await self.set_message_reaction(chat_id, message_id, "👍")
+            except Exception as retry_exc:  # noqa: BLE001
+                logger.warning("reaction %r failed: %s", "👍", retry_exc)
+                return False
         return True
 
     async def answer_callback_query(
