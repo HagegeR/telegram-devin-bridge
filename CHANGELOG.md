@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v1.3.0] - 2026-10-02
+
 ### Added
 
 - `POST /notify` accepts `html` (+ `html_name`) and delivers it as an
