@@ -527,6 +527,7 @@ class SessionWatcher:
         downloads = await asyncio.gather(
             *(self.devin.download_attachment(url) for url in attachment_urls)
         )
+        report_buttons: list[dict[str, str]] = []
         for url, downloaded in zip(attachment_urls, downloads, strict=True):
             if downloaded is None:
                 if url in metadata_urls and url not in body:
@@ -534,6 +535,22 @@ class SessionWatcher:
                 continue
             content, content_type = downloaded
             filename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+            if content_type.startswith("text/html") and self.settings.public_base_url:
+                token = secrets.token_urlsafe(16)
+                self.store.add_report(
+                    token,
+                    self.conversation.conv_key,
+                    self.conversation.chat_id,
+                    content.decode("utf-8", "replace"),
+                )
+                report_buttons.append({
+                    "text": f"Open {filename}",
+                    "url": f"{self.settings.public_base_url.rstrip('/')}/r/{token}",
+                })
+                body = body.replace(f"\n{url}\n", "\n")
+                if body == url:
+                    body = ""
+                continue
             try:
                 if (
                     content_type.startswith("image/")
@@ -608,6 +625,8 @@ class SessionWatcher:
                 f"\n\n🔗 PR #{number} · {title} · {status} · "
                 f"+{additions} −{deletions} · {base_name}←{head_name}"
             )
+        if not body.strip() and report_buttons:
+            body = "Report ready:"
         if not body.strip() and not options:
             return
         markup: dict[str, object] | None = None
@@ -689,6 +708,13 @@ class SessionWatcher:
                         }
                     ]]
                 }
+        if report_buttons:
+            rows: list[object] = []
+            if markup is not None and isinstance(markup["inline_keyboard"], list):
+                rows = markup["inline_keyboard"]
+            markup = {
+                "inline_keyboard": [[button] for button in report_buttons] + rows
+            }
         delivery_kwargs: dict[str, object] = {
             "thread_id": self.conversation.thread_id,
             "reply_markup": markup,
