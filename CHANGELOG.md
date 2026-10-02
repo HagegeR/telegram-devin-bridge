@@ -40,6 +40,13 @@ and deployment update channels.
   expandable-quote syntax. Marker-free text around them keeps the
   normal Markdown path, and unsupported deployments get marker-free
   fallback text.
+- Replies also accept control markers, each on its own line:
+  `REACT: <emoji>` reacts to the triggering user message, `PIN:` pins
+  the reply, `URGENT:`/`SILENT:` override notification quieting,
+  `PROGRESS:` edits the session's previous progress message instead of
+  sending a new one, and `POLL: question | a | b` sends a native poll.
+  `||spoiler||` and `**>`/`||` expandable quotes now also survive the
+  MarkdownV2 fallback converter.
 
 ## [v1.2.0] - 2026-10-01
 

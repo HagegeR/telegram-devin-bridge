@@ -952,6 +952,38 @@ class TelegramClient:
             None,
         )
 
+    async def pin_chat_message(self, chat_id: int, message_id: int) -> None:
+        await self._request(
+            "POST",
+            "/pinChatMessage",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "disable_notification": True,
+            },
+            None,
+        )
+
+    async def send_poll(
+        self,
+        chat_id: int,
+        question: str,
+        options: list[str],
+        *,
+        thread_id: int | None = None,
+        disable_notification: bool = False,
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "chat_id": chat_id,
+            "question": question,
+            "options": [{"text": option} for option in options],
+            "is_anonymous": False,
+            "disable_notification": disable_notification,
+        }
+        if thread_id is not None:
+            body["message_thread_id"] = thread_id
+        return await self._request("POST", "/sendPoll", body, None)
+
     async def send_chat_action(
         self,
         chat_id: int,
@@ -1119,6 +1151,7 @@ class TelegramClient:
         caption: str | None = None,
         reply_to: int | None = None,
         content_type: str = "image/jpeg",
+        disable_notification: bool = False,
     ) -> dict[str, object]:
         """Send an image as a photo, downscaling it to Telegram's sendPhoto limits
         (10 MB, width+height <= 10000, ratio <= 20). Images that cannot fit, or
@@ -1133,11 +1166,14 @@ class TelegramClient:
                 caption=caption,
                 reply_to=reply_to,
                 content_type=content_type,
+                disable_notification=disable_notification,
             )
         photo, photo_type = fitted
         data: dict[str, str] = {"chat_id": str(chat_id)}
         if thread_id is not None:
             data["message_thread_id"] = str(thread_id)
+        if disable_notification:
+            data["disable_notification"] = "true"
         if caption is not None:
             data["caption"] = cast(str, _caption(caption))
         if reply_to is not None:
