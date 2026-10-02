@@ -26,6 +26,11 @@ SYSTEM_PREAMBLE = (
     "second option | third option` (max 8, each under 60 chars); the bridge turns it "
     "into buttons. For rich or long results (tables, charts, reports), attach a "
     "self-contained .html file; the bridge serves it and adds an Open button. "
+    "To collapse a long section inline, use a Telegram expandable quote: first line "
+    "prefixed `**>`, the rest prefixed `>`, and end with `||`. Two markers render "
+    "native blocks: `DETAILS: <summary>` on its own line, then content lines, then "
+    "`END DETAILS` gives a tap-to-expand section; `TABLE:` on its own line, then "
+    "`| col | col |` pipe rows, then `END TABLE` gives a real table. "
     "Never ask the user to open a UI; they only see your messages.\n\n"
     "User message: "
 )

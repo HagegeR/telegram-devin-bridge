@@ -32,6 +32,7 @@ from app.formatting import (
     extract_options,
     markdown_to_telegram_markdown_v2,
     normalize_rich_linebreaks,
+    parse_rich_segments,
 )
 from app.main import Bridge, create_app
 from app.store import Store
@@ -6625,3 +6626,170 @@ async def test_notify_html_report(tmp_path: Path, base_url: str | None) -> None:
         response = await client.get(button["url"].replace(base_url, ""))
         assert response.status_code == 200
         assert response.content == b"<p>hi</p>"
+
+
+def test_parse_rich_segments_no_markers() -> None:
+    assert parse_rich_segments("plain **markdown** reply") is None
+    # Marker lines without content stay plain text, not empty blocks.
+    assert parse_rich_segments("TABLE:\nno rows") is None
+    assert parse_rich_segments("DETAILS:\nEND DETAILS") is None
+
+
+def test_parse_rich_segments_table_and_details() -> None:
+    segments = parse_rich_segments(
+        "Intro line\n"
+        "TABLE:\n"
+        "| A | B |\n"
+        "| --- | --- |\n"
+        "| 1 | 2 |\n"
+        "END TABLE\n"
+        "Middle\n"
+        "DETAILS: More info\n"
+        "line one\n"
+        "line two\n"
+        "END DETAILS\n"
+        "Tail"
+    )
+    assert segments is not None
+    assert ["markdown" in s for s in segments] == [True, False, True, False, True]
+    table = segments[1]["blocks"][0]
+    assert table["type"] == "table"
+    assert table["cells"] == [
+        [
+            {"text": "A", "is_header": True},
+            {"text": "B", "is_header": True},
+        ],
+        [{"text": "1", "is_header": False}, {"text": "2", "is_header": False}],
+    ]
+    details = segments[3]["blocks"][0]
+    assert details["type"] == "details"
+    assert details["summary"] == "More info"
+    assert [b["text"] for b in details["blocks"]] == ["line one", "line two"]
+
+
+def test_parse_rich_segments_unterminated_details() -> None:
+    segments = parse_rich_segments("DETAILS: open\nstill content")
+    assert segments is not None
+    assert segments[0]["blocks"][0]["type"] == "details"
+    assert segments[0]["blocks"][0]["summary"] == "open"
+
+
+def test_parse_rich_segments_edge_cases() -> None:
+    # Markers inside a code fence are literal text, not live markers.
+    assert parse_rich_segments("```\nTABLE:\n| A |\nEND TABLE\n```") is None
+
+    # A mismatched closer stays content; only END DETAILS ends details.
+    segments = parse_rich_segments(
+        "DETAILS: Notes\nfirst\nEND TABLE\nsecond\nEND DETAILS"
+    )
+    assert segments is not None
+    detail = segments[0]["blocks"][0]
+    assert [b["text"] for b in detail["blocks"]] == [
+        "first",
+        "END TABLE",
+        "second",
+    ]
+
+    # Blank lines before END TABLE still consume the terminator.
+    segments = parse_rich_segments("TABLE:\n| A |\n| 1 |\n\nEND TABLE\ntail")
+    assert segments is not None
+    assert segments[1] == {"markdown": "tail"}
+
+    # An empty details section keeps its marker + summary as plain text.
+    assert parse_rich_segments(
+        "DETAILS: Summary\nEND DETAILS\nTABLE:\n| A |\n| 1 |"
+    ) == [
+        {"markdown": "DETAILS: Summary"},
+        {
+            "blocks": [
+                {
+                    "type": "table",
+                    "is_compact": True,
+                    "is_striped": True,
+                    "cells": [
+                        [{"text": "A", "is_header": True}],
+                        [{"text": "1", "is_header": False}],
+                    ],
+                }
+            ],
+            "fallback": "| A |\n| 1 |",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_watcher_delivers_table_marker_as_blocks(tmp_path: Path) -> None:
+    reply = "Intro line\nTABLE:\n| A | B |\n| - | - |\n| 1 | 2 |\nEND TABLE\nTail line"
+
+    class FakeDevin:
+        v3_enabled = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            messages = (
+                [DevinMessage("devin_message", "event-1", reply, None)]
+                if self.calls == 2
+                else []
+            )
+            status = "working" if self.calls == 1 else "blocked"
+            return SessionState(status, "title", None, messages)
+
+        async def download_attachment(self, _url: str) -> tuple[bytes, str] | None:
+            return None
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    telegram.rich_enabled = True
+    config = settings(
+        tmp_path,
+        devin_poll_seconds=1,
+        devin_watch_timeout_seconds=20,
+        devin_settle_seconds=30,
+    )
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        config,
+        trigger_message_id=7,
+    ).run()
+    texts = [item.get("blocks") or item["text"] for item in telegram.sent]
+    assert texts[0] == "Intro line"
+    assert texts[1][0]["type"] == "table"
+    assert texts[1][0]["cells"][1] == [
+        {"text": "1", "is_header": False},
+        {"text": "2", "is_header": False},
+    ]
+    assert texts[2] == "Tail line"
+    assert telegram.sent[-1]["text"] == "💬 Waiting for your reply"
+
+    # Without rich support the same reply falls back to plain markdown rows.
+    telegram2 = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram2,  # type: ignore[arg-type]
+        config,
+        trigger_message_id=7,
+    ).run()
+    assert telegram2.sent[1]["text"] == "| A | B |\n| - | - |\n| 1 | 2 |"

@@ -19,6 +19,7 @@ from app.formatting import (
     extract_attachments,
     extract_large_code_blocks,
     extract_options,
+    parse_rich_segments,
     split_long_text,
 )
 from app.images import photo_fits_unchanged
@@ -704,7 +705,9 @@ class SessionWatcher:
             )
             self._index_outbound_many(results)
             return
-        if not options and len(body) > limit:
+        # Marked replies send as structured segments, so the Show-more
+        # split would cut a TABLE:/DETAILS: block in half — skip it there.
+        if not options and len(body) > limit and parse_rich_segments(body) is None:
             body, remaining = split_long_text(body, limit)
             if remaining:
                 token = secrets.token_urlsafe(12)
@@ -736,13 +739,10 @@ class SessionWatcher:
         }
         if reply_to_message_id is not None:
             delivery_kwargs["reply_to_message_id"] = reply_to_message_id
-        results = await self.telegram.send_markdown(
-            self.conversation.chat_id,
-            body,
-            **delivery_kwargs,
-        )
+        results = await self._send_body(body, delivery_kwargs)
         for result in results:
             self._index_outbound(result)
+
         if options:
             message_id = None
             if results:
@@ -758,6 +758,54 @@ class SessionWatcher:
                     option,
                     message_id,
                 )
+
+    async def _send_body(
+        self, body: str, delivery_kwargs: dict[str, object]
+    ) -> list[dict[str, object]]:
+        segments = parse_rich_segments(body)
+        if segments is None:
+            return await self.telegram.send_markdown(
+                self.conversation.chat_id, body, **delivery_kwargs
+            )
+        results: list[dict[str, object]] = []
+        last = len(segments) - 1
+        for index, segment in enumerate(segments):
+            kwargs = dict(delivery_kwargs)
+            # Buttons/reply threading belong to the outer message edges only.
+            if index < last:
+                kwargs.pop("reply_markup", None)
+            if index:
+                kwargs.pop("reply_to_message_id", None)
+            if "blocks" in segment and self.telegram.rich_enabled:
+                try:
+                    results.append(
+                        await self.telegram.send_rich_message(
+                            self.conversation.chat_id,
+                            blocks=cast(list[dict[str, object]], segment["blocks"]),
+                            **kwargs,
+                        )
+                    )
+                    continue
+                except RuntimeError as exc:
+                    reason = str(exc).casefold()
+                    if (
+                        "method not found" in reason
+                        or ("method" in reason and "not found" in reason)
+                        or "unknown method" in reason
+                    ):
+                        self.telegram.rich_enabled = False
+                    else:
+                        logger.warning(
+                            "rich block send failed, using fallback: %s", exc
+                        )
+            results.extend(
+                await self.telegram.send_markdown(
+                    self.conversation.chat_id,
+                    str(segment.get("markdown") or segment["fallback"]),
+                    **kwargs,
+                )
+            )
+        return results
 
     def _index_outbound(self, result: Mapping[str, object]) -> None:
         message_id = result.get("message_id")
