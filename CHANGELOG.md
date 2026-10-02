@@ -20,6 +20,11 @@ and deployment update channels.
   on request, waiting on your reply/approval), `ACUs` consumed when the
   API reports non-zero usage, and every PR the session opened instead
   of only the first.
+- `/status`, `/usage`, `/sessions`, and `/help` send HTML messages with
+  tap-to-expand detail blocks (`<blockquote expandable>`): session id,
+  detail, ACUs, and PRs under `/status`; the per-day breakdown under
+  `/usage`; session links under `/sessions`; and per-section command
+  lists under `/help`.
 
 ## [v1.2.0] - 2026-10-01
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from html import escape
 from typing import Protocol
 
 import httpx
@@ -56,6 +57,7 @@ class CommandRuntime(Protocol):
         *,
         silent: bool = False,
         ephemeral: bool = False,
+        html: bool = False,
     ) -> int | None: ...
 
     async def create_session_for_message(
@@ -170,7 +172,7 @@ async def handle_command(
     )
     conversation = runtime.store.get_conversation(conv_key)
     if command in {"start", "help"}:
-        help_text = _start_text() if command == "start" else _help_text()
+        help_text = _start_text() if command == "start" else _help_html()
         if (
             _mapping(message.get("chat")).get("type") == "private"
             and not runtime.bot_topics_enabled
@@ -179,7 +181,9 @@ async def handle_command(
                 "\nTip: enable Topics for this bot to run several Devin sessions "
                 "side by side."
             )
-        await runtime.send_text(message, help_text, ephemeral=True)
+        await runtime.send_text(
+            message, help_text, ephemeral=True, html=command == "help"
+        )
     elif command == "new":
         runtime.clear_queued_turns(conv_key)
         if conversation is not None:
@@ -234,18 +238,6 @@ async def handle_command(
             detail = _STATUS_DETAIL.get(state.status_detail or "")
             if detail:
                 status = f"{status} · {detail}"
-            # acus_consumed is a dead field on some orgs (API reports 0.0
-            # for every session); show the line only when non-zero.
-            acu_line = (
-                f"\nACUs: {state.acus_consumed:g}" if state.acus_consumed else ""
-            )
-            pr_lines = "".join(
-                f"\n🔗 PR: {url}"
-                for url in (
-                    state.pr_urls
-                    or ((state.pr_url,) if state.pr_url else ())
-                )
-            )
             queued_line = (
                 f" · {runtime.queued_count(conv_key)} queued"
                 if runtime.queued_count(conv_key)
@@ -254,14 +246,14 @@ async def handle_command(
             await runtime.send_text(
                 message,
                 (
-                    f"{conversation.title}\n"
-                    f"Status: {status}\n"
-                    f"Session: {conversation.session_url}"
+                    f"<b>{escape(conversation.title)}</b>\n"
+                    f"Status: {escape(status)}\n"
+                    f"Session: {escape(conversation.session_url)}"
                     f"{queued_line}"
-                    f"{acu_line}"
-                    f"{pr_lines}"
+                    f"{_expandable(_status_details(conversation, state))}"
                 ),
                 ephemeral=True,
+                html=True,
             )
     elif command == "settings":
         await runtime.settings_menu(message)
@@ -436,14 +428,22 @@ async def _sessions(
         await runtime.send_text(message, "No saved sessions.", ephemeral=True)
         return
     rows: list[str] = []
+    details: list[str] = []
     for index, entry in enumerate(history, start=1):
         try:
             status = await runtime.get_session_status(entry.session_id)
         except Exception:  # noqa: BLE001
             status = "unknown"
         marker = "*" if conversation is not None and entry.session_id == conversation.session_id else " "
-        rows.append(f"{marker}{index}. {entry.title} — {status}")
-    await runtime.send_text(message, "\n".join(rows), ephemeral=True)
+        rows.append(f"{marker}{index}. {escape(entry.title)} — {escape(status)}")
+        details.append(f"{index}. {escape(entry.session_url)}")
+    body = "\n".join(rows)
+    with_details = body + _expandable(details)
+    # send_message's HTML path has no chunker: drop the block if it would
+    # overflow the 4096-char cap rather than split a tag mid-message.
+    if len(with_details) <= 4000:
+        body = with_details
+    await runtime.send_text(message, body, ephemeral=True, html=True)
 
 
 async def _resume(
@@ -632,31 +632,68 @@ def _start_text() -> str:
     )
 
 
-def _help_text() -> str:
+def _expandable(lines: list[str]) -> str:
     return (
-        "# Sessions\n"
-        "/new [title] — start a fresh session on your next message\n"
-        "/status — what Devin is doing\n"
-        "/stop (/cancel) — terminate the session\n"
-        "/retry — resend your last message\n"
-        "/steer <text> — inject into the running session\n"
-        "/sessions · /resume <n> — history and switching\n\n"
-        "# Topics\n"
-        "/topic <name> — new topic with its own session\n"
-        "/rename <name> — rename this topic\n"
-        "/close — close this topic's session\n\n"
-        "# Setup and admin\n"
-        "/playbook [n] [text] — list or run a playbook\n"
-        "/settings — notifications, drafts, mode, defaults\n"
-        "/repos [a/b,c/d] — restrict sessions to repos\n"
-        "/lang [code] — voice-note language\n"
-        "/usage — Devin ACU usage\n"
-        "/whoami — your IDs and access\n"
-        "/sethome — route notifications here\n"
-        "/users · /revoke <id> — approved users (admin)\n"
-        "/update [check] [channel] — self-update (admin)\n\n"
-        "Reactions: 🔁 retry · 🛑 stop"
+        "\n<blockquote expandable>"
+        + "\n".join(lines)
+        + "</blockquote>"
     )
+
+
+def _status_details(conversation: Conversation, state: SessionState) -> list[str]:
+    lines = [f"id: <code>{escape(conversation.session_id)}</code>"]
+    if state.status_detail:
+        lines.append(f"detail: {escape(state.status_detail)}")
+    if state.acus_consumed:
+        lines.append(f"ACUs: {state.acus_consumed:g}")
+    if state.updated_at:
+        lines.append(f"updated: {escape(state.updated_at)}")
+    lines.extend(
+        f"PR: {escape(url)}"
+        for url in (state.pr_urls or ((state.pr_url,) if state.pr_url else ()))
+    )
+    return lines
+
+
+def _help_html() -> str:
+    sections = (
+        (
+            "Sessions",
+            [
+                "/new [title] — start a fresh session on your next message",
+                "/status — what Devin is doing",
+                "/stop (/cancel) — terminate the session",
+                "/retry — resend your last message",
+                "/steer &lt;text&gt; — inject into the running session",
+                "/sessions · /resume &lt;n&gt; — history and switching",
+            ],
+        ),
+        (
+            "Topics",
+            [
+                "/topic &lt;name&gt; — new topic with its own session",
+                "/rename &lt;name&gt; — rename this topic",
+                "/close — close this topic's session",
+            ],
+        ),
+        (
+            "Setup and admin",
+            [
+                "/playbook [n] [text] — list or run a playbook",
+                "/settings — notifications, drafts, mode, defaults",
+                "/repos [a/b,c/d] — restrict sessions to repos",
+                "/lang [code] — voice-note language",
+                "/usage — Devin ACU usage",
+                "/whoami — your IDs and access",
+                "/sethome — route notifications here",
+                "/users · /revoke &lt;id&gt; — approved users (admin)",
+                "/update [check] [channel] — self-update (admin)",
+            ],
+        ),
+    )
+    parts = [f"<b>{title}</b>" + _expandable(items) for title, items in sections]
+    parts.append("Reactions: 🔁 retry · 🛑 stop")
+    return "\n".join(parts)
 
 
 def _mapping(value: object) -> Mapping[str, object]:
