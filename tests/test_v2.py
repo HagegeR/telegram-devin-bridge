@@ -6693,6 +6693,50 @@ def test_parse_rich_segments_unterminated_details() -> None:
     assert segments[0]["blocks"][0]["summary"] == "open"
 
 
+def test_parse_rich_segments_suggest() -> None:
+    segments = parse_rich_segments(
+        "Heads up\nSUGGEST: knowledge — bridge quirks\nthe why\nmore detail\n"
+        "END SUGGEST\nTail"
+    )
+    assert segments is not None
+    assert ["markdown" in s for s in segments] == [True, False, True]
+    block = segments[1]["blocks"][0]
+    assert block["type"] == "details"
+    assert block["summary"] == "💡 knowledge — bridge quirks"
+    assert [b["text"] for b in block["blocks"]] == ["the why", "more detail"]
+    assert segments[1]["fallback"] == (
+        "💡 knowledge — bridge quirks\nthe why\nmore detail"
+    )
+
+    # Markers inside a fence stay literal.
+    assert (
+        parse_rich_segments("```\nSUGGEST: x\nbody\nEND SUGGEST\n```") is None
+    )
+
+    # A mismatched closer stays content; only END SUGGEST ends the section.
+    segments = parse_rich_segments(
+        "SUGGEST: x\nfirst\nEND DETAILS\nsecond\nEND SUGGEST"
+    )
+    assert segments is not None
+    assert [
+        b["text"] for b in segments[0]["blocks"][0]["blocks"]
+    ] == ["first", "END DETAILS", "second"]
+
+    # A terminator quoted inside a body fence stays content too.
+    segments = parse_rich_segments(
+        "SUGGEST: x\nExample:\n```\nEND SUGGEST\n```\nmore\nEND SUGGEST"
+    )
+    assert segments is not None
+    assert [
+        b["text"] for b in segments[0]["blocks"][0]["blocks"]
+    ] == ["Example:", "```", "END SUGGEST", "```", "more"]
+
+    # An empty suggestion keeps its marker as plain text — with no block
+    # produced, the reply takes the plain send path entirely (same as
+    # a lone empty DETAILS:).
+    assert parse_rich_segments("SUGGEST: x\nEND SUGGEST\nkeep") is None
+
+
 def test_parse_rich_segments_edge_cases() -> None:
     # Markers inside a code fence are literal text, not live markers.
     assert parse_rich_segments("```\nTABLE:\n| A |\nEND TABLE\n```") is None
@@ -6708,6 +6752,15 @@ def test_parse_rich_segments_edge_cases() -> None:
         "END TABLE",
         "second",
     ]
+
+    # A terminator quoted inside a body fence stays content too.
+    segments = parse_rich_segments(
+        "DETAILS: x\n```\nEND DETAILS\n```\nmore\nEND DETAILS"
+    )
+    assert segments is not None
+    assert [
+        b["text"] for b in segments[0]["blocks"][0]["blocks"]
+    ] == ["```", "END DETAILS", "```", "more"]
 
     # Blank lines before END TABLE still consume the terminator.
     segments = parse_rich_segments("TABLE:\n| A |\n| 1 |\n\nEND TABLE\ntail")
@@ -6814,6 +6867,85 @@ async def test_watcher_delivers_table_marker_as_blocks(tmp_path: Path) -> None:
     assert telegram2.sent[1]["text"] == "| A | B |\n| - | - |\n| 1 | 2 |"
 
 
+@pytest.mark.asyncio
+async def test_watcher_delivers_suggest_card_with_options(tmp_path: Path) -> None:
+    reply = (
+        "SUGGEST: knowledge — bridge quirks\nwhy it helps\nEND SUGGEST\n"
+        "OPTIONS: Save it | Skip"
+    )
+
+    class FakeDevin:
+        v3_enabled = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            messages = (
+                [DevinMessage("devin_message", "event-1", reply, None)]
+                if self.calls == 2
+                else []
+            )
+            status = "working" if self.calls == 1 else "blocked"
+            return SessionState(status, "title", None, messages)
+
+        async def download_attachment(self, _url: str) -> tuple[bytes, str] | None:
+            return None
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    telegram.rich_enabled = True
+    config = settings(
+        tmp_path,
+        devin_poll_seconds=1,
+        devin_watch_timeout_seconds=20,
+        devin_settle_seconds=30,
+    )
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        config,
+        trigger_message_id=7,
+    ).run()
+    card = telegram.sent[0]
+    assert card["blocks"][0]["type"] == "details"
+    assert card["blocks"][0]["summary"] == "💡 knowledge — bridge quirks"
+    keyboard = card["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+    assert [row[0]["text"] for row in keyboard] == ["Save it", "Skip"]
+
+    # Without rich support the card degrades to its 💡-labeled fallback text.
+    telegram2 = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram2,  # type: ignore[arg-type]
+        config,
+        trigger_message_id=7,
+    ).run()
+    assert telegram2.sent[0]["text"] == (
+        "💡 knowledge — bridge quirks\nwhy it helps"
+    )
+
+
 def test_extract_controls() -> None:
     body, controls = extract_controls(
         "Report\nREACT: 👀\nURGENT:\nPIN:\nPOLL: pick? | a | b | c\nlast"
@@ -6841,6 +6973,26 @@ def test_extract_controls() -> None:
     )
     assert controls == {}
     assert "PIN:" in body and "URGENT:" in body
+
+    # Same inside a SUGGEST: body — a quoted marker must not trigger.
+    body, controls = extract_controls(
+        "SUGGEST: skill — marker docs\nPIN:\nEND SUGGEST\ndone"
+    )
+    assert controls == {}
+    assert "PIN:" in body
+
+    # A mismatched terminator inside a section stays literal — only the
+    # section's own END closes it, so later "controls" remain inert.
+    body, controls = extract_controls(
+        "SUGGEST: x\nEND DETAILS\nPIN:\nEND SUGGEST\ndone"
+    )
+    assert controls == {}
+    assert "PIN:" in body
+    body, controls = extract_controls(
+        "DETAILS: x\nEND SUGGEST\nURGENT:\nEND DETAILS\ndone"
+    )
+    assert controls == {}
+    assert "URGENT:" in body
 
     # Polls outside Telegram's limits stay text instead of silently failing.
     body, controls = extract_controls("POLL: " + "q" * 301 + " | a | b")
@@ -7023,6 +7175,7 @@ def test_preamble_documents_every_marker() -> None:
         "||spoiler||",
         "DETAILS:",
         "TABLE:",
+        "SUGGEST:",
         "REACT:",
         "PIN:",
         "URGENT:",
