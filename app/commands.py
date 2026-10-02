@@ -30,6 +30,16 @@ _STATUS_LABELS = {
     "expired": "⚠ expired",
 }
 
+# v3 status_detail rendered as a suffix when it adds information the
+# coarse label doesn't already carry ("working" is implied by ⏳).
+_STATUS_DETAIL = {
+    "waiting_for_user": "your reply",
+    "waiting_for_approval": "approval",
+    "inactivity": "idle timeout",
+    "user_request": "paused on request",
+    "finished": "finished",
+}
+
 
 class CommandRuntime(Protocol):
     settings: Settings
@@ -220,7 +230,21 @@ async def handle_command(
         else:
             state = await runtime.get_state(conversation.session_id)
             status = _STATUS_LABELS.get(state.status_enum, state.status_enum)
-            pr_line = f"\n🔗 PR: {state.pr_url}" if state.pr_url else ""
+            detail = _STATUS_DETAIL.get(state.status_detail or "")
+            if detail:
+                status = f"{status} · {detail}"
+            acu_line = (
+                f"\nACUs: {state.acus_consumed:g}"
+                if state.acus_consumed is not None
+                else ""
+            )
+            pr_lines = "".join(
+                f"\n🔗 PR: {url}"
+                for url in (
+                    state.pr_urls
+                    or ((state.pr_url,) if state.pr_url else ())
+                )
+            )
             queued_line = (
                 f" · {runtime.queued_count(conv_key)} queued"
                 if runtime.queued_count(conv_key)
@@ -233,7 +257,8 @@ async def handle_command(
                     f"Status: {status}\n"
                     f"Session: {conversation.session_url}"
                     f"{queued_line}"
-                    f"{pr_line}"
+                    f"{acu_line}"
+                    f"{pr_lines}"
                 ),
                 ephemeral=True,
             )
