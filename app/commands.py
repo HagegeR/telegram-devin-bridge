@@ -31,6 +31,10 @@ SYSTEM_PREAMBLE = (
     "native blocks: `DETAILS: <summary>` on its own line, then content lines, then "
     "`END DETAILS` gives a tap-to-expand section; `TABLE:` on its own line, then "
     "`| col | col |` pipe rows, then `END TABLE` gives a real table. "
+    "Control markers, each on its own line: `REACT: <emoji>` reacts to the "
+    "user's message; `PIN:` pins the reply; `URGENT:`/`SILENT:` override "
+    "notification quieting; `PROGRESS:` edits your previous progress message "
+    "instead of sending a new one; `POLL: question | a | b` sends a poll. "
     "Never ask the user to open a UI; they only see your messages.\n\n"
     "User message: "
 )

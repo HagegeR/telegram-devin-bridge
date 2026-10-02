@@ -952,6 +952,38 @@ class TelegramClient:
             None,
         )
 
+    async def pin_chat_message(self, chat_id: int, message_id: int) -> None:
+        await self._request(
+            "POST",
+            "/pinChatMessage",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "disable_notification": True,
+            },
+            None,
+        )
+
+    async def send_poll(
+        self,
+        chat_id: int,
+        question: str,
+        options: list[str],
+        *,
+        thread_id: int | None = None,
+        disable_notification: bool = False,
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "chat_id": chat_id,
+            "question": question,
+            "options": [{"text": option} for option in options],
+            "is_anonymous": False,
+            "disable_notification": disable_notification,
+        }
+        if thread_id is not None:
+            body["message_thread_id"] = thread_id
+        return await self._request("POST", "/sendPoll", body, None)
+
     async def send_chat_action(
         self,
         chat_id: int,

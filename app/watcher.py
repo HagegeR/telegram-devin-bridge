@@ -17,8 +17,10 @@ from app.config import Settings
 from app.devin import DevinClient, DevinMessage, SessionState
 from app.formatting import (
     extract_attachments,
+    extract_controls,
     extract_large_code_blocks,
     extract_options,
+    markdown_to_telegram_markdown_v2,
     parse_rich_segments,
     split_long_text,
 )
@@ -131,6 +133,7 @@ class SessionWatcher:
         self._closed_gen = -1
         self.delivered = False
         self.draft_used = False
+        self.progress_message_id: int | None = None
         self.last_status: str | None = None
         self.started_at = self.clock()
         self.generation = 0
@@ -526,6 +529,21 @@ class SessionWatcher:
         body, attachment_urls = extract_attachments(message.message)
         metadata_urls = set(attachment_urls)
         body, options = extract_options(body)
+        body, controls = extract_controls(body)
+        if "react" in controls:
+            await self.telegram.react(
+                self.conversation.chat_id,
+                reply_to_message_id,
+                str(controls["react"]),
+            )
+        notify_disabled = (
+            self.silent
+            or "silent" in controls
+            or (
+                self.settings.telegram_notification_mode == "important"
+                and state.status_enum == "working"
+            )
+        ) and "urgent" not in controls
         if not body and options:
             body = "Choose an option:"
         bare_attachment_urls = re.findall(
@@ -641,7 +659,7 @@ class SessionWatcher:
             )
         if not body.strip() and report_buttons:
             body = "Report ready:"
-        if not body.strip() and not options:
+        if not body.strip() and not options and "poll" not in controls:
             return
         markup: dict[str, object] | None = None
         choice_ids: list[tuple[str, str]] = []
@@ -694,13 +712,7 @@ class SessionWatcher:
                 body[:500],
                 thread_id=self.conversation.thread_id,
                 reply_markup=_prepend_buttons(None, report_buttons),
-                disable_notification=(
-                    self.silent
-                    or (
-                        self.settings.telegram_notification_mode == "important"
-                        and state.status_enum == "working"
-                    )
-                ),
+                disable_notification=notify_disabled,
                 reply_to_message_id=reply_to_message_id,
             )
             self._index_outbound_many(results)
@@ -729,19 +741,62 @@ class SessionWatcher:
         delivery_kwargs: dict[str, object] = {
             "thread_id": self.conversation.thread_id,
             "reply_markup": markup,
-            "disable_notification": (
-                self.silent
-                or (
-                    self.settings.telegram_notification_mode == "important"
-                    and state.status_enum == "working"
-                )
-            ),
+            "disable_notification": notify_disabled,
         }
         if reply_to_message_id is not None:
             delivery_kwargs["reply_to_message_id"] = reply_to_message_id
-        results = await self._send_body(body, delivery_kwargs)
+        edited = False
+        if (
+            "progress" in controls
+            and self.progress_message_id is not None
+            and body.strip()
+            and parse_rich_segments(body) is None
+        ):
+            try:
+                await self.telegram.edit_message_text(
+                    self.conversation.chat_id,
+                    self.progress_message_id,
+                    markdown_to_telegram_markdown_v2(body[:4096]),
+                    parse_mode="MarkdownV2",
+                    reply_markup=markup,
+                )
+                edited = True
+            except (RuntimeError, httpx.HTTPError):
+                logger.warning("progress edit failed, sending a new message")
+                self.progress_message_id = None
+        results = (
+            []
+            if edited or not body.strip()
+            else await self._send_body(body, delivery_kwargs)
+        )
         for result in results:
             self._index_outbound(result)
+        delivered_id: int | None = self.progress_message_id if edited else None
+        if results:
+            candidate = results[0].get("message_id")
+            if isinstance(candidate, int):
+                delivered_id = candidate
+        if "progress" in controls:
+            self.progress_message_id = delivered_id
+        if "pin" in controls and delivered_id is not None:
+            try:
+                await self.telegram.pin_chat_message(
+                    self.conversation.chat_id, delivered_id
+                )
+            except (RuntimeError, httpx.HTTPError):
+                logger.warning("pin_chat_message failed")
+        if "poll" in controls:
+            poll_parts = cast(list[str], controls["poll"])
+            try:
+                await self.telegram.send_poll(
+                    self.conversation.chat_id,
+                    poll_parts[0],
+                    poll_parts[1:11],
+                    thread_id=self.conversation.thread_id,
+                    disable_notification=notify_disabled,
+                )
+            except (RuntimeError, httpx.HTTPError):
+                logger.warning("send_poll failed")
 
         if options:
             message_id = None
@@ -749,6 +804,8 @@ class SessionWatcher:
                 candidate = results[-1].get("message_id")
                 if isinstance(candidate, int):
                     message_id = candidate
+            elif edited:
+                message_id = self.progress_message_id
             for choice_id, option in choice_ids:
                 self.store.add_choice(
                     choice_id,

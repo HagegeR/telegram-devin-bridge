@@ -82,6 +82,7 @@ def _inline(text: str) -> str:
 
     styled(r"\*\*([^*\n]+)\*\*|__([^_\n]+)__", "*", "*")
     styled(r"~~([^~\n]+)~~", "~", "~")
+    styled(r"\|\|([^|\n]+)\|\|", "||", "||")
     styled(
         r"(?<!\w)\*([^*\n]+)\*(?!\w)|(?<!\w)_([^_\n]+)_(?!\w)",
         "_",
@@ -112,12 +113,20 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
         if in_fence:
             result.append(line.replace("\\", "\\\\").replace("`", "\\`"))
             continue
-        if line.startswith("#"):
+        if line.startswith("**>"):
+            result.append("**>" + _inline(line[3:].lstrip()))
+        elif line.startswith("#"):
             result.append(f"*{_escape(line.lstrip('#').strip())}*")
         elif line.startswith(">"):
-            result.append(">" + _inline(line[1:].lstrip()))
+            closer = line[1:].lstrip()
+            if closer.rstrip() == "||":
+                result.append(">||")
+            else:
+                result.append(">" + _inline(closer))
         elif re.match(r"^-\s+", line):
             result.append("• " + _inline(line[2:]))
+        elif line.strip() == "||":
+            result.append("||")
         else:
             result.append(_inline(line))
     if in_fence:
@@ -303,6 +312,49 @@ _END_DETAILS = re.compile(r"^END\s+DETAILS\s*$", re.IGNORECASE)
 _END_TABLE = re.compile(r"^END\s+TABLE\s*$", re.IGNORECASE)
 _TABLE_SEPARATOR = re.compile(r":?-+:?")
 _FENCE = re.compile(r"^```")
+
+_CONTROL_LINE = re.compile(
+    r"^(REACT|URGENT|SILENT|PIN|PROGRESS|POLL)\s*:\s*(.*)$"
+)
+
+
+def extract_controls(text: str) -> tuple[str, dict[str, object]]:
+    """Strip control marker lines from a reply body.
+
+    Returns the remaining text plus a dict with any of: ``react`` (emoji),
+    ``urgent``/``silent`` (notification override), ``pin``, ``progress``
+    (edit-in-place), ``poll`` (``[question, *options]``). Marker lines that
+    don't parse are kept as ordinary text.
+    """
+    controls: dict[str, object] = {}
+    kept: list[str] = []
+    for line in text.split("\n"):
+        match = _CONTROL_LINE.match(line.strip())
+        if match is None:
+            kept.append(line)
+            continue
+        name, value = match.group(1), match.group(2).strip()
+        if name == "REACT" and value:
+            controls["react"] = value
+        elif name == "URGENT" and not value:
+            controls["urgent"] = True
+        elif name == "SILENT" and not value:
+            controls["silent"] = True
+        elif name == "PIN" and not value:
+            controls["pin"] = True
+        elif name == "PROGRESS" and not value:
+            controls["progress"] = True
+        elif name == "POLL":
+            parts = [part.strip() for part in value.split("|") if part.strip()]
+            if len(parts) >= 3:
+                controls["poll"] = parts
+                continue
+            kept.append(line)
+            continue
+        else:
+            kept.append(line)
+            continue
+    return "\n".join(kept), controls
 
 
 def parse_rich_segments(text: str) -> list[dict[str, object]] | None:

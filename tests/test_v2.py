@@ -29,6 +29,7 @@ from app.config import Settings
 from app.formatting import (
     chunk,
     extract_attachments,
+    extract_controls,
     extract_options,
     markdown_to_telegram_markdown_v2,
     normalize_rich_linebreaks,
@@ -938,6 +939,8 @@ class _FakeTelegram:
         # fallback; tests for the blocks path opt in.
         self.rich_enabled = False
         self.rich_error: Exception | None = None
+        self.pinned: list[tuple[int, int]] = []
+        self.polls: list[dict[str, object]] = []
 
     async def send_message(
         self,
@@ -1076,6 +1079,17 @@ class _FakeTelegram:
 
     async def close(self) -> None:
         return None
+
+    async def pin_chat_message(self, chat_id: int, message_id: int) -> None:
+        self.pinned.append((chat_id, message_id))
+
+    async def send_poll(
+        self, chat_id: int, question: str, options: list[str], **kwargs: object
+    ) -> dict[str, object]:
+        self.polls.append(
+            {"chat_id": chat_id, "question": question, "options": options, **kwargs}
+        )
+        return {"message_id": 10_000 + len(self.polls)}
 
     async def get_file(self, file_id: str) -> str:
         return f"path/{file_id}"
@@ -6793,3 +6807,158 @@ async def test_watcher_delivers_table_marker_as_blocks(tmp_path: Path) -> None:
         trigger_message_id=7,
     ).run()
     assert telegram2.sent[1]["text"] == "| A | B |\n| - | - |\n| 1 | 2 |"
+
+
+def test_extract_controls() -> None:
+    body, controls = extract_controls(
+        "Report\nREACT: 👀\nURGENT:\nPIN:\nPOLL: pick? | a | b | c\nlast"
+    )
+    assert body == "Report\nlast"
+    assert controls == {
+        "react": "👀",
+        "urgent": True,
+        "pin": True,
+        "poll": ["pick?", "a", "b", "c"],
+    }
+
+    body, controls = extract_controls("PROGRESS:\nSILENT:")
+    assert body == ""
+    assert controls == {"progress": True, "silent": True}
+
+    # Malformed markers stay ordinary text.
+    body, controls = extract_controls("REACT:\nPOLL: only | two\nURGENT: nope")
+    assert "REACT:" in body and "POLL:" in body and "URGENT: nope" in body
+    assert controls == {}
+
+
+@pytest.mark.asyncio
+async def test_watcher_delivers_control_markers(tmp_path: Path) -> None:
+    reply = "Result\nREACT: 👀\nPIN:\nURGENT:\nPOLL: pick? | a | b"
+
+    class FakeDevin:
+        v3_enabled = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            messages = (
+                [DevinMessage("devin_message", "event-1", reply, None)]
+                if self.calls == 2
+                else []
+            )
+            status = "working" if self.calls == 1 else "blocked"
+            return SessionState(status, "title", None, messages)
+
+        async def download_attachment(self, _url: str) -> tuple[bytes, str] | None:
+            return None
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    config = settings(
+        tmp_path,
+        devin_poll_seconds=1,
+        devin_watch_timeout_seconds=20,
+        devin_settle_seconds=30,
+    )
+    # silent=True proves URGENT: overrides the computed quiet flag.
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        config,
+        trigger_message_id=7,
+        silent=True,
+    ).run()
+    assert telegram.reactions[0] == "👀"
+    assert telegram.sent[0]["text"] == "Result"
+    assert telegram.sent[0]["disable_notification"] is False
+    assert telegram.pinned == [(222, 1)]
+    assert telegram.polls[0]["question"] == "pick?"
+    assert telegram.polls[0]["options"] == ["a", "b"]
+    assert telegram.polls[0]["disable_notification"] is False
+
+
+@pytest.mark.asyncio
+async def test_watcher_progress_edits_previous_message(tmp_path: Path) -> None:
+    replies = [
+        DevinMessage("devin_message", "event-1", "step 1\nPROGRESS:", None),
+        DevinMessage("devin_message", "event-2", "step 2\nPROGRESS:", None),
+    ]
+
+    class FakeDevin:
+        v3_enabled = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            messages = replies if self.calls == 2 else []
+            status = "working" if self.calls == 1 else "blocked"
+            return SessionState(status, "title", None, messages)
+
+        async def download_attachment(self, _url: str) -> tuple[bytes, str] | None:
+            return None
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    config = settings(
+        tmp_path,
+        devin_poll_seconds=1,
+        devin_watch_timeout_seconds=20,
+        devin_settle_seconds=30,
+    )
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        config,
+        trigger_message_id=7,
+    ).run()
+    bodies = [item["text"] for item in telegram.sent]
+    assert bodies[0] == "step 1"
+    assert "step 2" not in bodies  # second PROGRESS: edited instead of sent
+    assert telegram.edits == ["step 2"]
+
+
+def test_markdown_v2_spoiler_and_expandable_quote() -> None:
+    rendered = markdown_to_telegram_markdown_v2(
+        "**>Long part\n>more\n>||\nhide ||secret|| please\n||"
+    ).split("\n")
+    assert rendered[:3] == ["**>Long part", ">more", ">||"]
+    assert "||secret||" in rendered[3]
+    assert rendered[4] == "||"
