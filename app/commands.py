@@ -234,10 +234,10 @@ async def handle_command(
             detail = _STATUS_DETAIL.get(state.status_detail or "")
             if detail:
                 status = f"{status} · {detail}"
+            # acus_consumed is a dead field on some orgs (API reports 0.0
+            # for every session); show the line only when non-zero.
             acu_line = (
-                f"\nACUs: {state.acus_consumed:g}"
-                if state.acus_consumed is not None
-                else ""
+                f"\nACUs: {state.acus_consumed:g}" if state.acus_consumed else ""
             )
             pr_lines = "".join(
                 f"\n🔗 PR: {url}"
