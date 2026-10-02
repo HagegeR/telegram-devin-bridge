@@ -15,6 +15,7 @@ import httpx
 
 from app.formatting import (
     chunk,
+    has_expandable_quote,
     markdown_to_telegram_markdown_v2,
     normalize_rich_linebreaks,
 )
@@ -879,7 +880,7 @@ class TelegramClient:
         if (
             self.rich_enabled
             and 0 < len(text) <= 32768
-            and re.search(r"^\*\*>", text, re.MULTILINE) is None
+            and not has_expandable_quote(text)
         ):
             try:
                 return [

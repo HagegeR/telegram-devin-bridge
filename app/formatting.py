@@ -116,7 +116,10 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
             continue
         if line.startswith("**>"):
             body = line[3:].lstrip()
-            if body.rstrip().endswith("||"):
+            if (
+                body.rstrip().endswith("||")
+                and body.rstrip()[:-2].count("||") % 2 == 0
+            ):
                 result.append(
                     "**>" + _inline(body.rstrip()[:-2].rstrip()) + "||"
                 )
@@ -168,6 +171,16 @@ def markdown_to_telegram_markdown_v2(text: str) -> str:
     return "\n".join(result)
 
 
+def has_expandable_quote(text: str) -> bool:
+    in_fence = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and line.startswith("**>"):
+            return True
+    return False
+
+
 def chunk(text: str, limit: int = 4096) -> list[str]:
     if limit < 32:
         raise ValueError("limit must leave room for chunk suffixes")
@@ -178,25 +191,42 @@ def chunk(text: str, limit: int = 4096) -> list[str]:
     current: list[str] = []
     current_len = 0
     in_fence = False
+    in_expandable = False
     language = ""
 
-    def flush(close_fence: bool = False) -> None:
+    def flush(close: bool = False) -> None:
         nonlocal current, current_len
-        if close_fence and in_fence:
+        if close and in_fence:
             current.append("```")
+        elif close and in_expandable:
+            # || must sit at the end of the last quote line, not its own.
+            index = len(current) - 1
+            while index >= 0 and not current[index].strip():
+                index -= 1
+            if index >= 0:
+                current[index] += "||"
+            else:
+                current.append("||")
         chunks.append("\n".join(current))
         current = []
         current_len = 0
+
+    def reopen() -> None:
+        nonlocal current_len
+        if in_fence:
+            opening = f"```{language}" if language else "```"
+            current.append(opening)
+            current_len = len(opening)
+        elif in_expandable:
+            current.append("**>")
+            current_len = 3
 
     for line in text.splitlines():
         if line.startswith("```"):
             extra = len(line) + (1 if current else 0)
             if current and current_len + extra > capacity:
-                flush(close_fence=in_fence)
-                if in_fence:
-                    opening = f"```{language}" if language else "```"
-                    current.append(opening)
-                    current_len = len(opening)
+                flush(close=in_fence or in_expandable)
+                reopen()
             current.append(line)
             current_len += len(line) + (1 if len(current) > 1 else 0)
             if not in_fence:
@@ -205,26 +235,34 @@ def chunk(text: str, limit: int = 4096) -> list[str]:
             else:
                 in_fence = False
             continue
+        if not in_fence and line.startswith("**>"):
+            if not (
+                line.rstrip().endswith("||")
+                and line.rstrip()[:-2].count("||") % 2 == 0
+            ):
+                in_expandable = True
+        elif (
+            not in_fence
+            and in_expandable
+            and line.rstrip().endswith("||")
+            and not line.lstrip().startswith("||")
+            and line.rstrip()[:-2].count("||") % 2 == 0
+        ):
+            in_expandable = False
         remaining = line
         if not remaining:
             if current_len + (1 if current else 0) >= capacity:
-                flush(close_fence=in_fence)
-                if in_fence:
-                    opening = f"```{language}" if language else "```"
-                    current.append(opening)
-                    current_len = len(opening)
+                flush(close=in_fence or in_expandable)
+                reopen()
             current.append("")
             current_len += 1 if len(current) > 1 else 0
             continue
         while remaining:
-            reserve = 3 if in_fence else 0
+            reserve = 3 if (in_fence or in_expandable) else 0
             available = capacity - current_len - reserve
             if available <= 0:
-                flush(close_fence=in_fence)
-                if in_fence:
-                    opening = f"```{language}" if language else "```"
-                    current.append(opening)
-                    current_len = len(opening)
+                flush(close=in_fence or in_expandable)
+                reopen()
                 continue
             piece = remaining[:available]
             current.append(piece)

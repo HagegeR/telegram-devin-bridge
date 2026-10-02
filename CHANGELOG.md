@@ -18,8 +18,10 @@ and deployment update channels.
 
 - Expandable quotes (`**>` … `||`) in Devin replies now render as real
   collapsible blocks: a `||` on its own line is glued to the last quote
-  line (Telegram requires the closer at the end of the line), and such
-  replies bypass `sendRichMessage`, whose markdown cannot render them.
+  line (Telegram requires the closer at the end of the line), a trailing
+  spoiler is not mistaken for the closer, such replies bypass
+  `sendRichMessage` (whose markdown cannot render them), and a quote
+  that crosses a message split is closed and reopened at the boundary.
 - The `🔗 PR` status card is no longer appended to every reply once the
   session has a PR — it now only appears when the reply links a PR.
 

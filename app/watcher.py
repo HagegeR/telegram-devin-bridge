@@ -20,6 +20,7 @@ from app.formatting import (
     extract_controls,
     extract_large_code_blocks,
     extract_options,
+    has_expandable_quote,
     markdown_to_telegram_markdown_v2,
     parse_rich_segments,
     split_long_text,
@@ -728,9 +729,15 @@ class SessionWatcher:
             )
             self._index_outbound_many(results)
             return
-        # Marked replies send as structured segments, so the Show-more
-        # split would cut a TABLE:/DETAILS: block in half — skip it there.
-        if not options and len(body) > limit and parse_rich_segments(body) is None:
+        # Marked replies send as structured segments, and expandable
+        # quotes can't be split mid-quote — skip the Show-more cut in
+        # both cases; chunk() closes/reopens quotes at 4096 boundaries.
+        if (
+            not options
+            and len(body) > limit
+            and parse_rich_segments(body) is None
+            and not has_expandable_quote(body)
+        ):
             body, remaining = split_long_text(body, limit)
             if remaining:
                 token = secrets.token_urlsafe(12)

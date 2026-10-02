@@ -31,6 +31,7 @@ from app.formatting import (
     extract_attachments,
     extract_controls,
     extract_options,
+    has_expandable_quote,
     markdown_to_telegram_markdown_v2,
     normalize_rich_linebreaks,
     parse_rich_segments,
@@ -7012,6 +7013,38 @@ def test_markdown_v2_expandable_quote_closer_line() -> None:
     assert markdown_to_telegram_markdown_v2("a\n||") == "a\n||"
 
 
+def test_markdown_v2_expandable_quote_trailing_spoiler() -> None:
+    # ||secret|| on the opener line is a spoiler, not the quote closer.
+    assert markdown_to_telegram_markdown_v2(
+        "**>Title ||secret||\n>more\n||"
+    ) == "**>Title ||secret||\n>more||"
+    # Same ambiguity on a continuation line.
+    assert markdown_to_telegram_markdown_v2(
+        "**>q\ntext ||spoiler||\nlast||"
+    ) == "**>q\ntext ||spoiler||\nlast||"
+
+
+def test_has_expandable_quote_ignores_fences_and_inline() -> None:
+    assert has_expandable_quote("**>line\nbody||")
+    assert not has_expandable_quote("```\n**>example\n```")
+    assert not has_expandable_quote("mid **> text")
+
+
+def test_chunk_reopens_expandable_quote_at_boundary() -> None:
+    parts = chunk(
+        "**>open\n" + "x" * 200 + "\nlast||",
+        limit=120,
+    )
+    assert len(parts) > 1
+    # Every part is a complete quote: opened with **> and closed with ||
+    # (the closer injected at split boundaries, real one on the last).
+    assert all(part.startswith("**>") for part in parts)
+    assert all(
+        part.rsplit(" (", 1)[0].rstrip().endswith("||") for part in parts
+    )
+    assert parts[-1].rsplit(" (", 1)[0].rstrip().endswith("last||")
+
+
 @pytest.mark.asyncio
 async def test_send_markdown_expandable_quote_skips_rich() -> None:
     calls: list[str] = []
@@ -7029,3 +7062,21 @@ async def test_send_markdown_expandable_quote_skips_rich() -> None:
     # sendMessage/MarkdownV2.
     await client.send_markdown(222, "**>expand me\nbody||")
     assert calls == ["/botfake/sendMessage"]
+
+
+@pytest.mark.asyncio
+async def test_send_markdown_fenced_quote_stays_rich() -> None:
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    client = TelegramClient(
+        "token-placeholder",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.send_markdown(222, "example:\n```\n**>fake\n```")
+    # A fenced **> is literal text, so the rich path is fine.
+    assert calls == ["/botfake/sendRichMessage"]
