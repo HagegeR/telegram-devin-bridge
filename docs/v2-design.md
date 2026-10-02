@@ -78,7 +78,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 - `/new [title]` – archive current conv mapping (keep history), store a pending title, reply `◆ New conversation: <title>\nSend your first message to start Devin.` — no Devin call; the next user message creates the session with that title.
 - `/sessions` – last 10 from `session_history` for this conv, numbered with title + status (fetch status for each, tolerate errors), mark active with `*`.
 - `/resume <n>` – set that history entry as active (`last_event_id` = id of its latest devin_message so no replay), reply `Resumed: <title> <url>`.
-- `/status` – active session: title, `status_enum`, url, pr url.
+- `/status` – active session: title, `status_enum` (plus the v3 `status_detail` reason when it adds information), url, ACUs consumed, every PR url.
 - `/stop` – terminate active session via `DELETE` (confirm with an inline keyboard "Terminate | Cancel" using the same `pending_choices` mechanism but with `option_text` starting `__cmd:terminate:<session_id>`; handle_callback must special-case `__cmd:` prefixes). After terminate, clear active mapping.
 - `/playbook` – list playbooks (numbered, title only); `/playbook <n> [text]` – create session with that `playbook_id`, prompt = preamble + (text or "Run this playbook."), becomes active.
 - `/retry` – resend the last user text stored on the conversation (add column `last_user_text`).

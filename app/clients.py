@@ -92,6 +92,11 @@ class SessionState:
     messages: list[DevinMessage]
     structured_output: object | None = None
     updated_at: str | None = None
+    # v3-only detail: suspend/wait reason, ACU burn, every PR the session
+    # opened (pr_url keeps the last for the watcher's new-PR announce).
+    status_detail: str | None = None
+    acus_consumed: float | None = None
+    pr_urls: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -348,6 +353,7 @@ class DevinClient:
             messages=messages,
             structured_output=payload.get("structured_output"),
             updated_at=self._optional_str(payload.get("updated_at")),
+            pr_urls=(pr_url,) if pr_url else (),
         )
 
     @staticmethod
@@ -441,21 +447,29 @@ class DevinClient:
                 )
                 for item in items
             ]
-        pr_url: str | None = None
+        pr_urls: list[str] = []
         pull_requests = payload.get("pull_requests")
         if isinstance(pull_requests, list):
             for pr in pull_requests:
                 if isinstance(pr, dict):
-                    pr_url = self._optional_str(pr.get("pr_url")) or pr_url
+                    url = self._optional_str(pr.get("pr_url"))
+                    if url is not None:
+                        pr_urls.append(url)
+        acus = payload.get("acus_consumed")
         return SessionState(
             status_enum=self._v3_status_enum(
                 payload.get("status"), payload.get("status_detail")
             ),
             title=self._optional_str(payload.get("title")) or "",
-            pr_url=pr_url,
+            # keep pr_url on the LAST entry: the watcher announces a PR by
+            # diffing it, so a newly appended PR must change the value
+            pr_url=pr_urls[-1] if pr_urls else None,
             messages=messages,
             structured_output=payload.get("structured_output"),
             updated_at=_iso_epoch(payload.get("updated_at")),
+            status_detail=self._optional_str(payload.get("status_detail")),
+            acus_consumed=acus if isinstance(acus, (int, float)) else None,
+            pr_urls=tuple(pr_urls),
         )
 
     async def list_playbooks(self) -> list[Playbook]:

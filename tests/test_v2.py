@@ -1559,6 +1559,41 @@ async def test_commands_handle_unknown_status_and_pr_url(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_status_shows_v3_detail_acus_and_prs(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "status.sqlite3"))
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+
+    async def state(_: str) -> SessionState:
+        return SessionState(
+            "suspended",
+            "title",
+            "https://github.test/pr/1",
+            [],
+            status_detail="inactivity",
+            acus_consumed=3.25,
+            pr_urls=("https://github.test/pr/1", "https://github.test/pr/2"),
+        )
+
+    runtime.get_state = state  # type: ignore[method-assign]
+    await handle_command(runtime, message("/status"), "/status")
+    text = str(telegram.sent[-1]["text"])
+    assert "idle timeout" in text
+    assert "ACUs: 3.25" in text
+    assert "PR: https://github.test/pr/1" in text
+    assert "PR: https://github.test/pr/2" in text
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_replacing_conversation_cancels_old_watcher(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "replace.sqlite3"))
     store.save_conversation(
