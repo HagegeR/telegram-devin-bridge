@@ -18,6 +18,8 @@ class NotificationRuntime(Protocol):
         thread_id: int | None,
         silent: bool,
         markdown: bool,
+        html: str | None = None,
+        html_name: str = "report.html",
     ) -> int: ...
 
 
@@ -44,12 +46,18 @@ def register_notify_route(
         thread_id = values.get("thread_id")
         silent = values.get("silent", False)
         markdown = values.get("markdown", True)
+        html = values.get("html")
+        html_name = values.get("html_name", "report.html")
         if not isinstance(chat_id, int) and chat_id is not None:
             raise HTTPException(status_code=400, detail="chat_id must be an integer")
         if not isinstance(thread_id, int) and thread_id is not None:
             raise HTTPException(status_code=400, detail="thread_id must be an integer")
         if not isinstance(silent, bool) or not isinstance(markdown, bool):
             raise HTTPException(status_code=400, detail="invalid notification options")
+        if html is not None and not isinstance(html, str):
+            raise HTTPException(status_code=400, detail="html must be a string")
+        if not isinstance(html_name, str) or not html_name.lower().endswith(".html"):
+            raise HTTPException(status_code=400, detail="html_name must end with .html")
         try:
             sent = await runtime.notify(
                 values["text"],
@@ -57,6 +65,8 @@ def register_notify_route(
                 thread_id=thread_id,
                 silent=silent,
                 markdown=markdown,
+                html=html,
+                html_name=html_name,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
