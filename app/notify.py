@@ -23,6 +23,9 @@ class NotificationRuntime(Protocol):
     ) -> int: ...
 
 
+MAX_HTML_BYTES = 2 * 1024 * 1024
+
+
 def register_notify_route(
     application: FastAPI,
     runtime: NotificationRuntime,
@@ -56,6 +59,8 @@ def register_notify_route(
             raise HTTPException(status_code=400, detail="invalid notification options")
         if html is not None and not isinstance(html, str):
             raise HTTPException(status_code=400, detail="html must be a string")
+        if html is not None and len(html.encode("utf-8")) > MAX_HTML_BYTES:
+            raise HTTPException(status_code=413, detail="html exceeds 2 MiB")
         if not isinstance(html_name, str) or not html_name.lower().endswith(".html"):
             raise HTTPException(status_code=400, detail="html_name must end with .html")
         try:

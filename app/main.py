@@ -2031,6 +2031,8 @@ class Bridge:
                 target_thread = int(stored_thread)
         if target_chat is None:
             raise ValueError("No notification target configured")
+        if html is not None and not text.strip():
+            text, markdown = f"Report: {html_name}", False
         rendered = markdown_to_telegram_markdown_v2(text) if markdown else text
         markup: dict[str, object] | None = None
         if html is not None and self.settings.public_base_url:
@@ -2063,6 +2065,7 @@ class Bridge:
                 html.encode("utf-8"),
                 thread_id=target_thread,
                 content_type="text/html",
+                disable_notification=silent,
             )
         return sent
 

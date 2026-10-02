@@ -6425,14 +6425,29 @@ async def test_notify_html_report(tmp_path: Path, base_url: str | None) -> None:
             json={"text": "eod", "chat_id": 222, "html": "<p>hi</p>", "html_name": "eod.html"},
         )
         assert ok.json() == {"sent": 1}
+        too_big = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={"text": "x", "chat_id": 222, "html": "a" * (2 * 1024 * 1024 + 1)},
+        )
+        assert too_big.status_code == 413
+        empty = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={"text": "", "chat_id": 222, "html": "<p>e</p>", "silent": True},
+        )
+        assert empty.json() == {"sent": 1}
+        assert telegram.sent[-1]["text"] == "Report: report.html"
         if base_url is None:
-            assert telegram.sent[-1]["reply_markup"] is None
+            assert telegram.documents[-1]["disable_notification"] is True
+            telegram.documents.pop()
+            assert telegram.sent[-2]["reply_markup"] is None
             assert [(d["filename"], d["content"]) for d in telegram.documents] == [
                 ("eod.html", b"<p>hi</p>")
             ]
             return
         assert telegram.documents == []
-        markup = cast(dict[str, object], telegram.sent[-1]["reply_markup"])
+        markup = cast(dict[str, object], telegram.sent[-2]["reply_markup"])
         button = cast(list[list[dict[str, str]]], markup["inline_keyboard"])[0][0]
         assert button["text"] == "Open eod.html"
         response = await client.get(button["url"].replace(base_url, ""))
