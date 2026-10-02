@@ -26,6 +26,8 @@ and deployment update channels.
   reopened at the boundary.
 - `REACT:` with an emoji outside Telegram's fixed reaction set no longer
   fails silently — the reaction degrades to 👍.
+- The session preamble now also teaches `||spoiler||` and the `REACT:`
+  emoji-set fallback, so fresh sessions know the full marker set.
 - The `🔗 PR` status card is no longer appended to every reply once the
   session has a PR — it now only appears when the reply links a PR.
 

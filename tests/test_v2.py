@@ -24,7 +24,7 @@ from app.clients import (
     SessionState,
     TelegramClient,
 )
-from app.commands import handle_command
+from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings
 from app.formatting import (
     chunk,
@@ -7013,6 +7013,24 @@ def test_markdown_v2_expandable_quote_closer_line() -> None:
     ) == "**>q\n>||hidden||\n>last||"
     # Outside a quote a '||' line stays literal.
     assert markdown_to_telegram_markdown_v2("a\n||") == "a\n||"
+
+
+def test_preamble_documents_every_marker() -> None:
+    # Any capability the bridge supports must be taught to fresh sessions.
+    for marker in (
+        "OPTIONS:",
+        "**>",
+        "||spoiler||",
+        "DETAILS:",
+        "TABLE:",
+        "REACT:",
+        "PIN:",
+        "URGENT:",
+        "SILENT:",
+        "PROGRESS:",
+        "POLL:",
+    ):
+        assert marker in SYSTEM_PREAMBLE, marker
 
 
 def test_markdown_v2_expandable_quote_trailing_spoiler() -> None:
