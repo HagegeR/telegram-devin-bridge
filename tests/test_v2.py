@@ -642,6 +642,150 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,detail,expected",
+    [
+        (
+            "suspended",
+            "inactivity",
+            "💤 Session suspended — send a message to resume · idle timeout",
+        ),
+        ("finished", "inactivity", "✓ Finished · idle timeout"),
+        ("blocked", None, "💬 Waiting for your reply"),
+    ],
+)
+async def test_watcher_finish_notice_detail_suffix(
+    status: str,
+    detail: str | None,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    class FakeDevin:
+        v3_enabled = False
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            return SessionState(
+                status,
+                "title",
+                None,
+                [DevinMessage("devin_message", "e1", "Done", None)],
+                status_detail=detail,
+            )
+
+        async def download_attachment(
+            self, _url: str
+        ) -> tuple[bytes, str] | None:
+            return None
+
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=20,
+            devin_settle_seconds=30,
+        ),
+        trigger_message_id=7,
+    ).run()
+    assert telegram.sent[-1]["text"] == expected
+    assert telegram.reactions == ["👍"]
+
+
+@pytest.mark.asyncio
+async def test_watcher_timeout_close_keeps_detail_suffix(tmp_path: Path) -> None:
+    # Working -> finished with no messages: the close waits on the settle
+    # window (nothing delivered), so the watch timeout fires it — and the
+    # notice keeps previous_detail's suffix.
+    class FakeDevin:
+        v3_enabled = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            status = "working" if self.calls == 1 else "finished"
+            return SessionState(
+                status,
+                "title",
+                None,
+                [],
+                status_detail="inactivity" if status == "finished" else None,
+            )
+
+        async def download_attachment(
+            self, _url: str
+        ) -> tuple[bytes, str] | None:
+            return None
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_event_id="e0",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=5,
+            devin_settle_seconds=30,
+        ),
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=7,
+        trigger_at=now,
+    ).run()
+    assert telegram.sent[-1]["text"] == "✓ Finished · idle timeout"
+    assert telegram.reactions == ["👍"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["blocked", "finished"])
 async def test_watcher_skips_finish_notice_when_turns_queued(
     status: str, tmp_path: Path
