@@ -13,6 +13,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
+from app.commands import _STATUS_DETAIL
 from app.config import Settings
 from app.devin import DevinClient, DevinMessage, SessionState
 from app.formatting import (
@@ -134,7 +135,6 @@ class SessionWatcher:
         self._closed_gen = -1
         self.delivered = False
         self.draft_used = False
-        self.devin_reacted = False
         self.progress_message_id: int | None = None
         self.last_status: str | None = None
         self.started_at = self.clock()
@@ -149,7 +149,6 @@ class SessionWatcher:
             else None
         )
         self.delivered = False
-        self.devin_reacted = False
         self.started_at = self.clock()
         self.generation += 1
 
@@ -165,6 +164,7 @@ class SessionWatcher:
             self.poll_seconds,
         )
         previous_status: str | None = None
+        previous_detail: str | None = None
         title_retries_after_finish = 3
         try:
             while True:
@@ -180,7 +180,10 @@ class SessionWatcher:
                         continue
                     if previous_status in {"expired", "finished"}:
                         await self._close_turn(
-                            previous_status, gen=gen, trigger=turn_trigger
+                            previous_status,
+                            gen=gen,
+                            trigger=turn_trigger,
+                            detail=previous_detail,
                         )
                     elif not self.delivered:
                         await self.telegram.send_message(
@@ -224,6 +227,7 @@ class SessionWatcher:
                     and state.status_enum != previous_status
                 )
                 previous_status = state.status_enum
+                previous_detail = state.status_detail
                 self.last_status = state.status_enum
                 if self.first_status is None:
                     self.first_status = state.status_enum
@@ -308,7 +312,10 @@ class SessionWatcher:
                         await self.sleep(interval)
                         continue
                     await self._close_turn(
-                        state.status_enum, gen=gen, trigger=turn_trigger
+                        state.status_enum,
+                        gen=gen,
+                        trigger=turn_trigger,
+                        detail=state.status_detail,
                     )
                     if self.generation != gen:
                         await self.sleep(interval)
@@ -321,7 +328,10 @@ class SessionWatcher:
                             await self.sleep(interval)
                             continue
                         await self._close_turn(
-                            state.status_enum, gen=gen, trigger=turn_trigger
+                            state.status_enum,
+                            gen=gen,
+                            trigger=turn_trigger,
+                            detail=state.status_detail,
                         )
                         if self.generation != gen:
                             await self.sleep(interval)
@@ -537,12 +547,12 @@ class SessionWatcher:
         metadata_urls = set(attachment_urls)
         body, options = extract_options(body)
         body, controls = extract_controls(body)
-        if "react" in controls and await self.telegram.react(
-            self.conversation.chat_id,
-            react_message_id,
-            str(controls["react"]),
-        ):
-            self.devin_reacted = True
+        if "react" in controls:
+            await self.telegram.react(
+                self.conversation.chat_id,
+                react_message_id,
+                str(controls["react"]),
+            )
         notify_disabled = (
             self.silent
             or "silent" in controls
@@ -992,11 +1002,17 @@ class SessionWatcher:
         value = cls._message_ts(timestamp)
         return value is None or value >= wall_started_at - 5
 
-    async def _send_finish_notice(self, status: str) -> None:
+    async def _send_finish_notice(
+        self, status: str, detail: str | None = None
+    ) -> None:
+        text = FINISH_NOTICES.get(status, "✓ Done")
+        label = _STATUS_DETAIL.get(detail or "")
+        if label:
+            text = f"{text} · {label}"
         try:
             await self.telegram.send_message(
                 self.conversation.chat_id,
-                FINISH_NOTICES.get(status, "✓ Done"),
+                text,
                 thread_id=self.conversation.thread_id,
                 disable_notification=self.silent,
             )
@@ -1008,7 +1024,12 @@ class SessionWatcher:
             )
 
     async def _close_turn(
-        self, status: str, *, gen: int, trigger: int | None
+        self,
+        status: str,
+        *,
+        gen: int,
+        trigger: int | None,
+        detail: str | None = None,
     ) -> None:
         fresh = self.delivered_count > 0 or status != self.first_status
         queued = (
@@ -1017,15 +1038,15 @@ class SessionWatcher:
             and self.has_queued()
         )
         if fresh and not queued and self._closed_gen != gen:
-            await self._send_finish_notice(status)
+            await self._send_finish_notice(status, detail)
         if self.generation != gen:
             return
         self._closed_gen = gen
         await self._finish_reaction(trigger, expired=status == "expired")
 
     async def _finish_reaction(self, trigger: int | None, *, expired: bool) -> None:
-        if self.devin_reacted:
-            return
+        # The completion mark is a status signal, not a duplicate: a REACT:
+        # ack earlier in the turn must not suppress the end-of-turn mark.
         await self.telegram.react(
             self.conversation.chat_id,
             trigger,

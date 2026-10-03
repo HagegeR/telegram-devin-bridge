@@ -548,7 +548,15 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
                 if self.calls == 3
                 else "blocked"
             )
-            return SessionState(status, "title", None, messages)
+            return SessionState(
+                status,
+                "title",
+                None,
+                messages,
+                status_detail=(
+                    "waiting_for_approval" if status == "blocked" else None
+                ),
+            )
 
     class FakeTelegram:
         def __init__(self) -> None:
@@ -623,13 +631,157 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
     ).run()
     assert [item["text"] for item in telegram.sent] == [
         "**Done**",
-        "💬 Waiting for your reply",
+        "💬 Waiting for your reply · approval",
     ]
     assert "parse_mode" not in telegram.sent[0]
     markup = cast(dict[str, object], telegram.sent[0]["reply_markup"])
     keyboard = cast(list[list[dict[str, str]]], markup["inline_keyboard"])
     assert [row[0]["text"] for row in keyboard] == ["Yes", "No."]
     assert devin.calls == 4
+    assert telegram.reactions == ["👍"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,detail,expected",
+    [
+        (
+            "suspended",
+            "inactivity",
+            "💤 Session suspended — send a message to resume · idle timeout",
+        ),
+        ("finished", "inactivity", "✓ Finished · idle timeout"),
+        ("blocked", None, "💬 Waiting for your reply"),
+    ],
+)
+async def test_watcher_finish_notice_detail_suffix(
+    status: str,
+    detail: str | None,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    class FakeDevin:
+        v3_enabled = False
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            return SessionState(
+                status,
+                "title",
+                None,
+                [DevinMessage("devin_message", "e1", "Done", None)],
+                status_detail=detail,
+            )
+
+        async def download_attachment(
+            self, _url: str
+        ) -> tuple[bytes, str] | None:
+            return None
+
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=20,
+            devin_settle_seconds=30,
+        ),
+        trigger_message_id=7,
+    ).run()
+    assert telegram.sent[-1]["text"] == expected
+    assert telegram.reactions == ["👍"]
+
+
+@pytest.mark.asyncio
+async def test_watcher_timeout_close_keeps_detail_suffix(tmp_path: Path) -> None:
+    # Working -> finished with no messages: the close waits on the settle
+    # window (nothing delivered), so the watch timeout fires it — and the
+    # notice keeps previous_detail's suffix.
+    class FakeDevin:
+        v3_enabled = False
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            status = "working" if self.calls == 1 else "finished"
+            return SessionState(
+                status,
+                "title",
+                None,
+                [],
+                status_detail="inactivity" if status == "finished" else None,
+            )
+
+        async def download_attachment(
+            self, _url: str
+        ) -> tuple[bytes, str] | None:
+            return None
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_event_id="e0",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=5,
+            devin_settle_seconds=30,
+        ),
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=7,
+        trigger_at=now,
+    ).run()
+    assert telegram.sent[-1]["text"] == "✓ Finished · idle timeout"
     assert telegram.reactions == ["👍"]
 
 
@@ -7059,9 +7211,9 @@ async def test_watcher_delivers_control_markers(tmp_path: Path) -> None:
         trigger_message_id=7,
         silent=True,
     ).run()
-    # REACT: counts as the turn's reaction, so the close-reaction is skipped.
-    assert telegram.reactions == ["👀"]
-    assert telegram.reaction_targets == [7]
+    # REACT: acks the turn — the completion mark still lands on close.
+    assert telegram.reactions == ["👀", "👍"]
+    assert telegram.reaction_targets == [7, 7]
     assert telegram.sent[0]["text"] == "Result"
     assert telegram.sent[0]["disable_notification"] is False
     assert telegram.pinned == [(222, 1)]
@@ -7132,9 +7284,9 @@ async def test_watcher_progress_edits_previous_message(tmp_path: Path) -> None:
     # The edit clears any stale keyboard the replaced message carried.
     assert telegram.edit_kwargs[0]["reply_markup"] == {"inline_keyboard": []}
     # A non-stale later reply can still react to the turn's trigger message,
-    # and an explicit REACT: suppresses the automatic close-reaction.
-    assert telegram.reactions == ["🎉"]
-    assert telegram.reaction_targets == [7]
+    # and the completion mark still lands on close.
+    assert telegram.reactions == ["🎉", "👍"]
+    assert telegram.reaction_targets == [7, 7]
 
 
 def test_markdown_v2_spoiler_and_expandable_quote() -> None:
