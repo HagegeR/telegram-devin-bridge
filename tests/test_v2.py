@@ -548,7 +548,15 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
                 if self.calls == 3
                 else "blocked"
             )
-            return SessionState(status, "title", None, messages)
+            return SessionState(
+                status,
+                "title",
+                None,
+                messages,
+                status_detail=(
+                    "waiting_for_approval" if status == "blocked" else None
+                ),
+            )
 
     class FakeTelegram:
         def __init__(self) -> None:
@@ -623,7 +631,7 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
     ).run()
     assert [item["text"] for item in telegram.sent] == [
         "**Done**",
-        "💬 Waiting for your reply",
+        "💬 Waiting for your reply · approval",
     ]
     assert "parse_mode" not in telegram.sent[0]
     markup = cast(dict[str, object], telegram.sent[0]["reply_markup"])
@@ -7059,9 +7067,9 @@ async def test_watcher_delivers_control_markers(tmp_path: Path) -> None:
         trigger_message_id=7,
         silent=True,
     ).run()
-    # REACT: counts as the turn's reaction, so the close-reaction is skipped.
-    assert telegram.reactions == ["👀"]
-    assert telegram.reaction_targets == [7]
+    # REACT: acks the turn — the completion mark still lands on close.
+    assert telegram.reactions == ["👀", "👍"]
+    assert telegram.reaction_targets == [7, 7]
     assert telegram.sent[0]["text"] == "Result"
     assert telegram.sent[0]["disable_notification"] is False
     assert telegram.pinned == [(222, 1)]
@@ -7132,9 +7140,9 @@ async def test_watcher_progress_edits_previous_message(tmp_path: Path) -> None:
     # The edit clears any stale keyboard the replaced message carried.
     assert telegram.edit_kwargs[0]["reply_markup"] == {"inline_keyboard": []}
     # A non-stale later reply can still react to the turn's trigger message,
-    # and an explicit REACT: suppresses the automatic close-reaction.
-    assert telegram.reactions == ["🎉"]
-    assert telegram.reaction_targets == [7]
+    # and the completion mark still lands on close.
+    assert telegram.reactions == ["🎉", "👍"]
+    assert telegram.reaction_targets == [7, 7]
 
 
 def test_markdown_v2_spoiler_and_expandable_quote() -> None:

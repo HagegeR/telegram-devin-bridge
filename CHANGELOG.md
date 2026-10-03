@@ -16,6 +16,15 @@ and deployment update channels.
   `OPTIONS:` the session gets a complete propose → approve loop in-chat.
   Markers inside its body stay literal, like `DETAILS:`.
 
+### Fixed
+
+- The turn-close 👍 always lands now — a `REACT:` acknowledgment earlier in
+  the turn no longer suppresses the completion mark on the triggering
+  message.
+- Finish notices carry the v3 `status_detail` reason when it disambiguates
+  (`· approval`, `· idle timeout`, `· paused on request`), so a suspended or
+  waiting session reports *why* instead of only the coarse status.
+
 ## [v1.3.0] - 2026-10-02
 
 ### Added
