@@ -1145,3 +1145,29 @@ async def test_self_update_rejects_script_outside_repo(
     await runtime.self_update({"from": {"id": 42}, "chat": {"id": 5}}, "")
     assert "unavailable" in sent[-1]
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_configure_bot_ephemeral_only_in_group_scope() -> None:
+    from app.set_webhook import configure_bot
+
+    calls: list[tuple[list[dict], dict | None]] = []
+
+    class FakeTelegram:
+        async def set_my_commands(self, commands, scope=None):
+            calls.append((commands, scope))
+
+        async def set_my_description(self, description):
+            pass
+
+        async def set_my_short_description(self, description):
+            pass
+
+    await configure_bot(FakeTelegram())  # type: ignore[arg-type]
+    default_commands, private_commands, group_commands = (
+        c for c, _ in calls[:3]
+    )
+    assert not any("is_ephemeral" in c for c in default_commands)
+    assert not any("is_ephemeral" in c for c in private_commands)
+    ephemeral = {c["command"] for c in group_commands if c.get("is_ephemeral")}
+    assert ephemeral == {"help", "status", "sessions", "repos", "lang"}

@@ -58,6 +58,8 @@ GROUP_COMMANDS = {
 
 # Bot API 10.2 `is_ephemeral`: declaring the command ephemeral lets the user
 # invoke it invisibly in groups and marks its replies as ephemeral-only.
+# Group-scoped only: clients hide ephemeral commands from the private-chat
+# command menu, so marking them on other scopes drops them from autocomplete.
 EPHEMERAL_COMMANDS = {"help", "status", "sessions", "repos", "lang"}
 
 DESCRIPTION = (
@@ -69,15 +71,20 @@ DESCRIPTION = (
 
 async def configure_bot(telegram: TelegramClient) -> None:
     full_commands = [
-        {
-            "command": command,
-            "description": description,
-            **({"is_ephemeral": True} if command in EPHEMERAL_COMMANDS else {}),
-        }
+        {"command": command, "description": description}
         for command, description in COMMANDS
     ]
     group_commands = [
-        command for command in full_commands if command["command"] in GROUP_COMMANDS
+        {
+            **command,
+            **(
+                {"is_ephemeral": True}
+                if command["command"] in EPHEMERAL_COMMANDS
+                else {}
+            ),
+        }
+        for command in full_commands
+        if command["command"] in GROUP_COMMANDS
     ]
     try:
         await telegram.set_my_commands(full_commands)

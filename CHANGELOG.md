@@ -24,6 +24,9 @@ and deployment update channels.
 - Finish notices carry the v3 `status_detail` reason when it disambiguates
   (`· approval`, `· idle timeout`, `· paused on request`), so a suspended or
   waiting session reports *why* instead of only the coarse status.
+- `/help`, `/status`, `/sessions`, `/repos`, `/lang` are back in the
+  command menu — `is_ephemeral` now applies only to the group-chats scope
+  (clients hide ephemeral commands from the private-chat autocomplete).
 
 ## [v1.3.0] - 2026-10-02
 
