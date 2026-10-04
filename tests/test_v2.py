@@ -4088,7 +4088,7 @@ async def test_startup_resumes_watchers_for_recent_conversations(
         session_id="s2",
         session_url="https://devin.test/s2",
         title="title",
-        created_at=time.time() - 100,
+        created_at=time.time() - 100_000,
     )
     telegram = _FakeTelegram()
     runtime = Bridge(
