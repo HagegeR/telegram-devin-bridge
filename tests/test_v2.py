@@ -852,6 +852,55 @@ async def test_watcher_outlives_timeout_while_session_working(
 
 
 @pytest.mark.asyncio
+async def test_resume_watchers_covers_the_active_window(tmp_path: Path) -> None:
+    # A bridge restart must recover watchers for sessions still inside the
+    # active window — quiet-but-working conversations older than the short
+    # timeout used to be skipped, stranding replies again.
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="recent",
+    )
+    store.save_conversation(
+        conv_key="333",
+        chat_id=333,
+        thread_id=None,
+        session_id="s2",
+        session_url="https://devin.test/s2",
+        title="ancient",
+    )
+    now = time.time()
+    store.connection.execute(
+        "UPDATE conversations SET updated_at = ? WHERE conv_key = '222'",
+        (now - 3600,),
+    )
+    store.connection.execute(
+        "UPDATE conversations SET updated_at = ? WHERE conv_key = '333'",
+        (now - 90000,),
+    )
+    store.connection.commit()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            devin_watch_timeout_seconds=1800,
+            devin_active_watch_timeout_seconds=86400,
+        ),
+        store,
+        _FakeDevin(),
+        _FakeTelegram(),  # type: ignore[arg-type]
+    )
+    await runtime._resume_watchers()
+    assert set(runtime.watchers) == {"s1"}
+    for task in runtime.watchers.values():
+        task.cancel()
+    await asyncio.gather(*runtime.watchers.values(), return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["blocked", "finished"])
 async def test_watcher_skips_finish_notice_when_turns_queued(
     status: str, tmp_path: Path
