@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     devin_poll_seconds: float = 5
     devin_poll_fast_seconds: float = 1
     devin_watch_timeout_seconds: float = 1800
+    devin_active_watch_timeout_seconds: float = 86400
     devin_settle_seconds: float = 30
     devin_status_after_seconds: float = 8
     devin_session_instructions: str = ""

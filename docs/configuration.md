@@ -31,7 +31,8 @@ required.
 | `DEVIN_SESSION_INSTRUCTIONS` | no | empty | Prepended verbatim to the prompt of every session the bridge starts — use it for org-specific guidance such as which injected secret grants Devin v3 API access for editing automations. |
 | `DEVIN_POLL_FAST_SECONDS` | no | `1.0` | Watcher interval while Devin is actively replying. |
 | `DEVIN_POLL_SECONDS` | no | `5` | Watcher interval otherwise. |
-| `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` | Max watcher lifetime; a later user message restarts it. |
+| `DEVIN_WATCH_TIMEOUT_SECONDS` | no | `1800` | Max watcher lifetime once the session is no longer active; a later user message restarts it. |
+| `DEVIN_ACTIVE_WATCH_TIMEOUT_SECONDS` | no | `86400` | Max watcher lifetime while the session stays active (`working`/`resumed`), so long replies still deliver without a user message. |
 | `DEVIN_SETTLE_SECONDS` | no | `30` | Keeps a new watcher alive while the API still reports a stale non-active status after submit. |
 | `DEVIN_STATUS_AFTER_SECONDS` | no | `8` | Delay before the bridge reports session status. |
 

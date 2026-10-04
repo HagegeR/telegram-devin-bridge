@@ -786,6 +786,72 @@ async def test_watcher_timeout_close_keeps_detail_suffix(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_watcher_outlives_timeout_while_session_working(
+    tmp_path: Path,
+) -> None:
+    # A still-working session must not lose its watcher at
+    # DEVIN_WATCH_TIMEOUT_SECONDS — replies would strand until the next
+    # user message. Only the larger active cap ends the watch.
+    class FakeDevin:
+        v3_enabled = False
+
+        async def get_session(
+            self,
+            _: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            return SessionState("working", "title", None, [])
+
+        async def download_attachment(
+            self, _url: str
+        ) -> tuple[bytes, str] | None:
+            return None
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_event_id="e0",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    await SessionWatcher(
+        conversation,
+        store,
+        FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=5,
+            devin_active_watch_timeout_seconds=12,
+            devin_settle_seconds=30,
+        ),
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=7,
+        trigger_at=now,
+    ).run()
+    assert now >= 12
+    assert telegram.sent[-1]["text"].startswith("⏳ Devin is still working")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["blocked", "finished"])
 async def test_watcher_skips_finish_notice_when_turns_queued(
     status: str, tmp_path: Path
