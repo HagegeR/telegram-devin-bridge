@@ -167,6 +167,19 @@ def _redact_text(text: str, settings: Settings) -> str:
     return _BOT_TOKEN_RE.sub("bot***", text)
 
 
+async def drain_tasks(tasks: set[asyncio.Task[None]], timeout: float) -> None:
+    """Wait for tracked tasks to finish, cancelling whatever outlives `timeout`."""
+    if not tasks:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=timeout
+        )
+    except TimeoutError:
+        for task in tasks:
+            task.cancel()
+
+
 def register_admin_route(
     application: FastAPI,
     runtime: AdminRuntime,
@@ -177,11 +190,14 @@ def register_admin_route(
     spawn_shell: SpawnShell = _default_spawn,
     clock: Clock = time.monotonic,
     sleep: Sleep = asyncio.sleep,
+    background_tasks: set[asyncio.Task[None]] | None = None,
 ) -> None:
     request_times: deque[float] = deque()
     auth_fail_times: deque[float] = deque()
     auth_fail_lock = asyncio.Lock()
     env_lock = asyncio.Lock()
+    if background_tasks is None:
+        background_tasks = set()
 
     def _check_rate(times: deque[float]) -> None:
         now = clock()
@@ -384,7 +400,9 @@ def register_admin_route(
                 status,
             )
             key_suffix = f" {key}" if key != "-" else ""
-            asyncio.create_task(
+            task = asyncio.create_task(
                 _notify_outcome(f"Admin API: {action}{key_suffix} — {status}")
             )
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
         return result

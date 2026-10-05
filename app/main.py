@@ -26,7 +26,7 @@ from app.access import (
     should_respond_in_group,
     strip_bot_mention,
 )
-from app.admin import _sanitize_update_output, register_admin_route
+from app.admin import _sanitize_update_output, drain_tasks, register_admin_route
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.devin import DevinClient, Playbook, SessionState
@@ -2388,6 +2388,8 @@ def create_app(
         ),
     )
 
+    admin_tasks: set[asyncio.Task[None]] = set()
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         await runtime.startup()
@@ -2402,6 +2404,9 @@ def create_app(
         if polling_task is not None:
             polling_task.cancel()
             await asyncio.gather(polling_task, return_exceptions=True)
+        # Deliver in-flight admin outcome notices before shutdown closes the
+        # Telegram client (a restart self-SIGTERMs ~1s after the response).
+        await drain_tasks(admin_tasks, timeout=5)
         await runtime.shutdown()
 
     application = FastAPI(title="Telegram–Devin Bridge", lifespan=lifespan)
@@ -2442,7 +2447,12 @@ def create_app(
     register_notify_route(application, runtime, actual_settings)
     register_doctor_route(application, actual_settings)
     register_admin_route(
-        application, runtime, actual_settings, port=8000, run_shell=_run_command
+        application,
+        runtime,
+        actual_settings,
+        port=8000,
+        run_shell=_run_command,
+        background_tasks=admin_tasks,
     )
     application.state.bridge = runtime
     return application
