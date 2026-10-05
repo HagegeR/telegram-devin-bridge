@@ -90,8 +90,11 @@ should not touch production Telegram/Devin.
   Shut extra servers down (or let them exit) before sending the real signal.
 - `httpx.MockTransport` (≥0.28) handlers may be `async` — `await
   asyncio.sleep(n)` inside the handler simulates a slow upstream API. Use a
-  mutable delay var to flip a `/sendMessage` mock from instant to ~2s to test
+  mutable delay var to flip the send endpoint from instant to ~2s to test
   graceful-shutdown drains (the drain must wait for the in-flight send).
+  Delay whichever endpoint the path under test hits: admin outcome notices go
+  through `notify(markdown=False)` → `send_message` → `/sendMessage`, but
+  `send_markdown` with `rich_enabled` uses `/sendRichMessage` instead.
 - A `check()` helper that prints PASS/FAIL plus the `-- captured endpoints --`
   list at the end (every mocked path hit, incl. getMe/setMyCommands boot
   evidence) makes a self-contained transcript artifact for review.
