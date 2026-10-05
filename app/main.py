@@ -207,7 +207,13 @@ class Bridge:
             task.add_done_callback(self.background_tasks.discard)
 
     async def _resume_watchers(self) -> None:
-        since = time.time() - self.settings.devin_watch_timeout_seconds
+        # Active sessions can outlive the short timeout now, so recover over
+        # the wider window too — each resumed watcher self-selects on first
+        # poll (non-active sessions close within the settle window).
+        since = time.time() - max(
+            self.settings.devin_active_watch_timeout_seconds,
+            self.settings.devin_watch_timeout_seconds,
+        )
         for conversation in self.store.list_recent_conversations(since):
             await self.start_watcher(
                 conversation,

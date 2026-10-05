@@ -171,10 +171,15 @@ class SessionWatcher:
                 turn_trigger = self.trigger_message_id
                 turn_delivered = self.delivered
                 gen = self.generation
-                if (
-                    self.clock() - self.started_at
-                    >= self.settings.devin_watch_timeout_seconds
-                ):
+                # A session still working past DEVIN_WATCH_TIMEOUT keeps its
+                # watcher — long replies must not strand undelivered; only a
+                # much larger cap bounds a stuck-active session.
+                watch_cap = (
+                    self.settings.devin_active_watch_timeout_seconds
+                    if previous_status in ACTIVE_STATUSES
+                    else self.settings.devin_watch_timeout_seconds
+                )
+                if self.clock() - self.started_at >= watch_cap:
                     await self._cleanup_transients()
                     if self.generation != gen:
                         continue

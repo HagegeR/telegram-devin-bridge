@@ -27,6 +27,10 @@ and deployment update channels.
 - `/help`, `/status`, `/sessions`, `/repos`, `/lang` are back in the
   command menu — `is_ephemeral` now applies only to the group-chats scope
   (clients hide ephemeral commands from the private-chat autocomplete).
+- Replies no longer strand until your next message: a session still
+  `working` past `DEVIN_WATCH_TIMEOUT_SECONDS` keeps its watcher (bounded
+  by the new `DEVIN_ACTIVE_WATCH_TIMEOUT_SECONDS`, default 24 h); the
+  30-min cap now only ends watches on inactive sessions.
 
 ## [v1.3.0] - 2026-10-02
 
