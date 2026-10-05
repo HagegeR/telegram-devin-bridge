@@ -182,6 +182,7 @@ def register_admin_route(
     auth_fail_times: deque[float] = deque()
     auth_fail_lock = asyncio.Lock()
     env_lock = asyncio.Lock()
+    background_tasks: set[asyncio.Task[None]] = set()
 
     def _check_rate(times: deque[float]) -> None:
         now = clock()
@@ -384,7 +385,9 @@ def register_admin_route(
                 status,
             )
             key_suffix = f" {key}" if key != "-" else ""
-            asyncio.create_task(
+            task = asyncio.create_task(
                 _notify_outcome(f"Admin API: {action}{key_suffix} — {status}")
             )
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
         return result
