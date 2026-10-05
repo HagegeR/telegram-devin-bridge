@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v1.4.0] - 2026-10-05
+
 ### Added
 
 - `SUGGEST:` reply marker — `SUGGEST: <what> — <why>` … `END SUGGEST` renders
