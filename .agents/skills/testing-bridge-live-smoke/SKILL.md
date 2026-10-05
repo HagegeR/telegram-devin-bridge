@@ -75,6 +75,26 @@ should not touch production Telegram/Devin.
   — expect fail on a custom port.
 - DB: `store.cleanup_*` run at startup; new `idx_*` indexes queryable via
   `sqlite3.connect("file:db?mode=ro", uri=True)` while app runs.
+- In-process uvicorn ≥0.54 `capture_signals` re-raises the captured signal
+  after graceful shutdown (`signal.raise_signal` in the context manager's
+  finally). If your harness sends a real `os.kill(pid, SIGTERM)`, the process
+  dies right after shutdown — buffered stdout and post-shutdown assertions are
+  lost. Install your own `signal.signal(SIGTERM, observer)` BEFORE
+  `server.serve()`: uvicorn saves it as the "original" handler and the
+  re-raise lands on your observer, which is also the exact timestamp where the
+  production process would have died. Run `python -u` (or `print(flush=True)`)
+  and/or fsync evidence to a file as insurance.
+- With two `uvicorn.Server`s in one process, `signal.signal` handlers stack:
+  the last server to start owns the process-global handler; on its exit it
+  restores the previous one (chain: observer → A.handle_exit → B.handle_exit).
+  Shut extra servers down (or let them exit) before sending the real signal.
+- `httpx.MockTransport` (≥0.28) handlers may be `async` — `await
+  asyncio.sleep(n)` inside the handler simulates a slow upstream API. Use a
+  mutable delay var to flip a `/sendMessage` mock from instant to ~2s to test
+  graceful-shutdown drains (the drain must wait for the in-flight send).
+- A `check()` helper that prints PASS/FAIL plus the `-- captured endpoints --`
+  list at the end (every mocked path hit, incl. getMe/setMyCommands boot
+  evidence) makes a self-contained transcript artifact for review.
 
 ## Devin Secrets Needed
 
