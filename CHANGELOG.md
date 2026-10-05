@@ -32,7 +32,9 @@ and deployment update channels.
   by the new `DEVIN_ACTIVE_WATCH_TIMEOUT_SECONDS`, default 24 h); the
   30-min cap now only ends watches on inactive sessions.
 - Admin API outcome notifications are held by a tracked task set now — the
-  event loop can no longer garbage-collect the send before it delivers.
+  event loop can no longer garbage-collect the send, and shutdown drains it
+  (bounded 5 s) before closing the Telegram client so a restart's outcome
+  notice actually lands.
 
 ## [v1.3.0] - 2026-10-02
 

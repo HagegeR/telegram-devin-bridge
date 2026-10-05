@@ -51,7 +51,13 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
     return Settings(_env_file=None, **values)
 
 
-def make_app(tmp_path: Path, sleep_func=None, **overrides: object):
+def make_app(
+    tmp_path: Path,
+    sleep_func=None,
+    notify_func=None,
+    background_tasks: set[asyncio.Task] | None = None,
+    **overrides: object,
+):
     spawned: list[str] = []
     ran: list[tuple[str, Path]] = []
     notices: list[str] = []
@@ -67,6 +73,8 @@ def make_app(tmp_path: Path, sleep_func=None, **overrides: object):
         return 0, "\x1b[31mup to date\x1b[0m"
 
     async def fake_notify(text: str, **kwargs) -> int:
+        if notify_func is not None:
+            return await notify_func(text, **kwargs)
         notices.append(text)
         return 0
 
@@ -87,6 +95,7 @@ def make_app(tmp_path: Path, sleep_func=None, **overrides: object):
         spawn_shell=fake_spawn,
         clock=lambda: clock["t"],
         sleep=sleep_func or fake_sleep,
+        background_tasks=background_tasks,
     )
     return app, spawned, ran, clock, notices, sleeps
 
@@ -661,6 +670,61 @@ async def test_admin_backup_copies_database(tmp_path: Path) -> None:
         assert "conversations" in tables
     finally:
         copy.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_outcome_task_retained_until_done(tmp_path: Path) -> None:
+    gate = asyncio.Event()
+    tasks: set[asyncio.Task] = set()
+
+    async def gated_notify(text: str, **kwargs) -> int:
+        await gate.wait()
+        return 0
+
+    app, *_ = make_app(tmp_path, notify_func=gated_notify, background_tasks=tasks)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await authed(client, {"action": "unknown"})
+        assert response.status_code == 400
+        for _ in range(10):
+            if tasks:
+                break
+            await asyncio.sleep(0)
+        assert len(tasks) == 1
+        (task,) = tasks
+        gate.set()
+        await task
+    assert not tasks
+
+
+@pytest.mark.asyncio
+async def test_drain_tasks_cancels_outliers() -> None:
+    from app.admin import drain_tasks
+
+    done = asyncio.Event()
+
+    async def stuck() -> None:
+        await done.wait()
+
+    tasks = {asyncio.create_task(stuck())}
+    await drain_tasks(tasks, timeout=0.01)
+    assert all(task.cancelled() or task.cancelling() for task in tasks)
+
+
+@pytest.mark.asyncio
+async def test_drain_tasks_waits_for_completion() -> None:
+    from app.admin import drain_tasks
+
+    finished: list[str] = []
+
+    async def quick() -> None:
+        finished.append("sent")
+
+    tasks = {asyncio.create_task(quick())}
+    await drain_tasks(tasks, timeout=5)
+    assert finished == ["sent"]
+    await asyncio.gather(*tasks)
 
 
 @pytest.mark.asyncio
