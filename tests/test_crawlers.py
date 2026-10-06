@@ -171,7 +171,16 @@ def test_crawl_sites_db_override_beats_env(tmp_path: Path) -> None:
 async def test_crawl_settings_callback_toggles(tmp_path: Path) -> None:
     store = Store(":memory:")
     telegram = _FakeTelegram()
-    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_allowed_users="111,555",
+            telegram_admin_user_ids="111",
+        ),
+        store,
+        _FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+    )
     callback = {
         "id": "cfg-1",
         "data": "cfg:crawl:instagram",
@@ -187,6 +196,12 @@ async def test_crawl_settings_callback_toggles(tmp_path: Path) -> None:
     assert runtime.crawl_sites() == {"article"}
     await runtime.handle_callback({**callback, "id": "cfg-4", "data": "cfg:crawl:reset"})
     assert store.get_setting("crawl_sites") is None
+    # Non-admin users can view but not change the bridge-wide set.
+    outsider = {**callback, "from": {"id": 555, "is_bot": False}}
+    await runtime.handle_callback({**outsider, "id": "cfg-5", "data": "cfg:crawl:instagram"})
+    assert runtime.crawl_sites() == set()
+    assert store.get_setting("crawl_sites") is None
+    assert telegram.answers[-1] == "Admins only"
     await runtime.shutdown()
 
 

@@ -794,7 +794,7 @@ _HELP_SECTIONS = (
             "/playbook [n] [text] — list or run a playbook",
             "/settings — notifications, drafts, mode, defaults",
             "/repos [a/b,c/d] — restrict sessions to repos",
-            "/crawl — show which sites get pre-crawled (CRAWL_SITES)",
+            "/crawl — show which sites get pre-crawled (toggle in /settings)",
             "/lang [code] — voice-note language",
             "/usage — Devin ACU usage",
             "/whoami — your IDs and access",

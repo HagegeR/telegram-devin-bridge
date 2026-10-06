@@ -1184,6 +1184,7 @@ class Bridge:
                     callback_message,
                     conv_key,
                     data,
+                    user_id=user_id,
                 )
                 return
             if data.startswith("more:"):
@@ -2012,6 +2013,8 @@ class Bridge:
         callback_message: Mapping[str, object],
         conv_key: str,
         data: str,
+        *,
+        user_id: int | None = None,
     ) -> None:
         pieces = data.split(":", 2)
         chat_id = _int(_mapping(callback_message.get("chat")).get("id"))
@@ -2092,6 +2095,14 @@ class Bridge:
                     repos=None if value == "all" else value,
                 )
             elif field == "crawl":
+                if (
+                    value not in {"back", "menu"}
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id, "Admins only"
+                    )
+                    return
                 if value == "reset":
                     self.store.delete_setting("crawl_sites")
                 elif value == "off":
