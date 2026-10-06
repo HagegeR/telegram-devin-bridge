@@ -49,6 +49,10 @@ ACTIVE_STATUSES = frozenset({
     "resume_requested_frontend",
 })
 
+# On a restart-recovery watcher, this many undelivered replies collapse
+# into a single digest message instead of a burst of individual sends.
+_DIGEST_MIN_MESSAGES = 3
+
 FINISH_NOTICES = {
     "blocked": "💬 Waiting for your reply",
     "finished": "✓ Finished",
@@ -246,23 +250,31 @@ class SessionWatcher:
                         max(interval * 1.5, self.settings.devin_poll_fast_seconds, 0.5),
                         self.poll_seconds,
                     )
+                backlog_digest = (
+                    self.resume_from is not None
+                    and first_poll
+                    and len(new_messages) >= _DIGEST_MIN_MESSAGES
+                )
+                if backlog_digest:
+                    await self._deliver_digest(new_messages)
                 delivery_delivered = turn_delivered
                 for message in new_messages:
                     stale = self._pre_trigger(message)
                     if not delivery_delivered and not stale:
                         await self._cleanup_transients()
-                    await self._deliver(
-                        message,
-                        state,
-                        reply_to_message_id=(
-                            turn_trigger
-                            if not delivery_delivered and not stale
-                            else None
-                        ),
-                        react_message_id=(
-                            turn_trigger if not stale else None
-                        ),
-                    )
+                    if not backlog_digest:
+                        await self._deliver(
+                            message,
+                            state,
+                            reply_to_message_id=(
+                                turn_trigger
+                                if not delivery_delivered and not stale
+                                else None
+                            ),
+                            react_message_id=(
+                                turn_trigger if not stale else None
+                            ),
+                        )
                     if not stale:
                         delivery_delivered = True
                         self.delivered = True
@@ -850,6 +862,35 @@ class SessionWatcher:
                     option,
                     message_id,
                 )
+
+    async def _deliver_digest(self, messages: list[DevinMessage]) -> None:
+        parts: list[str] = []
+        for message in messages:
+            body, _ = extract_options(extract_attachments(message.message)[0])
+            body, _ = extract_controls(body)
+            body = body.strip()
+            if body:
+                parts.append(body)
+        if not parts:
+            return
+        cap = max(120, 3000 // len(parts))
+        parts = [
+            part[:cap].rstrip() + ("…" if len(part) > cap else "")
+            for part in parts
+        ]
+        title = self.conversation.title or "the session"
+        body = (
+            f"📥 While the bridge was restarting — "
+            f"{len(messages)} replies from {title}:\n\n"
+            + "\n\n———\n\n".join(parts)
+        )
+        results = await self.telegram.send_markdown(
+            self.conversation.chat_id,
+            body,
+            thread_id=self.conversation.thread_id,
+            disable_notification=self.silent,
+        )
+        self._index_outbound_many(results)
 
     async def _send_body(
         self, body: str, delivery_kwargs: dict[str, object]

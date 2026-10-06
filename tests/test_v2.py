@@ -962,6 +962,70 @@ async def test_watcher_skips_finish_notice_when_turns_queued(
 
 
 @pytest.mark.asyncio
+async def test_recovery_watcher_collapses_backlog_into_digest(
+    tmp_path: Path,
+) -> None:
+    class BacklogDevin(_FakeDevin):
+        async def get_session(
+            self, _: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [
+                    DevinMessage("devin_message", f"e{i}", f"Reply {i}", None)
+                    for i in range(1, 5)
+                ],
+            )
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        BacklogDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=20,
+            devin_settle_seconds=30,
+        ),
+        clock=clock,
+        sleep=sleep,
+        resume_from=now,
+    ).run()
+    texts = [str(item["text"]) for item in telegram.sent]
+    digests = [t for t in texts if "While the bridge was restarting" in t]
+    assert len(digests) == 1
+    assert "4 replies" in digests[0]
+    for i in range(1, 5):
+        assert f"Reply {i}" in digests[0]
+    assert not [t for t in texts if t.startswith("Reply ")]
+    assert store.get_conversation("222").last_event_id == "e4"
+
+
+@pytest.mark.asyncio
 async def test_start_watcher_acks_superseded_trigger(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
