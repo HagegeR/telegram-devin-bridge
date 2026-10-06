@@ -10,6 +10,11 @@ and deployment update channels.
 
 ### Added
 
+- Restart backlog digest — when a bridge restart leaves 3+ undelivered
+  Devin replies in a conversation, the recovery watcher sends one
+  `📥 While the bridge was restarting` digest instead of bursting every
+  reply individually. Below the threshold (and for `/resume`) replies
+  deliver one-by-one as before.
 - `CRAWL_SITES` + `/crawl` — bridge-wide opt-in URL pre-crawling. Set
   `CRAWL_SITES=instagram,article` as the default and matching URLs in user
   messages are fetched in the bridge; extracted text + media are attached
