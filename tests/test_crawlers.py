@@ -29,7 +29,7 @@ def _crawl_transport() -> httpx.MockTransport:
                 content=b"jpeg-bytes",
                 headers={"content-type": "image/jpeg"},
             )
-        if request.url.host.endswith("instagram.com"):
+        if request.url.host in {"instagram.com", "www.instagram.com"}:
             return httpx.Response(
                 200,
                 text="<html><head><title>IG page</title></head><body>x</body></html>",
