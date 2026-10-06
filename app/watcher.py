@@ -255,14 +255,15 @@ class SessionWatcher:
                     and first_poll
                     and len(new_messages) >= _DIGEST_MIN_MESSAGES
                 )
+                covered: set[int] = set()
                 if backlog_digest:
-                    await self._deliver_digest(new_messages)
+                    covered = await self._deliver_digest(new_messages)
                 delivery_delivered = turn_delivered
-                for message in new_messages:
+                for index, message in enumerate(new_messages):
                     stale = self._pre_trigger(message)
                     if not delivery_delivered and not stale:
                         await self._cleanup_transients()
-                    if not backlog_digest:
+                    if index not in covered:
                         await self._deliver(
                             message,
                             state,
@@ -863,16 +864,23 @@ class SessionWatcher:
                     message_id,
                 )
 
-    async def _deliver_digest(self, messages: list[DevinMessage]) -> None:
+    async def _deliver_digest(
+        self, messages: list[DevinMessage]
+    ) -> set[int]:
         parts: list[str] = []
-        for message in messages:
+        covered: set[int] = set()
+        for index, message in enumerate(messages):
             body, _ = extract_options(extract_attachments(message.message)[0])
             body, _ = extract_controls(body)
             body = body.strip()
             if body:
                 parts.append(body)
+                covered.add(index)
         if not parts:
-            return
+            # Marker-only replies (bare OPTIONS:/POLL:/attachments) produce
+            # no visible text: refuse the digest so they get normal delivery
+            # instead of silently vanishing under the cursor advance.
+            return set()
         cap = max(120, 3000 // len(parts))
         parts = [
             part[:cap].rstrip() + ("…" if len(part) > cap else "")
@@ -891,6 +899,7 @@ class SessionWatcher:
             disable_notification=self.silent,
         )
         self._index_outbound_many(results)
+        return covered
 
     async def _send_body(
         self, body: str, delivery_kwargs: dict[str, object]
