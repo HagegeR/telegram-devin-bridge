@@ -861,15 +861,15 @@ class Bridge:
             )
         await self._react(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
-        if attachment is not None:
-            filename, content, content_type = attachment
-            url = await self.devin.upload_attachment(filename, content, content_type)
-            text = f"{text}\n\nAttached file: {url} ({filename})".strip()
         enabled_crawls = set(
             self.store.get_settings(conv_key).crawl_site_list or ()
         )
         if enabled_crawls:
             text = await self._append_crawled_content(text, enabled_crawls)
+        if attachment is not None:
+            filename, content, content_type = attachment
+            url = await self.devin.upload_attachment(filename, content, content_type)
+            text = f"{text}\n\nAttached file: {url} ({filename})".strip()
         if not text:
             text = "Please inspect the attached file."
         sent_at: float | None = None

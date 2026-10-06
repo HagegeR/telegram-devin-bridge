@@ -9,10 +9,12 @@ on every post.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from html import unescape
 from typing import Protocol
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -24,12 +26,17 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _SCRIPT_STYLE_RE = re.compile(
     r"<(script|style|noscript)\b[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE
 )
+_MAIN_CONTENT_RE = re.compile(
+    r"<(article|main)\b[^>]*>(.*?)</\1>", re.DOTALL | re.IGNORECASE
+)
 _META_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.DOTALL | re.IGNORECASE)
 _META_RE = re.compile(r"<meta\s[^>]*>", re.IGNORECASE)
 _META_ATTR_RE = re.compile(r'(\w[\w:-]*)="([^"]*)"')
 _IMG_MAX_BYTES = 10 * 1024 * 1024
+_TEXT_MAX_BYTES = 1024 * 1024
 _TEXT_MAX_CHARS = 4000
 _MAX_URLS_PER_MESSAGE = 3
+_MAX_REDIRECTS = 5
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
@@ -64,19 +71,77 @@ def extract_urls(text: str) -> list[str]:
     return urls
 
 
+def _is_public_url(url: str) -> bool:
+    """Reject loopback/private/link-local hosts (SSRF guard).
+
+    Hostnames that *resolve* to private IPs are not caught — the bridge runs
+    on the user's own network and only allowlisted senders can enable this.
+    """
+    host = urlparse(url).hostname
+    if host is None:
+        return False
+    if host.casefold() in {"localhost", "localhost.localdomain"}:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return ip.is_global
+
+
+async def _fetch(
+    url: str,
+    client: httpx.AsyncClient,
+    max_bytes: int,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+) -> httpx.Response | None:
+    """GET with manual redirects (host-validated per hop) + a body cap."""
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        if not _is_public_url(current):
+            return None
+        try:
+            async with client.stream(
+                "GET",
+                current,
+                headers=headers,
+                params=params,
+                follow_redirects=False,
+            ) as response:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        return None
+                    current = urljoin(current, location)
+                    continue
+                response.raise_for_status()
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in response.aiter_bytes(64 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        return None
+                    chunks.append(chunk)
+                response._content = b"".join(chunks)
+                return response
+        except httpx.HTTPError:
+            return None
+    return None
+
+
 async def _download_image(
     url: str, client: httpx.AsyncClient
 ) -> tuple[str, bytes, str] | None:
-    try:
-        response = await client.get(url)
-        response.raise_for_status()
-    except httpx.HTTPError:
-        return None
-    if len(response.content) > _IMG_MAX_BYTES:
+    response = await _fetch(url, client, _IMG_MAX_BYTES)
+    if response is None:
         return None
     content_type = (
         response.headers.get("content-type", "image/jpeg").split(";")[0].strip()
     )
+    if not content_type.startswith("image/"):
+        return None
     ext = content_type.split("/")[-1].replace("jpeg", "jpg")
     return (f"crawl.{ext}", response.content, content_type)
 
@@ -96,16 +161,19 @@ class InstagramCrawler:
     async def fetch(
         self, url: str, client: httpx.AsyncClient
     ) -> CrawlResult | None:
-        try:
-            response = await client.get(
-                "https://www.instagram.com/api/v1/oembed/",
-                params={"url": f"https://www.instagram.com/p/{_IG_SHORTCODE_RE.match(url).group(1)}/"},
-                headers={"User-Agent": _USER_AGENT},
-            )
-            response.raise_for_status()
-        except httpx.HTTPError:
+        shortcode = _IG_SHORTCODE_RE.match(url).group(1)
+        response = await _fetch(
+            "https://www.instagram.com/api/v1/oembed/",
+            client,
+            _TEXT_MAX_BYTES,
+            headers={"User-Agent": _USER_AGENT},
+            params={"url": f"https://www.instagram.com/p/{shortcode}/"},
+        )
+        if response is None:
             return None
         data = response.json()
+        if not isinstance(data, dict):
+            return None
         parts = [str(data.get("title") or "").strip()]
         author = str(data.get("author_name") or "").strip()
         if author:
@@ -134,14 +202,10 @@ class ArticleCrawler:
     async def fetch(
         self, url: str, client: httpx.AsyncClient
     ) -> CrawlResult | None:
-        try:
-            response = await client.get(
-                url,
-                headers={"User-Agent": _USER_AGENT},
-                follow_redirects=True,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError:
+        response = await _fetch(
+            url, client, _TEXT_MAX_BYTES, headers={"User-Agent": _USER_AGENT}
+        )
+        if response is None:
             return None
         if "html" not in response.headers.get("content-type", ""):
             return None
@@ -163,7 +227,11 @@ class ArticleCrawler:
             else ""
         )
         description = meta.get("og:description") or meta.get("description") or ""
-        body = _TAG_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", html))
+        # Prefer the article/main element so nav and banners don't displace
+        # the actual content inside the character cap.
+        main = _MAIN_CONTENT_RE.search(html)
+        source = main.group(2) if main else html
+        body = _TAG_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", source))
         body = re.sub(r"\s+", " ", unescape(body)).strip()
         text = "\n\n".join(
             part
@@ -173,7 +241,7 @@ class ArticleCrawler:
         result = CrawlResult(site=self.name, url=url, text=text)
         og_image = meta.get("og:image", "")
         if og_image:
-            image = await _download_image(og_image, client)
+            image = await _download_image(urljoin(url, og_image), client)
             if image is not None:
                 result.images.append(image)
         return result
@@ -188,15 +256,21 @@ async def crawl_text(
     enabled: set[str],
     client: httpx.AsyncClient,
 ) -> list[CrawlResult]:
-    """Crawl URLs in a message for every enabled site type."""
+    """Crawl URLs in a message for every enabled site type.
+
+    The per-message cap counts only URLs an enabled crawler owns, so
+    unrelated links never consume the crawl quota.
+    """
     results: list[CrawlResult] = []
-    for url in extract_urls(text)[:_MAX_URLS_PER_MESSAGE]:
+    for url in extract_urls(text):
+        if len(results) >= _MAX_URLS_PER_MESSAGE:
+            break
         for crawler in CRAWLERS:
             if crawler.name not in enabled or not crawler.matches(url):
                 continue
             try:
                 result = await crawler.fetch(url, client)
-            except (httpx.HTTPError, ValueError, KeyError):
+            except (httpx.HTTPError, ValueError, KeyError, AttributeError):
                 result = None
             if result is not None and result.text:
                 results.append(result)

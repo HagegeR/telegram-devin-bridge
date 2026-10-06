@@ -93,6 +93,35 @@ async def test_crawl_text_respects_opt_in() -> None:
 
 
 @pytest.mark.asyncio
+async def test_crawl_quota_counts_only_owned_urls() -> None:
+    from app.crawlers import crawl_text
+
+    client = httpx.AsyncClient(transport=_crawl_transport())
+    results = await crawl_text(
+        "https://a.test/1 https://b.test/2 https://c.test/3 "
+        "https://www.instagram.com/p/ABC123/",
+        {"instagram"},
+        client,
+    )
+    # the three non-matching URLs don't consume the 3-URL quota
+    assert [r.site for r in results] == ["instagram"]
+
+
+@pytest.mark.asyncio
+async def test_private_urls_are_not_crawled() -> None:
+    from app.crawlers import crawl_text
+
+    client = httpx.AsyncClient(transport=_crawl_transport())
+    for url in (
+        "http://127.0.0.1/admin",
+        "http://169.254.169.254/latest",
+        "http://192.168.1.1/",
+        "http://localhost:8080/",
+    ):
+        assert await crawl_text(url, {"article"}, client) == []
+
+
+@pytest.mark.asyncio
 async def test_crawl_command_sets_shows_and_clears(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
     store = Store(":memory:")
