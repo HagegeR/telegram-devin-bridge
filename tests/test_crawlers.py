@@ -122,41 +122,43 @@ async def test_private_urls_are_not_crawled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_crawl_command_sets_shows_and_clears(tmp_path: Path) -> None:
+async def test_crawl_command_shows_global_config(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
     store = Store(":memory:")
-    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
-    await handle_command(runtime, message("/crawl"), "/crawl")
-    assert "off" in str(telegram.sent[-1]["text"])
-    await handle_command(
-        runtime, message("/crawl instagram,article"), "/crawl instagram,article"
+    runtime = Bridge(
+        settings(tmp_path, crawl_sites="instagram,article"),
+        store,
+        _FakeDevin(),
+        telegram,  # type: ignore[arg-type]
     )
-    assert store.get_settings("222").crawl_site_list == [
-        "instagram",
-        "article",
-    ]
-    await handle_command(runtime, message("/crawl bogus"), "/crawl bogus")
-    assert "Unknown" in str(telegram.sent[-1]["text"])
-    await handle_command(runtime, message("/crawl off"), "/crawl off")
-    assert store.get_settings("222").crawl_sites is None
+    await handle_command(runtime, message("/crawl"), "/crawl")
+    text = str(telegram.sent[-1]["text"])
+    assert "article" in text and "instagram" in text
+    runtime2 = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime2, message("/crawl"), "/crawl")
+    assert "off" in str(telegram.sent[-1]["text"])
     await runtime.shutdown()
+    await runtime2.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_crawl_sites_setting_round_trip() -> None:
-    store = Store(":memory:")
-    store.update_settings("222", crawl_sites="instagram")
-    assert store.get_settings("222").crawl_site_list == ["instagram"]
-    store.update_settings("222", crawl_sites=None)
-    assert store.get_settings("222").crawl_site_list is None
+def test_crawl_sites_env_parsing_and_validation(tmp_path: Path) -> None:
+    assert settings(tmp_path, crawl_sites="instagram, ARTICLE").crawl_site_set == frozenset(
+        {"instagram", "article"}
+    )
+    assert settings(tmp_path).crawl_site_set == frozenset()
+    with pytest.raises(ValueError, match="unknown crawlers"):
+        settings(tmp_path, crawl_sites="bogus")
 
 
 @pytest.mark.asyncio
 async def test_crawled_content_appended_to_prompt(tmp_path: Path) -> None:
     devin = _FakeDevin()
-    store = Store(":memory:")
-    store.update_settings("222", crawl_sites="instagram")
-    runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
+    runtime = Bridge(
+        settings(tmp_path, crawl_sites="instagram"),
+        Store(":memory:"),
+        devin,
+        _FakeTelegram(),  # type: ignore[arg-type]
+    )
     runtime._crawl_client = httpx.AsyncClient(transport=_crawl_transport())
     await runtime.handle_user_turn(
         message("look at https://www.instagram.com/p/ABC123/", message_id=1),

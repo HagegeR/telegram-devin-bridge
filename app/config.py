@@ -85,7 +85,8 @@ class Settings(BaseSettings):
         "TELEGRAM_FREE_RESPONSE_CHATS,TELEGRAM_ALLOWED_CHAT_IDS,"
         "TELEGRAM_ALLOWED_USERS,TELEGRAM_DEBOUNCE_SECONDS,"
         "TELEGRAM_QUEUE_WHILE_BUSY,TELEGRAM_LONG_REPLY_CHARS,"
-        "TELEGRAM_RATE_LIMIT_PER_MINUTE,BOT_USERNAME"
+        "TELEGRAM_RATE_LIMIT_PER_MINUTE,BOT_USERNAME,"
+        "CRAWL_SITES"
     )
     admin_log_path: str = "/var/log/telegram-devin-bridge.log"
     admin_restart_command: str = Field(default_factory=_default_restart_command)
@@ -105,6 +106,7 @@ class Settings(BaseSettings):
     whisper_cpp_fast: bool = True
     whisper_cpp_extra_args: str = ""
     telegram_attach_voice: bool = False
+    crawl_sites: str = ""
     github_token: str | None = None
     self_update_command: str = "sh deploy/self-update.sh"
 
@@ -216,6 +218,19 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_crawl_sites(self) -> "Settings":
+        from app.crawlers import CRAWLER_NAMES
+
+        unknown = self.crawl_site_set - frozenset(CRAWLER_NAMES)
+        if unknown:
+            raise ValueError(
+                "crawl_sites has unknown crawlers: "
+                f"{', '.join(sorted(unknown))} "
+                f"(available: {', '.join(CRAWLER_NAMES)})"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_whisper_cpp_extra_args(self) -> "Settings":
         try:
             tokens = shlex.split(self.whisper_cpp_extra_args)
@@ -275,6 +290,14 @@ class Settings(BaseSettings):
     @property
     def whisper_cpp_extra_argv(self) -> list[str]:
         return shlex.split(self.whisper_cpp_extra_args)
+
+    @property
+    def crawl_site_set(self) -> frozenset[str]:
+        return frozenset(
+            site.strip().casefold()
+            for site in self.crawl_sites.split(",")
+            if site.strip()
+        )
 
     @property
     def transcription_enabled(self) -> bool:

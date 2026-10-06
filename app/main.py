@@ -861,9 +861,7 @@ class Bridge:
             )
         await self._react(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
-        enabled_crawls = set(
-            self.store.get_settings(conv_key).crawl_site_list or ()
-        )
+        enabled_crawls = set(self.settings.crawl_site_set)
         if enabled_crawls:
             text = await self._append_crawled_content(text, enabled_crawls)
         if attachment is not None:

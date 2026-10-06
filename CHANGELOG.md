@@ -10,12 +10,12 @@ and deployment update channels.
 
 ### Added
 
-- `/crawl` — per-chat opt-in URL pre-crawling. Enable site crawlers per
-  conversation (`/crawl instagram,article`, `/crawl off`); matching URLs in
-  a message are fetched in the bridge and the extracted text + media are
-  attached to the Devin prompt, so sessions skip the crawl work. Ships with
-  `instagram` (oEmbed: caption + cover image) and `article` (generic page
-  title/description/body) crawlers in `app/crawlers.py`.
+- `CRAWL_SITES` + `/crawl` — bridge-wide opt-in URL pre-crawling. Set
+  `CRAWL_SITES=instagram,article` and matching URLs in user messages are
+  fetched in the bridge; extracted text + media are attached to the Devin
+  prompt, so sessions skip the crawl work. `/crawl` reports the active set.
+  Ships with `instagram` (oEmbed: caption + cover image) and `article`
+  (generic page title/description/body) crawlers in `app/crawlers.py`.
 
 ## [v1.4.0] - 2026-10-05
 
