@@ -29,7 +29,7 @@ from app.access import (
 from app.admin import _sanitize_update_output, drain_tasks, register_admin_route
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
-from app.crawlers import crawl_text
+from app.crawlers import CRAWLER_NAMES, crawl_text
 from app.devin import DevinClient, Playbook, SessionState
 from app.doctor import register_doctor_route
 from app.formatting import (
@@ -861,7 +861,7 @@ class Bridge:
             )
         await self._react(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
-        enabled_crawls = set(self.settings.crawl_site_set)
+        enabled_crawls = self.crawl_sites()
         if enabled_crawls:
             text = await self._append_crawled_content(text, enabled_crawls)
         if attachment is not None:
@@ -1939,6 +1939,16 @@ class Bridge:
         value = self._conversation_settings(conv_key).status_timer
         return self.settings.devin_status_after_seconds if value is not False else float("inf")
 
+    def crawl_sites(self) -> set[str]:
+        raw = self.store.get_setting("crawl_sites")
+        if raw is None:
+            return set(self.settings.crawl_site_set)
+        return {
+            part.strip().casefold()
+            for part in raw.split(",")
+            if part.strip()
+        } & set(CRAWLER_NAMES)
+
     async def settings_menu(
         self,
         message: Mapping[str, object],
@@ -1960,7 +1970,11 @@ class Bridge:
                 [{"text": f"🤖 Devin mode: {current.devin_mode or 'org default'}", "callback_data": "cfg:mode:menu"}],
                 [{"text": f"📂 Repos: {current.repos or 'all'}", "callback_data": "cfg:repos:menu"}],
             ]
-        rows.append([{"text": "Close", "callback_data": "cfg:close:1"}])
+        crawl = ",".join(sorted(self.crawl_sites())) or "off"
+        rows += [
+            [{"text": f"🔎 Pre-crawl: {crawl}", "callback_data": "cfg:crawl:menu"}],
+            [{"text": "Close", "callback_data": "cfg:close:1"}],
+        ]
         markup = {"inline_keyboard": rows}
         if edit_message_id is not None:
             await self.telegram.edit_message_reply_markup(
@@ -1970,6 +1984,27 @@ class Bridge:
             )
         else:
             await self.send_markup(message, "Conversation settings", markup)
+
+    async def _crawl_submenu(
+        self,
+        callback_message: Mapping[str, object],
+        message_id: int,
+    ) -> None:
+        enabled = self.crawl_sites()
+        rows = [[{
+            "text": f"{'✓ ' if name in enabled else ''}{name}",
+            "callback_data": f"cfg:crawl:{name}",
+        }] for name in sorted(CRAWLER_NAMES)]
+        rows.append([
+            {"text": "all off", "callback_data": "cfg:crawl:off"},
+            {"text": "↺ env default", "callback_data": "cfg:crawl:reset"},
+        ])
+        rows.append([{"text": "‹ back", "callback_data": "cfg:crawl:back"}])
+        await self.telegram.edit_message_reply_markup(
+            _int(_mapping(callback_message.get("chat")).get("id")),
+            message_id,
+            {"inline_keyboard": rows},
+        )
 
     async def _handle_settings_callback(
         self,
@@ -2023,6 +2058,8 @@ class Bridge:
                         "callback_data": "cfg:repos:all",
                     }]]},
                 )
+            elif field == "crawl":
+                await self._crawl_submenu(callback_message, message_id)
             else:
                 values = ["inherit", "on", "off"]
                 await self.telegram.edit_message_reply_markup(
@@ -2054,6 +2091,25 @@ class Bridge:
                     conv_key,
                     repos=None if value == "all" else value,
                 )
+            elif field == "crawl":
+                if value == "reset":
+                    self.store.delete_setting("crawl_sites")
+                elif value == "off":
+                    self.store.set_setting("crawl_sites", "")
+                elif value in CRAWLER_NAMES:
+                    enabled = self.crawl_sites()
+                    enabled ^= {value}
+                    self.store.set_setting(
+                        "crawl_sites", ",".join(sorted(enabled))
+                    )
+                await self.telegram.answer_callback_query(callback_id, toast)
+                if value == "back":
+                    await self.settings_menu(
+                        callback_message, edit_message_id=message_id
+                    )
+                else:
+                    await self._crawl_submenu(callback_message, message_id)
+                return
             await self.settings_menu(callback_message, edit_message_id=message_id)
         await self.telegram.answer_callback_query(callback_id, toast)
 

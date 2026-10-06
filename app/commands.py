@@ -119,6 +119,8 @@ class CommandRuntime(Protocol):
 
     def clear_queued_turns(self, conv_key: str) -> None: ...
 
+    def crawl_sites(self) -> set[str]: ...
+
     def queued_count(self, conv_key: str) -> int: ...
 
     async def retry_conversation(
@@ -354,11 +356,11 @@ async def handle_command(
                     ephemeral=True,
                 )
     elif command == "crawl":
-        enabled = sorted(runtime.settings.crawl_site_set)
+        enabled = sorted(runtime.crawl_sites())
         await runtime.send_text(
             message,
             f"Pre-crawl: {', '.join(enabled) if enabled else 'off'} "
-            "(CRAWL_SITES env)\n"
+            "(toggle in /settings)\n"
             f"Available: {', '.join(CRAWLER_NAMES)}",
             ephemeral=True,
         )
