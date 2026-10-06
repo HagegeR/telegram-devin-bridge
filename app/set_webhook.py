@@ -24,6 +24,7 @@ COMMANDS = [
     ("cancel", "Cancel the active session"),
     ("settings", "Conversation settings"),
     ("repos", "Restrict sessions to repositories"),
+    ("crawl", "Pre-crawl URLs before they reach Devin"),
     ("lang", "Set your voice note language"),
     ("usage", "Show Devin usage"),
     ("playbook", "List or run a Devin playbook"),
@@ -52,6 +53,7 @@ GROUP_COMMANDS = {
     "help",
     "settings",
     "repos",
+    "crawl",
     "lang",
     "usage",
 }
@@ -60,7 +62,14 @@ GROUP_COMMANDS = {
 # invoke it invisibly in groups and marks its replies as ephemeral-only.
 # Group-scoped only: clients hide ephemeral commands from the private-chat
 # command menu, so marking them on other scopes drops them from autocomplete.
-EPHEMERAL_COMMANDS = {"help", "status", "sessions", "repos", "lang"}
+EPHEMERAL_COMMANDS = {
+    "help",
+    "status",
+    "sessions",
+    "repos",
+    "crawl",
+    "lang",
+}
 
 DESCRIPTION = (
     "Chat with Devin, the AI software engineer. Each chat or topic keeps its own "

@@ -9,6 +9,7 @@ import httpx
 
 from app.access import is_allowed, is_topic_chat
 from app.config import Settings
+from app.crawlers import CRAWLER_NAMES
 from app.devin import DevinClient, Playbook, SessionState
 from app.formatting import (
     rich_details,
@@ -352,6 +353,15 @@ async def handle_command(
                     "Usage: /repos owner/repo[,org/repo2] · /repos all",
                     ephemeral=True,
                 )
+    elif command == "crawl":
+        enabled = sorted(runtime.settings.crawl_site_set)
+        await runtime.send_text(
+            message,
+            f"Pre-crawl: {', '.join(enabled) if enabled else 'off'} "
+            "(CRAWL_SITES env)\n"
+            f"Available: {', '.join(CRAWLER_NAMES)}",
+            ephemeral=True,
+        )
     elif command == "lang":
         user_id = _int(_mapping(message.get("from")).get("id"))
         key = f"lang:{user_id}"
@@ -782,6 +792,7 @@ _HELP_SECTIONS = (
             "/playbook [n] [text] — list or run a playbook",
             "/settings — notifications, drafts, mode, defaults",
             "/repos [a/b,c/d] — restrict sessions to repos",
+            "/crawl — show which sites get pre-crawled (CRAWL_SITES)",
             "/lang [code] — voice-note language",
             "/usage — Devin ACU usage",
             "/whoami — your IDs and access",

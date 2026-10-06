@@ -1170,4 +1170,11 @@ async def test_configure_bot_ephemeral_only_in_group_scope() -> None:
     assert not any("is_ephemeral" in c for c in default_commands)
     assert not any("is_ephemeral" in c for c in private_commands)
     ephemeral = {c["command"] for c in group_commands if c.get("is_ephemeral")}
-    assert ephemeral == {"help", "status", "sessions", "repos", "lang"}
+    assert ephemeral == {
+        "help",
+        "status",
+        "sessions",
+        "repos",
+        "crawl",
+        "lang",
+    }

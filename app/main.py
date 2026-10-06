@@ -29,6 +29,7 @@ from app.access import (
 from app.admin import _sanitize_update_output, drain_tasks, register_admin_route
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
+from app.crawlers import crawl_text
 from app.devin import DevinClient, Playbook, SessionState
 from app.doctor import register_doctor_route
 from app.formatting import (
@@ -140,6 +141,7 @@ class Bridge:
         )
         self._worker_tasks: list[asyncio.Task[None]] = []
         self._transcription_client: httpx.AsyncClient | None = None
+        self._crawl_client: httpx.AsyncClient | None = None
         self._run_command = _run_command
         self.access_prompted: dict[int, float] = {}
         self.transient_messages: dict[str, list[int]] = {}
@@ -326,6 +328,8 @@ class Bridge:
         await self.telegram.close()
         if self._transcription_client is not None:
             await self._transcription_client.aclose()
+        if self._crawl_client is not None:
+            await self._crawl_client.aclose()
         self.store.close()
 
     async def handle_update(self, update: Mapping[str, object]) -> None:
@@ -466,6 +470,7 @@ class Bridge:
                 "rename",
                 "settings",
                 "repos",
+                "crawl",
                 "usage",
                 "users",
                 "revoke",
@@ -856,6 +861,9 @@ class Bridge:
             )
         await self._react(chat_id, message_id, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
+        enabled_crawls = set(self.settings.crawl_site_set)
+        if enabled_crawls:
+            text = await self._append_crawled_content(text, enabled_crawls)
         if attachment is not None:
             filename, content, content_type = attachment
             url = await self.devin.upload_attachment(filename, content, content_type)
@@ -916,6 +924,34 @@ class Bridge:
         await self.start_watcher(
             conversation, trigger_message_id=message_id, trigger_at=sent_at
         )
+
+    async def _append_crawled_content(
+        self,
+        text: str,
+        enabled: set[str],
+    ) -> str:
+        """Crawl enabled URLs in a message and append extracted content."""
+        if self._crawl_client is None:
+            self._crawl_client = httpx.AsyncClient(
+                timeout=15.0,
+                limits=httpx.Limits(max_connections=10),
+            )
+        results = await crawl_text(text, enabled, self._crawl_client)
+        blocks: list[str] = []
+        for result in results:
+            lines = [f"[Crawled {result.site}: {result.url}]", result.text]
+            for filename, content, content_type in result.images:
+                try:
+                    url = await self.devin.upload_attachment(
+                        filename, content, content_type
+                    )
+                except (httpx.HTTPError, TypeError):
+                    continue
+                lines.append(f"Attached file: {url} ({filename})")
+            blocks.append("\n".join(lines))
+        if not blocks:
+            return text
+        return f"{text}\n\n" + "\n\n".join(blocks) if text else "\n\n".join(blocks)
 
     async def create_session_for_message(
         self,

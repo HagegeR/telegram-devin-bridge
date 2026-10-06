@@ -51,6 +51,7 @@ DEVIN_SESSION_INSTRUCTIONS="Style every reply like a shipped product, not a chat
 | `TELEGRAM_QUEUE_WHILE_BUSY` | no | `true` | Later turns queue and drain in order after the session finishes; `/status` shows the count. |
 | `TELEGRAM_LONG_REPLY_CHARS` | no | `3500` | Replies longer than this paginate with a `Show more` button; very large replies become `reply.md`. |
 | `TELEGRAM_RATE_LIMIT_PER_MINUTE` | no | `20` | Per-user sliding-window limit (`0` disables); sends at most one warning per minute. |
+| `CRAWL_SITES` | no | empty | Comma-separated site crawlers (`instagram`, `article`) that pre-fetch matching URLs before a message reaches Devin; extracted text + media are attached to the prompt. `/crawl` reports the active set. |
 | `TELEGRAM_RICH_MESSAGES` | no | `true` | Bot API 10.3 rich Markdown for Devin replies; falls back to MarkdownV2 + 4096-char chunking. |
 | `TELEGRAM_DRAFTS` | no | `false` | Private-chat drafts while Devin works; falls back to typing if rejected. Groups always get typing. |
 | `TELEGRAM_IMAGES_AS_DOCUMENTS` | no | `auto` | `auto` = `sendPhoto` when the image fits unchanged (≤1280 px longest side); `true` = always `sendDocument`; `false` = always `sendPhoto`. |
