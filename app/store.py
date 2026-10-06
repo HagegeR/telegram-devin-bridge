@@ -48,12 +48,23 @@ class ConversationSettings:
     default_playbook: str | None = None
     devin_mode: str | None = None
     repos: str | None = None
+    crawl_sites: str | None = None
 
     @property
     def repo_list(self) -> list[str] | None:
         if not self.repos:
             return None
         return [repo.strip() for repo in self.repos.split(",") if repo.strip()]
+
+    @property
+    def crawl_site_list(self) -> list[str] | None:
+        if not self.crawl_sites:
+            return None
+        return [
+            site.strip()
+            for site in self.crawl_sites.split(",")
+            if site.strip()
+        ]
 
 
 @dataclass(frozen=True)
@@ -203,7 +214,8 @@ class Store:
                     status_timer INTEGER,
                     default_playbook TEXT,
                     devin_mode TEXT,
-                    repos TEXT
+                    repos TEXT,
+                    crawl_sites TEXT
                 );
                 CREATE TABLE IF NOT EXISTS access_requests (
                     user_id INTEGER PRIMARY KEY,
@@ -282,7 +294,7 @@ class Store:
                     "PRAGMA table_info(conversation_settings)"
                 )
             }
-            for new_column in ("devin_mode", "repos"):
+            for new_column in ("devin_mode", "repos", "crawl_sites"):
                 if new_column not in settings_columns:
                     self.connection.execute(
                         "ALTER TABLE conversation_settings "
@@ -560,7 +572,7 @@ class Store:
         with self.lock:
             row = self.connection.execute(
                 "SELECT silent, drafts, status_timer, default_playbook, "
-                "devin_mode, repos "
+                "devin_mode, repos, crawl_sites "
                 "FROM conversation_settings WHERE conv_key = ?",
                 (conv_key,),
             ).fetchone()
@@ -583,6 +595,11 @@ class Store:
                 else str(row["devin_mode"])
             ),
             repos=None if row["repos"] is None else str(row["repos"]),
+            crawl_sites=(
+                None
+                if row["crawl_sites"] is None
+                else str(row["crawl_sites"])
+            ),
         )
 
     def update_settings(self, conv_key: str, **fields: object) -> None:
@@ -593,6 +610,7 @@ class Store:
             "default_playbook",
             "devin_mode",
             "repos",
+            "crawl_sites",
         }
         if not fields or any(key not in allowed for key in fields):
             raise ValueError("Unknown conversation setting")

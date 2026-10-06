@@ -9,6 +9,7 @@ import httpx
 
 from app.access import is_allowed, is_topic_chat
 from app.config import Settings
+from app.crawlers import CRAWLER_NAMES
 from app.devin import DevinClient, Playbook, SessionState
 from app.formatting import (
     rich_details,
@@ -350,6 +351,46 @@ async def handle_command(
                 await runtime.send_text(
                     message,
                     "Usage: /repos owner/repo[,org/repo2] · /repos all",
+                    ephemeral=True,
+                )
+    elif command == "crawl":
+        value = args.strip()
+        if not value:
+            current = runtime.store.get_settings(conv_key).crawl_sites
+            await runtime.send_text(
+                message,
+                f"Pre-crawl: {current or 'off'}\n"
+                f"Available: {', '.join(CRAWLER_NAMES)}\n"
+                "/crawl instagram,article to set · /crawl off to disable",
+                ephemeral=True,
+            )
+        elif value.casefold() in {"off", "none", "clear", "all"}:
+            runtime.store.update_settings(conv_key, crawl_sites=None)
+            await runtime.send_text(
+                message, "Pre-crawl disabled.", ephemeral=True
+            )
+        else:
+            sites = [
+                part.strip().casefold()
+                for part in value.split(",")
+                if part.strip()
+            ]
+            unknown = [site for site in sites if site not in CRAWLER_NAMES]
+            if unknown:
+                await runtime.send_text(
+                    message,
+                    f"Unknown crawler(s): {', '.join(unknown)}\n"
+                    f"Available: {', '.join(CRAWLER_NAMES)}",
+                    ephemeral=True,
+                )
+            else:
+                runtime.store.update_settings(
+                    conv_key, crawl_sites=",".join(sites)
+                )
+                await runtime.send_text(
+                    message,
+                    f"Pre-crawl: {', '.join(sites)} — matching URLs get "
+                    "extracted before they reach Devin.",
                     ephemeral=True,
                 )
     elif command == "lang":
@@ -782,6 +823,7 @@ _HELP_SECTIONS = (
             "/playbook [n] [text] — list or run a playbook",
             "/settings — notifications, drafts, mode, defaults",
             "/repos [a/b,c/d] — restrict sessions to repos",
+            "/crawl [sites|off] — pre-crawl known URLs before Devin",
             "/lang [code] — voice-note language",
             "/usage — Devin ACU usage",
             "/whoami — your IDs and access",
