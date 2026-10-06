@@ -257,7 +257,7 @@ class SessionWatcher:
                 )
                 covered: set[int] = set()
                 if backlog_digest:
-                    covered = await self._deliver_digest(new_messages)
+                    covered = await self._deliver_digest(new_messages, state)
                 delivery_delivered = turn_delivered
                 for index, message in enumerate(new_messages):
                     stale = self._pre_trigger(message)
@@ -865,13 +865,15 @@ class SessionWatcher:
                 )
 
     async def _deliver_digest(
-        self, messages: list[DevinMessage]
+        self, messages: list[DevinMessage], state: SessionState
     ) -> set[int]:
         parts: list[str] = []
         covered: set[int] = set()
+        urgent = False
         for index, message in enumerate(messages):
             body, _ = extract_options(extract_attachments(message.message)[0])
-            body, _ = extract_controls(body)
+            body, controls = extract_controls(body)
+            urgent = urgent or "urgent" in controls
             body = body.strip()
             if body:
                 parts.append(body)
@@ -881,22 +883,34 @@ class SessionWatcher:
             # no visible text: refuse the digest so they get normal delivery
             # instead of silently vanishing under the cursor advance.
             return set()
-        cap = max(120, 3000 // len(parts))
+        title = self.conversation.title or "the session"
+        header = (
+            f"📥 While the bridge was restarting — "
+            f"{len(messages)} replies from {title}:\n\n"
+        )
+        # Bound the whole digest under the 4096-char message cap: shrink
+        # every reply to an equal share of the remaining budget.
+        budget = 3900 - len(header)
+        cap = max(60, (budget - 10 * len(parts)) // len(parts))
         parts = [
             part[:cap].rstrip() + ("…" if len(part) > cap else "")
             for part in parts
         ]
-        title = self.conversation.title or "the session"
-        body = (
-            f"📥 While the bridge was restarting — "
-            f"{len(messages)} replies from {title}:\n\n"
-            + "\n\n———\n\n".join(parts)
-        )
+        body = header + "\n\n———\n\n".join(parts)
+        if len(body) > 4000:
+            body = body[:4000].rstrip() + "…"
+        notify_disabled = (
+            self.silent
+            or (
+                self.settings.telegram_notification_mode == "important"
+                and state.status_enum == "working"
+            )
+        ) and not urgent
         results = await self.telegram.send_markdown(
             self.conversation.chat_id,
             body,
             thread_id=self.conversation.thread_id,
-            disable_notification=self.silent,
+            disable_notification=notify_disabled,
         )
         self._index_outbound_many(results)
         return covered

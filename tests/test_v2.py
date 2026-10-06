@@ -1026,6 +1026,72 @@ async def test_recovery_watcher_collapses_backlog_into_digest(
 
 
 @pytest.mark.asyncio
+async def test_recovery_digest_stays_under_message_cap(
+    tmp_path: Path,
+) -> None:
+    class HugeDevin(_FakeDevin):
+        async def get_session(
+            self, _: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [
+                    DevinMessage(
+                        "devin_message", f"e{i}", "x" * 300, None
+                    )
+                    for i in range(1, 40)
+                ],
+            )
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        HugeDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=20,
+            devin_settle_seconds=30,
+        ),
+        clock=clock,
+        sleep=sleep,
+        resume_from=now,
+    ).run()
+    digests = [
+        str(item["text"])
+        for item in telegram.sent
+        if "While the bridge was restarting" in str(item["text"])
+    ]
+    assert len(digests) == 1
+    assert len(digests[0]) <= 4096
+    assert "39 replies" in digests[0]
+
+
+@pytest.mark.asyncio
 async def test_recovery_digest_falls_back_for_marker_only_replies(
     tmp_path: Path,
 ) -> None:
