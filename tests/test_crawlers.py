@@ -150,6 +150,61 @@ def test_crawl_sites_env_parsing_and_validation(tmp_path: Path) -> None:
         settings(tmp_path, crawl_sites="bogus")
 
 
+def test_crawl_sites_db_override_beats_env(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    runtime = Bridge(
+        settings(tmp_path, crawl_sites="instagram"),
+        store,
+        _FakeDevin(),
+        _FakeTelegram(),  # type: ignore[arg-type]
+    )
+    assert runtime.crawl_sites() == {"instagram"}
+    store.set_setting("crawl_sites", "article,bogus")
+    assert runtime.crawl_sites() == {"article"}
+    store.set_setting("crawl_sites", "")
+    assert runtime.crawl_sites() == set()
+    store.delete_setting("crawl_sites")
+    assert runtime.crawl_sites() == {"instagram"}
+
+
+@pytest.mark.asyncio
+async def test_crawl_settings_callback_toggles(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_allowed_users="111,555",
+            telegram_admin_user_ids="111",
+        ),
+        store,
+        _FakeDevin(),
+        telegram,  # type: ignore[arg-type]
+    )
+    callback = {
+        "id": "cfg-1",
+        "data": "cfg:crawl:instagram",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback(callback)
+    assert runtime.crawl_sites() == {"instagram"}
+    assert store.get_setting("crawl_sites") == "instagram"
+    await runtime.handle_callback({**callback, "id": "cfg-2"})
+    assert runtime.crawl_sites() == set()
+    await runtime.handle_callback({**callback, "id": "cfg-3", "data": "cfg:crawl:article"})
+    assert runtime.crawl_sites() == {"article"}
+    await runtime.handle_callback({**callback, "id": "cfg-4", "data": "cfg:crawl:reset"})
+    assert store.get_setting("crawl_sites") is None
+    # Non-admin users can view but not change the bridge-wide set.
+    outsider = {**callback, "from": {"id": 555, "is_bot": False}}
+    await runtime.handle_callback({**outsider, "id": "cfg-5", "data": "cfg:crawl:instagram"})
+    assert runtime.crawl_sites() == set()
+    assert store.get_setting("crawl_sites") is None
+    assert telegram.answers[-1] == "Admins only"
+    await runtime.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_crawled_content_appended_to_prompt(tmp_path: Path) -> None:
     devin = _FakeDevin()

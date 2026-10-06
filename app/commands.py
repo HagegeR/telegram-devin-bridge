@@ -119,6 +119,8 @@ class CommandRuntime(Protocol):
 
     def clear_queued_turns(self, conv_key: str) -> None: ...
 
+    def crawl_sites(self) -> set[str]: ...
+
     def queued_count(self, conv_key: str) -> int: ...
 
     async def retry_conversation(
@@ -354,11 +356,11 @@ async def handle_command(
                     ephemeral=True,
                 )
     elif command == "crawl":
-        enabled = sorted(runtime.settings.crawl_site_set)
+        enabled = sorted(runtime.crawl_sites())
         await runtime.send_text(
             message,
             f"Pre-crawl: {', '.join(enabled) if enabled else 'off'} "
-            "(CRAWL_SITES env)\n"
+            "(toggle in /settings)\n"
             f"Available: {', '.join(CRAWLER_NAMES)}",
             ephemeral=True,
         )
@@ -792,7 +794,7 @@ _HELP_SECTIONS = (
             "/playbook [n] [text] — list or run a playbook",
             "/settings — notifications, drafts, mode, defaults",
             "/repos [a/b,c/d] — restrict sessions to repos",
-            "/crawl — show which sites get pre-crawled (CRAWL_SITES)",
+            "/crawl — show which sites get pre-crawled (toggle in /settings)",
             "/lang [code] — voice-note language",
             "/usage — Devin ACU usage",
             "/whoami — your IDs and access",

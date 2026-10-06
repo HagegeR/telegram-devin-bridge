@@ -100,9 +100,9 @@ deployment check list.
 | `/steer <text>` | Inject a message into the running session immediately |
 | `/retry` | Resend the last user message |
 | `/playbook [n] [text]` | List or start a Devin playbook |
-| `/settings` | Notification, draft, status-timer, playbook, mode, and repo settings |
+| `/settings` | Notification, draft, status-timer, playbook, mode, repo, and pre-crawl settings |
 | `/repos [a/b,c/d]` | Show, set, or clear the repos list for new sessions (`/repos all` resets) |
-| `/crawl` | Show which sites get pre-crawled (set via `CRAWL_SITES`); extracted text + media are attached to the Devin prompt |
+| `/crawl` | Show which sites get pre-crawled (toggle in `/settings`; `CRAWL_SITES` is the env default); extracted text + media are attached to the Devin prompt |
 | `/usage` | Devin ACU usage (needs `DEVIN_ORG_ID` + service-user key) |
 | `/lang [code]` | Per-user voice-transcription language (`auto`, `off`) |
 | `/whoami` · `/sethome` | Show IDs; set the notification target chat |
