@@ -342,6 +342,22 @@ async def handle_command(
             if repos and all(
                 re.fullmatch(r"[\w.-]+/[\w.-]+", repo) for repo in repos
             ):
+                connected = await runtime.devin.repos()
+                # Empty means the fetch failed — let Devin arbitrate
+                # rather than block on a probe outage.
+                unknown = (
+                    [repo for repo in repos if repo not in connected]
+                    if connected
+                    else []
+                )
+                if unknown:
+                    await runtime.send_text(
+                        message,
+                        f"Not connected to this org: {', '.join(unknown)}"
+                        + v3_hint,
+                        ephemeral=True,
+                    )
+                    return
                 runtime.store.update_settings(conv_key, repos=",".join(repos))
                 await runtime.send_text(
                     message,

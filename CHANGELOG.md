@@ -15,6 +15,11 @@ and deployment update channels.
   `macos`) so new sessions in that chat run on your own machines;
   `/platform default` resets to the org default. Also shown and
   resettable in the `/settings` 🖥 Platform row.
+- `/repos` now validates names against the org's connected repos
+  (`GET /v3beta1/organizations/{org}/repositories`, cached 5 min) —
+  a typo replies `Not connected to this org: …` instead of silently
+  breaking future sessions. The `/settings` 📂 Repos submenu toggles
+  repos from the same list with ✓ marks; `/repos all` still resets.
 - Restart backlog digest — when a bridge restart leaves 3+ undelivered
   Devin replies in a conversation, the recovery watcher sends one
   `📥 While the bridge was restarting` digest instead of bursting every

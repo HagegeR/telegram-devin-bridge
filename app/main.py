@@ -2052,17 +2052,26 @@ class Bridge:
                     }] for mode in ("default", *modes)]},
                 )
             elif field == "repos":
-                toast = (
-                    "Send /repos owner/repo,org/repo2 to set a list; "
-                    "tap below to reset"
-                )
+                selected = set(self.store.get_settings(conv_key).repo_list or [])
+                rows = []
+                for name in await self.devin.repos():
+                    callback = f"cfg:repos:{name}"
+                    # Telegram caps callback_data at 64 bytes; oversized
+                    # names stay settable via /repos <list>.
+                    if len(callback.encode()) > 64:
+                        continue
+                    rows.append([{
+                        "text": f"{'✓ ' if name in selected else ''}{name}",
+                        "callback_data": callback,
+                    }])
+                rows.append([{
+                    "text": "all repos (default)",
+                    "callback_data": "cfg:repos:all",
+                }])
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
-                    {"inline_keyboard": [[{
-                        "text": "all repos (default)",
-                        "callback_data": "cfg:repos:all",
-                    }]]},
+                    {"inline_keyboard": rows},
                 )
             elif field == "platform":
                 toast = (
@@ -2106,10 +2115,17 @@ class Bridge:
                     devin_mode=None if value == "default" else value,
                 )
             elif field == "repos":
-                self.store.update_settings(
-                    conv_key,
-                    repos=None if value == "all" else value,
-                )
+                if value == "all":
+                    self.store.update_settings(conv_key, repos=None)
+                else:
+                    selected = set(
+                        self.store.get_settings(conv_key).repo_list or []
+                    )
+                    selected ^= {value}
+                    self.store.update_settings(
+                        conv_key,
+                        repos=",".join(sorted(selected)) or None,
+                    )
             elif field == "platform":
                 self.store.update_settings(
                     conv_key,

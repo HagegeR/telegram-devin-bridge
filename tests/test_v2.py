@@ -458,9 +458,66 @@ async def test_repos_command_sets_shows_and_clears(tmp_path: Path) -> None:
     assert "a/b,c/d" in str(telegram.sent[-1]["text"])
     await handle_command(runtime, message("/repos bogus"), "/repos bogus")
     assert "Usage" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/repos x/y"), "/repos x/y")
+    assert "Not connected" in str(telegram.sent[-1]["text"])
+    assert store.get_settings("222").repos == "a/b,c/d"
     await handle_command(runtime, message("/repos all"), "/repos all")
     assert store.get_settings("222").repos is None
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_repos_settings_submenu_toggles(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    callback = {
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback({**callback, "id": "cfg-1", "data": "cfg:repos:menu"})
+    markup = telegram.markup_edits[-1]
+    callbacks = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert "cfg:repos:a/b" in callbacks
+    assert "cfg:repos:all" in callbacks
+    await runtime.handle_callback({**callback, "id": "cfg-2", "data": "cfg:repos:a/b"})
+    assert store.get_settings("222").repos == "a/b"
+    await runtime.handle_callback({**callback, "id": "cfg-3", "data": "cfg:repos:a/b"})
+    assert store.get_settings("222").repos is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_devin_client_repos_lists_and_caches() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/v3beta1/organizations/o1/repositories"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"repo_path": "a/b"},
+                    {"repo_path": "c/d"},
+                ],
+                "has_next_page": False,
+            },
+        )
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.repos() == ["a/b", "c/d"]
+    assert await devin.repos() == ["a/b", "c/d"]
+    assert calls == 1
+    await devin.close()
 
 
 @pytest.mark.asyncio
@@ -1636,6 +1693,9 @@ class _FakeDevin:
 
     async def devin_modes(self) -> list[str]:
         return list(DEVIN_MODES)
+
+    async def repos(self) -> list[str]:
+        return ["a/b", "c/d", "e/f"]
 
     async def terminate(self, session_id: str) -> None:
         self.terminated.append(session_id)
