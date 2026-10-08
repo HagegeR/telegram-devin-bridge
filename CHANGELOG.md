@@ -10,6 +10,11 @@ and deployment update channels.
 
 ### Added
 
+- `/platform <name>` — per-chat session placement (v3 only). Set an
+  outpost pool name or a hosted platform label (`linux`, `windows`,
+  `macos`) so new sessions in that chat run on your own machines;
+  `/platform default` resets to the org default. Also shown and
+  resettable in the `/settings` 🖥 Platform row.
 - Restart backlog digest — when a bridge restart leaves 3+ undelivered
   Devin replies in a conversation, the recovery watcher sends one
   `📥 While the bridge was restarting` digest instead of bursting every

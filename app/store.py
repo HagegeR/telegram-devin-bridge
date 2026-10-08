@@ -48,6 +48,7 @@ class ConversationSettings:
     default_playbook: str | None = None
     devin_mode: str | None = None
     repos: str | None = None
+    platform: str | None = None
 
     @property
     def repo_list(self) -> list[str] | None:
@@ -203,7 +204,8 @@ class Store:
                     status_timer INTEGER,
                     default_playbook TEXT,
                     devin_mode TEXT,
-                    repos TEXT
+                    repos TEXT,
+                    platform TEXT
                 );
                 CREATE TABLE IF NOT EXISTS access_requests (
                     user_id INTEGER PRIMARY KEY,
@@ -282,7 +284,7 @@ class Store:
                     "PRAGMA table_info(conversation_settings)"
                 )
             }
-            for new_column in ("devin_mode", "repos"):
+            for new_column in ("devin_mode", "repos", "platform"):
                 if new_column not in settings_columns:
                     self.connection.execute(
                         "ALTER TABLE conversation_settings "
@@ -560,7 +562,7 @@ class Store:
         with self.lock:
             row = self.connection.execute(
                 "SELECT silent, drafts, status_timer, default_playbook, "
-                "devin_mode, repos "
+                "devin_mode, repos, platform "
                 "FROM conversation_settings WHERE conv_key = ?",
                 (conv_key,),
             ).fetchone()
@@ -583,6 +585,9 @@ class Store:
                 else str(row["devin_mode"])
             ),
             repos=None if row["repos"] is None else str(row["repos"]),
+            platform=(
+                None if row["platform"] is None else str(row["platform"])
+            ),
         )
 
     def update_settings(self, conv_key: str, **fields: object) -> None:
@@ -593,6 +598,7 @@ class Store:
             "default_playbook",
             "devin_mode",
             "repos",
+            "platform",
         }
         if not fields or any(key not in allowed for key in fields):
             raise ValueError("Unknown conversation setting")

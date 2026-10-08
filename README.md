@@ -102,6 +102,7 @@ deployment check list.
 | `/playbook [n] [text]` | List or start a Devin playbook |
 | `/settings` | Notification, draft, status-timer, playbook, mode, repo, and pre-crawl settings |
 | `/repos [a/b,c/d]` | Show, set, or clear the repos list for new sessions (`/repos all` resets) |
+| `/platform [name]` | Show, set, or clear the platform/outpost pool for new sessions (`/platform default` resets) |
 | `/crawl` | Show which sites get pre-crawled (toggle in `/settings`; `CRAWL_SITES` is the env default); extracted text + media are attached to the Devin prompt |
 | `/usage` | Devin ACU usage (needs `DEVIN_ORG_ID` + service-user key) |
 | `/lang [code]` | Per-user voice-transcription language (`auto`, `off`) |

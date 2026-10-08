@@ -344,6 +344,7 @@ async def test_devin_client_uses_v3_when_service_key_configured() -> None:
             assert request.headers["authorization"] == "Bearer svc-key"
             assert body["devin_mode"] == "fast"
             assert body["repos"] == ["a/b", "c/d"]
+            assert body["platform"] == "mypool"
             return httpx.Response(
                 200, json={"session_id": "devin-s1", "url": "https://x/s1"}
             )
@@ -400,7 +401,7 @@ async def test_devin_client_uses_v3_when_service_key_configured() -> None:
         transport=httpx.MockTransport(handler),
     )
     assert await devin.create_session(
-        "prompt", "title", devin_mode="fast", repos=["a/b", "c/d"]
+        "prompt", "title", devin_mode="fast", repos=["a/b", "c/d"], platform="mypool"
     ) == ("devin-s1", "https://x/s1")
     await devin.send_message("s1", "hi")  # adds the devin- prefix
     state = await devin.get_session("s1", since_event_id="e1")
@@ -422,25 +423,28 @@ async def test_devin_client_v1_ignores_mode_and_repos() -> None:
         assert request.url.path == "/v1/sessions"
         assert "devin_mode" not in body
         assert "repos" not in body
+        assert "platform" not in body
         return httpx.Response(200, json={"session_id": "s1", "url": "u"})
 
     devin = DevinClient(
         "key", "https://devin.test", 3, transport=httpx.MockTransport(handler)
     )
-    await devin.create_session("p", None, devin_mode="fast", repos=["a/b"])
+    await devin.create_session("p", None, devin_mode="fast", repos=["a/b"], platform="mypool")
     await devin.close()
 
 
 def test_conversation_settings_mode_and_repos_round_trip() -> None:
     store = Store(":memory:")
-    store.update_settings("222", devin_mode="ultra", repos="a/b,c/d")
+    store.update_settings("222", devin_mode="ultra", repos="a/b,c/d", platform="mypool")
     current = store.get_settings("222")
     assert current.devin_mode == "ultra"
     assert current.repo_list == ["a/b", "c/d"]
-    store.update_settings("222", devin_mode=None, repos=None)
+    assert current.platform == "mypool"
+    store.update_settings("222", devin_mode=None, repos=None, platform=None)
     current = store.get_settings("222")
     assert current.devin_mode is None
     assert current.repo_list is None
+    assert current.platform is None
 
 
 @pytest.mark.asyncio
@@ -456,6 +460,28 @@ async def test_repos_command_sets_shows_and_clears(tmp_path: Path) -> None:
     assert "Usage" in str(telegram.sent[-1]["text"])
     await handle_command(runtime, message("/repos all"), "/repos all")
     assert store.get_settings("222").repos is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_platform_command_sets_shows_and_clears(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/platform mypool"), "/platform mypool")
+    assert store.get_settings("222").platform == "mypool"
+    await handle_command(runtime, message("/platform"), "/platform")
+    assert "mypool" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/platform bad name"), "/platform bad name")
+    assert "Usage" in str(telegram.sent[-1]["text"])
+    await runtime.handle_user_turn(message("hello"), "hello")
+    assert devin.created_platforms[-1] == "mypool"
+    await handle_command(runtime, message("/platform default"), "/platform default")
+    assert store.get_settings("222").platform is None
+    await handle_command(runtime, message("/new"), "/new")
+    await runtime.handle_user_turn(message("again"), "again")
+    assert devin.created_platforms[-1] is None
     await runtime.shutdown()
 
 
@@ -1570,6 +1596,7 @@ class _FakeDevin:
         self.created_playbooks: list[str | None] = []
         self.created_modes: list[str | None] = []
         self.created_repos: list[list[str] | None] = []
+        self.created_platforms: list[str | None] = []
         self.sent: list[tuple[str, str]] = []
         self.terminated: list[str] = []
         self.playbooks: list[tuple[str, str]] = []
@@ -1581,12 +1608,14 @@ class _FakeDevin:
         playbook_id: str | None = None,
         devin_mode: str | None = None,
         repos: list[str] | None = None,
+        platform: str | None = None,
     ) -> tuple[str, str]:
         self.created.append(prompt)
         self.created_titles.append(title)
         self.created_playbooks.append(playbook_id)
         self.created_modes.append(devin_mode)
         self.created_repos.append(repos)
+        self.created_platforms.append(platform)
         return "s1", "https://devin.test/s1"
 
     async def send_message(self, session_id: str, text: str) -> None:
@@ -1775,6 +1804,7 @@ async def test_dispatch_failure_notifies_and_reacts(tmp_path: Path) -> None:
             playbook_id: str | None = None,
             devin_mode: str | None = None,
             repos: list[str] | None = None,
+            platform: str | None = None,
         ) -> tuple[str, str]:
             raise RuntimeError("backend unavailable")
 
@@ -5187,12 +5217,13 @@ async def test_pending_title_survives_create_failure(tmp_path: Path) -> None:
             playbook_id: str | None = None,
             devin_mode: str | None = None,
             repos: list[str] | None = None,
+            platform: str | None = None,
         ) -> tuple[str, str]:
             if self.fail_next:
                 self.fail_next = False
                 raise RuntimeError("create failed")
             return await super().create_session(
-                prompt, title, playbook_id, devin_mode, repos
+                prompt, title, playbook_id, devin_mode, repos, platform
             )
 
     store = Store(":memory:")

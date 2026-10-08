@@ -355,6 +355,43 @@ async def handle_command(
                     "Usage: /repos owner/repo[,org/repo2] · /repos all",
                     ephemeral=True,
                 )
+    elif command == "platform":
+        value = args.strip()
+        v3_hint = (
+            ""
+            if runtime.devin.v3_enabled
+            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
+        if not value:
+            current = runtime.store.get_settings(conv_key).platform
+            await runtime.send_text(
+                message,
+                f"Platform: {current or 'default'}\n"
+                "/platform <pool-or-label> to set · /platform default to reset"
+                + v3_hint,
+                ephemeral=True,
+            )
+        elif value.casefold() in {"default", "cloud", "off", "reset"}:
+            runtime.store.update_settings(conv_key, platform=None)
+            await runtime.send_text(
+                message,
+                "Platform reset — new sessions use the org default." + v3_hint,
+                ephemeral=True,
+            )
+        elif re.fullmatch(r"[\w.-]+", value):
+            runtime.store.update_settings(conv_key, platform=value)
+            await runtime.send_text(
+                message,
+                f"Platform: {value} — applies to the next new session."
+                + v3_hint,
+                ephemeral=True,
+            )
+        else:
+            await runtime.send_text(
+                message,
+                "Usage: /platform <pool-or-label> · /platform default",
+                ephemeral=True,
+            )
     elif command == "crawl":
         enabled = sorted(runtime.crawl_sites())
         await runtime.send_text(
@@ -794,6 +831,7 @@ _HELP_SECTIONS = (
             "/playbook [n] [text] — list or run a playbook",
             "/settings — notifications, drafts, mode, defaults",
             "/repos [a/b,c/d] — restrict sessions to repos",
+            "/platform [name] — run sessions on an outpost pool or VM platform",
             "/crawl — show which sites get pre-crawled (toggle in /settings)",
             "/lang [code] — voice-note language",
             "/usage — Devin ACU usage",
