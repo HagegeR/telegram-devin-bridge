@@ -205,6 +205,7 @@ class DevinClient:
         # re-reading the whole history
         self._page_cursors: dict[str, dict[str, str | None]] = {}
         self._modes_cache: list[str] | None = None
+        self._repos_cache: tuple[float, list[str]] | None = None
 
     def _v3_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.service_user_api_key}"}
@@ -299,6 +300,43 @@ class DevinClient:
                 pass
         self._modes_cache = modes
         return modes
+
+    async def repos(self) -> list[str]:
+        """Repo paths (owner/name) connected to this org, cached briefly.
+        Empty means the fetch failed — callers must not treat it as
+        "no repos"."""
+        cached = self._repos_cache
+        if cached is not None and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        repos: list[str] = []
+        if self.v3_enabled:
+            after: str | None = None
+            try:
+                for _ in range(20):
+                    params: dict[str, str] = {"load_indexing_status": "false"}
+                    if after:
+                        params["after"] = after
+                    page = await self._json(
+                        "GET",
+                        f"/v3beta1/organizations/{self.org_id}/repositories",
+                        params=params,
+                        headers=self._v3_headers(),
+                    )
+                    items = page.get("items")
+                    if isinstance(items, list):
+                        repos.extend(
+                            str(item["repo_path"])
+                            for item in items
+                            if isinstance(item, dict) and item.get("repo_path")
+                        )
+                    if not page.get("has_next_page"):
+                        self._repos_cache = (time.monotonic(), repos)
+                        return repos
+                    after = self._optional_str(page.get("end_cursor"))
+            except httpx.HTTPError:
+                pass
+        # Partial list (page failure or page cap) is not authoritative.
+        return []
 
     async def get_session(
         self,
