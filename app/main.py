@@ -470,6 +470,7 @@ class Bridge:
                 "rename",
                 "settings",
                 "repos",
+                "platform",
                 "crawl",
                 "usage",
                 "users",
@@ -982,6 +983,7 @@ class Bridge:
             playbook_id,
             devin_mode=conv_settings.devin_mode,
             repos=conv_settings.repo_list,
+            platform=conv_settings.platform,
         )
         self.store.delete_setting(f"pending_title:{conv_key}")
         stored_title = (
@@ -1970,6 +1972,7 @@ class Bridge:
             rows += [
                 [{"text": f"🤖 Devin mode: {current.devin_mode or 'org default'}", "callback_data": "cfg:mode:menu"}],
                 [{"text": f"📂 Repos: {current.repos or 'all'}", "callback_data": "cfg:repos:menu"}],
+                [{"text": f"🖥 Platform: {current.platform or 'default'}", "callback_data": "cfg:platform:menu"}],
             ]
         crawl = ",".join(sorted(self.crawl_sites())) or "off"
         rows += [
@@ -2061,6 +2064,19 @@ class Bridge:
                         "callback_data": "cfg:repos:all",
                     }]]},
                 )
+            elif field == "platform":
+                toast = (
+                    "Send /platform <name> to set an outpost pool or "
+                    "platform label; tap below to reset"
+                )
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": [[{
+                        "text": "org default",
+                        "callback_data": "cfg:platform:default",
+                    }]]},
+                )
             elif field == "crawl":
                 await self._crawl_submenu(callback_message, message_id)
             else:
@@ -2093,6 +2109,11 @@ class Bridge:
                 self.store.update_settings(
                     conv_key,
                     repos=None if value == "all" else value,
+                )
+            elif field == "platform":
+                self.store.update_settings(
+                    conv_key,
+                    platform=None if value == "default" else value,
                 )
             elif field == "crawl":
                 if (

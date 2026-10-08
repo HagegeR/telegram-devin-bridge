@@ -227,6 +227,7 @@ class DevinClient:
         playbook_id: str | None = None,
         devin_mode: str | None = None,
         repos: list[str] | None = None,
+        platform: str | None = None,
     ) -> tuple[str, str]:
         body: dict[str, object] = {
             "prompt": prompt,
@@ -242,6 +243,8 @@ class DevinClient:
                 body["devin_mode"] = devin_mode
             if repos:
                 body["repos"] = repos
+            if platform:
+                body["platform"] = platform
             payload = await self._json(
                 "POST",
                 self._v3("/sessions"),
@@ -249,9 +252,9 @@ class DevinClient:
                 headers=self._v3_headers(),
             )
         else:
-            if devin_mode is not None or repos:
+            if devin_mode is not None or repos or platform:
                 logger.warning(
-                    "devin_mode/repos need DEVIN_SERVICE_USER_API_KEY + "
+                    "devin_mode/repos/platform need DEVIN_SERVICE_USER_API_KEY + "
                     "DEVIN_ORG_ID; ignored on the v1 API"
                 )
             payload = await self._json("POST", "/v1/sessions", json=body)

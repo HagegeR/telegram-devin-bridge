@@ -4,7 +4,7 @@
 > "v1 only" facts below are historical. `DevinClient` selects its API version
 > at init: v3 (`/v3/...`) when the service-key + org settings are present
 > (`v3_enabled`), v1 when they are absent — a rejected v3 request does not
-> retry v1. v3-only features (devin_mode, repos, `status_detail`,
+> retry v1. v3-only features (devin_mode, repos, platform, `status_detail`,
 > `acus_consumed`, structured blocks) degrade quietly on v1 deployments.
 > `devin.py`/`telegram.py` are re-export shims — both clients live in
 > `clients.py`.
