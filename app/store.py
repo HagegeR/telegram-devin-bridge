@@ -558,37 +558,68 @@ class Store:
             ).fetchone()
         return int(row["count"]) if row is not None else 0
 
+    @staticmethod
+    def settings_key(conv_key: str) -> str:
+        """Where settings writes go: chat level, so they persist across topics.
+        Per-topic rows still exist as overrides (see get_settings)."""
+        return conv_key.split(":", 1)[0]
+
     def get_settings(self, conv_key: str) -> ConversationSettings:
+        """Topic settings inherit unset fields from the chat-level row, so a
+        setting made once in a chat applies to every new topic."""
+        chat_key = Store.settings_key(conv_key)
+        rows: dict[str, sqlite3.Row] = {}
         with self.lock:
-            row = self.connection.execute(
-                "SELECT silent, drafts, status_timer, default_playbook, "
-                "devin_mode, repos, platform "
-                "FROM conversation_settings WHERE conv_key = ?",
-                (conv_key,),
-            ).fetchone()
-        if row is None:
+            for key in {conv_key, chat_key}:
+                row = self.connection.execute(
+                    "SELECT silent, drafts, status_timer, default_playbook, "
+                    "devin_mode, repos, platform "
+                    "FROM conversation_settings WHERE conv_key = ?",
+                    (key,),
+                ).fetchone()
+                if row is not None:
+                    rows[key] = row
+        topic = rows.get(conv_key)
+        chat = rows.get(chat_key) if chat_key != conv_key else None
+        if topic is None and chat is None:
             return ConversationSettings()
+
+        def pick(field: str) -> object:
+            if topic is not None:
+                value = topic[field]
+                # NULL means unset; silent is the exception — its column
+                # defaults to 0, so an explicit off is indistinguishable
+                # from unset and inherits instead
+                if value is not None and (field != "silent" or value):
+                    return value
+            if chat is not None:
+                return chat[field]
+            return topic[field] if topic is not None else None
+
         return ConversationSettings(
-            silent=bool(row["silent"]),
-            drafts=None if row["drafts"] is None else bool(row["drafts"]),
+            silent=bool(pick("silent")),
+            drafts=None if pick("drafts") is None else bool(pick("drafts")),
             status_timer=(
-                None if row["status_timer"] is None else bool(row["status_timer"])
+                None if pick("status_timer") is None else bool(pick("status_timer"))
             ),
             default_playbook=(
-                None
-                if row["default_playbook"] is None
-                else str(row["default_playbook"])
+                None if pick("default_playbook") is None else str(pick("default_playbook"))
             ),
             devin_mode=(
-                None
-                if row["devin_mode"] is None
-                else str(row["devin_mode"])
+                None if pick("devin_mode") is None else str(pick("devin_mode"))
             ),
-            repos=None if row["repos"] is None else str(row["repos"]),
+            repos=None if pick("repos") is None else str(pick("repos")),
             platform=(
-                None if row["platform"] is None else str(row["platform"])
+                None if pick("platform") is None else str(pick("platform"))
             ),
         )
+
+    def update_chat_settings(self, conv_key: str, **fields: object) -> None:
+        """Write settings chat-wide and clear the same fields on the invoking
+        topic's row, so a stale per-topic override can't shadow the change."""
+        self.update_settings(Store.settings_key(conv_key), **fields)
+        if ":" in conv_key:
+            self.update_settings(conv_key, **{field: None for field in fields})
 
     def update_settings(self, conv_key: str, **fields: object) -> None:
         allowed = {
