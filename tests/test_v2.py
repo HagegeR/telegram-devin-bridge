@@ -467,15 +467,21 @@ async def test_repos_command_sets_shows_and_clears(tmp_path: Path) -> None:
 async def test_platform_command_sets_shows_and_clears(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
     store = Store(":memory:")
-    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
     await handle_command(runtime, message("/platform mypool"), "/platform mypool")
     assert store.get_settings("222").platform == "mypool"
     await handle_command(runtime, message("/platform"), "/platform")
     assert "mypool" in str(telegram.sent[-1]["text"])
     await handle_command(runtime, message("/platform bad name"), "/platform bad name")
     assert "Usage" in str(telegram.sent[-1]["text"])
+    await runtime.handle_user_turn(message("hello"), "hello")
+    assert devin.created_platforms[-1] == "mypool"
     await handle_command(runtime, message("/platform default"), "/platform default")
     assert store.get_settings("222").platform is None
+    await handle_command(runtime, message("/new"), "/new")
+    await runtime.handle_user_turn(message("again"), "again")
+    assert devin.created_platforms[-1] is None
     await runtime.shutdown()
 
 
