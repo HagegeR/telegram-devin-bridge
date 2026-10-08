@@ -380,10 +380,15 @@ async def handle_command(
         )
         if not value:
             current = runtime.store.get_settings(conv_key).platform
+            available = await runtime.devin.platforms()
+            options_line = (
+                f"\nAvailable: {', '.join(available)}" if available else ""
+            )
             await runtime.send_text(
                 message,
-                f"Platform: {current or 'default'}\n"
-                "/platform <pool-or-label> to set · /platform default to reset"
+                f"Platform: {current or 'default'}"
+                + options_line
+                + "\n/platform <pool-or-label> to set · /platform default to reset"
                 + v3_hint,
                 ephemeral=True,
             )
