@@ -330,13 +330,13 @@ class DevinClient:
                             if isinstance(item, dict) and item.get("repo_path")
                         )
                     if not page.get("has_next_page"):
-                        break
+                        self._repos_cache = (time.monotonic(), repos)
+                        return repos
                     after = self._optional_str(page.get("end_cursor"))
             except httpx.HTTPError:
                 pass
-        if repos:
-            self._repos_cache = (time.monotonic(), repos)
-        return repos
+        # Partial list (page failure or page cap) is not authoritative.
+        return []
 
     async def get_session(
         self,
