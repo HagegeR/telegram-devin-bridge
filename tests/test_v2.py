@@ -583,6 +583,9 @@ async def test_platform_command_sets_shows_and_clears(tmp_path: Path) -> None:
     assert "mypool" in str(telegram.sent[-1]["text"])
     await handle_command(runtime, message("/platform bad name"), "/platform bad name")
     assert "Usage" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/platform nosuchpool"), "/platform nosuchpool")
+    assert "Unknown platform" in str(telegram.sent[-1]["text"])
+    assert store.get_settings("222").platform == "mypool"
     await runtime.handle_user_turn(message("hello"), "hello")
     assert devin.created_platforms[-1] == "mypool"
     await handle_command(runtime, message("/platform default"), "/platform default")

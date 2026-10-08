@@ -2080,9 +2080,14 @@ class Bridge:
                     "callback_data": "cfg:platform:default",
                 }]]
                 for name in await self.devin.platforms():
+                    callback = f"cfg:platform:{name}"
+                    # Telegram caps callback_data at 64 bytes; oversized
+                    # pool names stay settable via /platform <name>.
+                    if len(callback.encode()) > 64:
+                        continue
                     rows.append([{
                         "text": f"{'✓ ' if name == current else ''}{name}",
-                        "callback_data": f"cfg:platform:{name}",
+                        "callback_data": callback,
                     }])
                 await self.telegram.edit_message_reply_markup(
                     chat_id,

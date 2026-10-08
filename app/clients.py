@@ -231,7 +231,7 @@ class DevinClient:
         self._page_cursors: dict[str, dict[str, str | None]] = {}
         self._modes_cache: list[str] | None = None
         self._repos_cache: tuple[float, list[str]] | None = None
-        self._platforms_cache: list[str] | None = None
+        self._platforms_cache: tuple[float, list[str]] | None = None
 
     def _v3_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.service_user_api_key}"}
@@ -367,9 +367,12 @@ class DevinClient:
     async def platforms(self) -> list[str]:
         """Hosted platform labels + outpost pool names this org accepts.
         No list endpoint covers both, so they're parsed from the
-        create-session 400 literal-error once and cached."""
-        if self._platforms_cache is not None:
-            return self._platforms_cache
+        create-session 400 literal-error and cached briefly. Probe
+        failures are not cached, so a transient error can't lock the
+        list empty."""
+        cached = self._platforms_cache
+        if cached is not None and time.monotonic() - cached[0] < 300:
+            return cached[1]
         platforms: list[str] = []
         if self.v3_enabled:
             try:
@@ -383,7 +386,8 @@ class DevinClient:
                 platforms = _platforms_from_400(exc.response)
             except httpx.HTTPError:
                 pass
-        self._platforms_cache = platforms
+        if platforms:
+            self._platforms_cache = (time.monotonic(), platforms)
         return platforms
 
     async def get_session(
