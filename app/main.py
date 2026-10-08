@@ -2107,36 +2107,37 @@ class Bridge:
                     }] for value in values]},
                 )
         else:
+            settings_key = Store.settings_key(conv_key)
             if field == "silent":
-                self.store.update_settings(conv_key, silent=value == "1")
+                self.store.update_settings(settings_key, silent=value == "1")
             elif field in {"drafts", "status_timer"}:
                 parsed = None if value == "inherit" else value == "on"
-                self.store.update_settings(conv_key, **{field: parsed})
+                self.store.update_settings(settings_key, **{field: parsed})
             elif field == "playbook":
                 self.store.update_settings(
-                    conv_key,
+                    settings_key,
                     default_playbook=None if value == "none" else value,
                 )
             elif field == "mode":
                 self.store.update_settings(
-                    conv_key,
+                    settings_key,
                     devin_mode=None if value == "default" else value,
                 )
             elif field == "repos":
                 if value == "all":
-                    self.store.update_settings(conv_key, repos=None)
+                    self.store.update_settings(settings_key, repos=None)
                 else:
                     selected = set(
                         self.store.get_settings(conv_key).repo_list or []
                     )
                     selected ^= {value}
                     self.store.update_settings(
-                        conv_key,
+                        settings_key,
                         repos=",".join(sorted(selected)) or None,
                     )
             elif field == "platform":
                 self.store.update_settings(
-                    conv_key,
+                    settings_key,
                     platform=None if value == "default" else value,
                 )
             elif field == "crawl":

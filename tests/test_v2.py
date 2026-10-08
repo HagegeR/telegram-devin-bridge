@@ -498,6 +498,18 @@ def test_conversation_settings_mode_and_repos_round_trip() -> None:
     assert current.platform is None
 
 
+def test_topic_settings_inherit_chat_level() -> None:
+    store = Store(":memory:")
+    store.update_settings("222", platform="mypool", repos="a/b")
+    topic = store.get_settings("222:99")
+    assert topic.platform == "mypool"
+    assert topic.repo_list == ["a/b"]
+    # An explicit topic value still wins over the chat-level row.
+    store.update_settings("222:99", platform="other")
+    assert store.get_settings("222:99").platform == "other"
+    assert store.get_settings("222:98").platform == "mypool"
+
+
 @pytest.mark.asyncio
 async def test_repos_command_sets_shows_and_clears(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
