@@ -13,8 +13,11 @@ and deployment update channels.
 - `/platform <name>` — per-chat session placement (v3 only). Set an
   outpost pool name or a hosted platform label (`linux`, `windows`,
   `macos`) so new sessions in that chat run on your own machines;
-  `/platform default` resets to the org default. Also shown and
-  resettable in the `/settings` 🖥 Platform row.
+  `/platform default` resets to the org default. Also shown in the
+  `/settings` 🖥 Platform row, whose submenu lists every platform label
+  and outpost pool the org accepts (parsed from the create-session 400
+  body, same probe as `devin_modes()`), and `/platform` with no args
+  prints the same list.
 - `/repos` now validates names against the org's connected repos
   (`GET /v3beta1/organizations/{org}/repositories`, cached 5 min) —
   a typo replies `Not connected to this org: …` instead of silently

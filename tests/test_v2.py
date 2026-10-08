@@ -433,6 +433,57 @@ async def test_devin_client_v1_ignores_mode_and_repos() -> None:
     await devin.close()
 
 
+@pytest.mark.asyncio
+async def test_devin_client_platforms_parses_400() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v3/organizations/o1/sessions"
+        return httpx.Response(
+            400,
+            json={
+                "detail": "platform '_' is not configured for this org. "
+                "Available platforms: ['linux', 'macos', 'windows']; "
+                "available outpost pools: ['devin-bridge']"
+            },
+        )
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.platforms() == ["linux", "macos", "windows", "devin-bridge"]
+    assert await devin.platforms() == ["linux", "macos", "windows", "devin-bridge"]
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_platform_settings_submenu_lists_options(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await runtime.handle_callback({
+        "id": "cfg-1",
+        "data": "cfg:platform:menu",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    })
+    markup = telegram.markup_edits[-1]
+    callbacks = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert "cfg:platform:default" in callbacks
+    assert "cfg:platform:mypool" in callbacks
+    await runtime.handle_callback({
+        "id": "cfg-2",
+        "data": "cfg:platform:mypool",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    })
+    assert store.get_settings("222").platform == "mypool"
+    await runtime.shutdown()
+
+
 def test_conversation_settings_mode_and_repos_round_trip() -> None:
     store = Store(":memory:")
     store.update_settings("222", devin_mode="ultra", repos="a/b,c/d", platform="mypool")
@@ -532,6 +583,9 @@ async def test_platform_command_sets_shows_and_clears(tmp_path: Path) -> None:
     assert "mypool" in str(telegram.sent[-1]["text"])
     await handle_command(runtime, message("/platform bad name"), "/platform bad name")
     assert "Usage" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/platform nosuchpool"), "/platform nosuchpool")
+    assert "Unknown platform" in str(telegram.sent[-1]["text"])
+    assert store.get_settings("222").platform == "mypool"
     await runtime.handle_user_turn(message("hello"), "hello")
     assert devin.created_platforms[-1] == "mypool"
     await handle_command(runtime, message("/platform default"), "/platform default")
@@ -1696,6 +1750,9 @@ class _FakeDevin:
 
     async def repos(self) -> list[str]:
         return ["a/b", "c/d", "e/f"]
+
+    async def platforms(self) -> list[str]:
+        return ["linux", "macos", "windows", "mypool"]
 
     async def terminate(self, session_id: str) -> None:
         self.terminated.append(session_id)

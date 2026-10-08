@@ -380,10 +380,15 @@ async def handle_command(
         )
         if not value:
             current = runtime.store.get_settings(conv_key).platform
+            available = await runtime.devin.platforms()
+            options_line = (
+                f"\nAvailable: {', '.join(available)}" if available else ""
+            )
             await runtime.send_text(
                 message,
-                f"Platform: {current or 'default'}\n"
-                "/platform <pool-or-label> to set · /platform default to reset"
+                f"Platform: {current or 'default'}"
+                + options_line
+                + "\n/platform <pool-or-label> to set · /platform default to reset"
                 + v3_hint,
                 ephemeral=True,
             )
@@ -395,13 +400,24 @@ async def handle_command(
                 ephemeral=True,
             )
         elif re.fullmatch(r"[\w.-]+", value):
-            runtime.store.update_settings(conv_key, platform=value)
-            await runtime.send_text(
-                message,
-                f"Platform: {value} — applies to the next new session."
-                + v3_hint,
-                ephemeral=True,
-            )
+            available = await runtime.devin.platforms()
+            # An empty list means the probe failed, not that the org has
+            # no platforms — accept the name and let Devin arbitrate.
+            if available and value not in available:
+                await runtime.send_text(
+                    message,
+                    f"Unknown platform: {value}\n"
+                    f"Available: {', '.join(available)}",
+                    ephemeral=True,
+                )
+            else:
+                runtime.store.update_settings(conv_key, platform=value)
+                await runtime.send_text(
+                    message,
+                    f"Platform: {value} — applies to the next new session."
+                    + v3_hint,
+                    ephemeral=True,
+                )
         else:
             await runtime.send_text(
                 message,

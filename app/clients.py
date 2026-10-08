@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import ipaddress
 import logging
@@ -169,6 +170,30 @@ def _modes_from_422(response: httpx.Response) -> list[str] | None:
     return modes or None
 
 
+def _platforms_from_400(response: httpx.Response) -> list[str]:
+    """Extract platform labels + outpost pool names from a create-session 400.
+
+    The detail string looks like:
+    ``... Available platforms: ['linux', 'macos']; available outpost pools: ['pool']``
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return []
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if not isinstance(detail, str):
+        return []
+    platforms: list[str] = []
+    for bracketed in re.findall(r"\[[^\]]*\]", detail):
+        try:
+            items = ast.literal_eval(bracketed)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(items, list):
+            platforms.extend(str(item) for item in items)
+    return platforms
+
+
 class DevinClient:
     def __init__(
         self,
@@ -206,6 +231,7 @@ class DevinClient:
         self._page_cursors: dict[str, dict[str, str | None]] = {}
         self._modes_cache: list[str] | None = None
         self._repos_cache: tuple[float, list[str]] | None = None
+        self._platforms_cache: tuple[float, list[str]] | None = None
 
     def _v3_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.service_user_api_key}"}
@@ -337,6 +363,32 @@ class DevinClient:
                 pass
         # Partial list (page failure or page cap) is not authoritative.
         return []
+
+    async def platforms(self) -> list[str]:
+        """Hosted platform labels + outpost pool names this org accepts.
+        No list endpoint covers both, so they're parsed from the
+        create-session 400 literal-error and cached briefly. Probe
+        failures are not cached, so a transient error can't lock the
+        list empty."""
+        cached = self._platforms_cache
+        if cached is not None and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        platforms: list[str] = []
+        if self.v3_enabled:
+            try:
+                await self._call(
+                    "POST",
+                    self._v3("/sessions"),
+                    json={"prompt": "platform-probe", "platform": "_"},
+                    headers=self._v3_headers(),
+                )
+            except httpx.HTTPStatusError as exc:
+                platforms = _platforms_from_400(exc.response)
+            except httpx.HTTPError:
+                pass
+        if platforms:
+            self._platforms_cache = (time.monotonic(), platforms)
+        return platforms
 
     async def get_session(
         self,

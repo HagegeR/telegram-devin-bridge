@@ -2074,17 +2074,25 @@ class Bridge:
                     {"inline_keyboard": rows},
                 )
             elif field == "platform":
-                toast = (
-                    "Send /platform <name> to set an outpost pool or "
-                    "platform label; tap below to reset"
-                )
+                current = self.store.get_settings(conv_key).platform
+                rows = [[{
+                    "text": "org default",
+                    "callback_data": "cfg:platform:default",
+                }]]
+                for name in await self.devin.platforms():
+                    callback = f"cfg:platform:{name}"
+                    # Telegram caps callback_data at 64 bytes; oversized
+                    # pool names stay settable via /platform <name>.
+                    if len(callback.encode()) > 64:
+                        continue
+                    rows.append([{
+                        "text": f"{'✓ ' if name == current else ''}{name}",
+                        "callback_data": callback,
+                    }])
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
-                    {"inline_keyboard": [[{
-                        "text": "org default",
-                        "callback_data": "cfg:platform:default",
-                    }]]},
+                    {"inline_keyboard": rows},
                 )
             elif field == "crawl":
                 await self._crawl_submenu(callback_message, message_id)
