@@ -508,6 +508,31 @@ def test_topic_settings_inherit_chat_level() -> None:
     store.update_settings("222:99", platform="other")
     assert store.get_settings("222:99").platform == "other"
     assert store.get_settings("222:98").platform == "mypool"
+    # A stale explicit-off on the topic still overrides for tri-state fields.
+    store.update_settings("222:97", status_timer=False)
+    store.update_settings("222", status_timer=True)
+    assert store.get_settings("222:97").status_timer is False
+    assert store.get_settings("222:96").status_timer is True
+
+
+@pytest.mark.asyncio
+async def test_topic_command_writes_chat_settings_and_clears_override(
+    tmp_path: Path,
+) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    topic = {
+        **message("/platform mypool"),
+        "message_thread_id": 9,
+        "is_topic_message": True,
+        "chat": {"id": 222, "type": "supergroup", "is_forum": True},
+    }
+    store.update_settings("222:9", platform="oldpool")
+    await handle_command(runtime, topic, "/platform mypool")
+    assert store.get_settings("222").platform == "mypool"
+    # The stale per-topic override was cleared by the write.
+    assert store.get_settings("222:9").platform == "mypool"
 
 
 @pytest.mark.asyncio

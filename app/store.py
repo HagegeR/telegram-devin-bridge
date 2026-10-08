@@ -585,11 +585,13 @@ class Store:
             return ConversationSettings()
 
         def pick(field: str) -> object:
-            # shortcut: a NULL/0 topic field means "unset" — a topic cannot
-            # explicitly turn a chat-level value back off; upgrade to
-            # per-field presence if that override is ever needed
-            if topic is not None and topic[field] not in (None, 0):
-                return topic[field]
+            if topic is not None:
+                value = topic[field]
+                # NULL means unset; silent is the exception — its column
+                # defaults to 0, so an explicit off is indistinguishable
+                # from unset and inherits instead
+                if value is not None and (field != "silent" or value):
+                    return value
             if chat is not None:
                 return chat[field]
             return topic[field] if topic is not None else None
@@ -611,6 +613,13 @@ class Store:
                 None if pick("platform") is None else str(pick("platform"))
             ),
         )
+
+    def update_chat_settings(self, conv_key: str, **fields: object) -> None:
+        """Write settings chat-wide and clear the same fields on the invoking
+        topic's row, so a stale per-topic override can't shadow the change."""
+        self.update_settings(Store.settings_key(conv_key), **fields)
+        if ":" in conv_key:
+            self.update_settings(conv_key, **{field: None for field in fields})
 
     def update_settings(self, conv_key: str, **fields: object) -> None:
         allowed = {

@@ -331,9 +331,7 @@ async def handle_command(
                 ephemeral=True,
             )
         elif value.casefold() in {"all", "clear", "default", "off"}:
-            runtime.store.update_settings(
-                Store.settings_key(conv_key), repos=None
-            )
+            runtime.store.update_chat_settings(conv_key, repos=None)
             await runtime.send_text(
                 message,
                 "Repos reset — new sessions see all repos." + v3_hint,
@@ -360,9 +358,7 @@ async def handle_command(
                         ephemeral=True,
                     )
                     return
-                runtime.store.update_settings(
-                    Store.settings_key(conv_key), repos=",".join(repos)
-                )
+                runtime.store.update_chat_settings(conv_key, repos=",".join(repos))
                 await runtime.send_text(
                     message,
                     f"Repos: {', '.join(repos)} — applies to the next new session."
@@ -397,9 +393,7 @@ async def handle_command(
                 ephemeral=True,
             )
         elif value.casefold() in {"default", "cloud", "off", "reset"}:
-            runtime.store.update_settings(
-                Store.settings_key(conv_key), platform=None
-            )
+            runtime.store.update_chat_settings(conv_key, platform=None)
             await runtime.send_text(
                 message,
                 "Platform reset — new sessions use the org default." + v3_hint,
@@ -417,9 +411,7 @@ async def handle_command(
                     ephemeral=True,
                 )
             else:
-                runtime.store.update_settings(
-                    Store.settings_key(conv_key), platform=value
-                )
+                runtime.store.update_chat_settings(conv_key, platform=value)
                 await runtime.send_text(
                     message,
                     f"Platform: {value} — applies to the next new session."
