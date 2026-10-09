@@ -141,12 +141,17 @@ async def test_send_message_resumes_detached_session(shell_client: LocalClient) 
     # has them — send_message must reload via session/load
     session_id, _ = await shell_client.create_session("first")
     await _wait_for(shell_client, session_id, "echo: first")
+    state = await shell_client.get_session(session_id)
+    last = state.messages[-1].event_id
     sess = shell_client.sessions.pop(session_id)
     sess.proc.terminate()
     await shell_client.send_message(session_id, "second")
     await _wait_for(shell_client, session_id, "echo: second")
     state = await shell_client.get_session(session_id)
     assert state.title == "resumed title"
+    # the watcher's persisted cursor must not filter post-restart replies
+    state = await shell_client.get_session(session_id, since_event_id=last)
+    assert [m.message for m in state.messages] == ["echo: second"]
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,9 @@ class _AcpSession:
     buffer: list[str] = field(default_factory=list)
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
     next_event: int = 0
+    # event ids are epoch-ms based so they stay ahead of the watcher's
+    # persisted cursor even after a restart swaps in a fresh process
+    event_base: int = field(default_factory=lambda: int(time.time() * 1000))
     turns: int = 0
     tail: asyncio.Task | None = None
     dead: bool = False
@@ -76,7 +79,9 @@ class LocalClient:
         self._cli_authed: bool | None = None
         self.sessions: dict[str, _AcpSession] = {}
         self._terminated: set[str] = set()
+        self._resuming: dict[str, asyncio.Task] = {}
         self._next_id = 0
+        self._last_event_base = 0
         self._modes_cache: tuple[float, list[str]] | None = None
 
     async def modes(self) -> list[str]:
@@ -149,14 +154,18 @@ class LocalClient:
             await self.set_model(session_id, self._default_model)
 
     async def set_mode(self, session_id: str, mode: str) -> None:
-        sess = self.sessions[session_id]
+        sess = await self._get_or_resume(session_id)
+        if sess is None:
+            raise RuntimeError(f"local session {session_id} is gone")
         await self._request(sess, "session/set_mode", {
             "sessionId": sess.acp_id,
             "modeId": mode,
         })
 
     async def set_model(self, session_id: str, model: str) -> None:
-        sess = self.sessions[session_id]
+        sess = await self._get_or_resume(session_id)
+        if sess is None:
+            raise RuntimeError(f"local session {session_id} is gone")
         await self._request(sess, "session/set_config_option", {
             "sessionId": sess.acp_id,
             "configId": "model",
@@ -185,8 +194,7 @@ class LocalClient:
         sess.acp_id = str(created["sessionId"])
         sess.title = title or ""
         session_id = f"{LOCAL_PREFIX}{sess.acp_id}"
-        while len(self.sessions) >= _MAX_SESSIONS:
-            await self.terminate(next(iter(self.sessions)))
+        await self._evict()
         self.sessions[session_id] = sess
         if model is not None:
             try:
@@ -207,9 +215,7 @@ class LocalClient:
         return session_id, f"{title or sess.acp_id} · local CLI (no cloud URL)"
 
     async def send_message(self, session_id: str, message: str) -> None:
-        sess = self.sessions.get(session_id)
-        if sess is None and session_id not in self._terminated:
-            sess = await self._resume(session_id)
+        sess = await self._get_or_resume(session_id)
         if sess is None:
             raise RuntimeError(f"local session {session_id} is gone")
         if sess.dead:
@@ -257,7 +263,7 @@ class LocalClient:
         sess.events.append(
             DevinMessage(
                 message_type="devin_message",
-                event_id=str(sess.next_event),
+                event_id=str(sess.event_base + sess.next_event),
                 message=text,
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             )
@@ -270,14 +276,12 @@ class LocalClient:
         since_event_id: str | None = None,
         fetch_messages: bool = True,
     ) -> SessionState:
-        sess = self.sessions.get(session_id)
-        if sess is None and session_id not in self._terminated:
-            try:
-                # a watcher may outlive the process after a bridge restart —
-                # resume so polls keep tracking instead of going expired
-                sess = await self._resume(session_id)
-            except RuntimeError:
-                pass
+        try:
+            # a watcher may outlive the process after a bridge restart —
+            # resume so polls keep tracking instead of going expired
+            sess = await self._get_or_resume(session_id)
+        except RuntimeError:
+            sess = None
         if sess is None:
             return SessionState(status_enum="expired", title="", pr_url=None, messages=[])
         messages = sess.events
@@ -294,24 +298,43 @@ class LocalClient:
         )
 
     async def aclose(self) -> None:
-        for session_id in list(self.sessions):
-            await self.terminate(session_id)
+        # shutdown kills processes only — the CLI keeps the sessions so the
+        # next bridge can resume them; session/delete is for explicit /stop
+        for sess in list(self.sessions.values()):
+            await self._reap(sess)
+        self.sessions.clear()
+        self._resuming.clear()
 
     async def terminate(self, session_id: str) -> None:
         sess = self.sessions.pop(session_id, None)
         self._terminated.add(session_id)
         if sess is None:
-            return
+            # dormant session: /stop must still delete its persisted record,
+            # else a later bridge could resume it
+            try:
+                sess = await self._spawn()
+            except (OSError, RuntimeError, TimeoutError):
+                return
+            sess.acp_id = session_id.removeprefix(LOCAL_PREFIX)
         sess.dead = True
         try:
             await self._request(sess, "session/delete", {"sessionId": sess.acp_id})
         except (RuntimeError, TimeoutError, asyncio.CancelledError):
             pass
+        await self._reap(sess)
+
+    async def _reap(self, sess: _AcpSession) -> None:
+        """Stop the acp process without deleting the persisted session."""
         sess.proc.terminate()
         try:
             await asyncio.wait_for(sess.proc.wait(), 5)
         except TimeoutError:
             sess.proc.kill()
+
+    async def _evict(self) -> None:
+        while len(self.sessions) >= _MAX_SESSIONS:
+            # capacity eviction is lifecycle, not /stop — keep the record
+            await self._reap(self.sessions.pop(next(iter(self.sessions))))
 
     async def upload_attachment(self, *_: object, **__: object) -> str:
         raise RuntimeError("attachments are not supported on local sessions")
@@ -340,17 +363,48 @@ class LocalClient:
         )
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
-        await self._request(sess, "initialize", {
-            "protocolVersion": 1,
-            "clientCapabilities": {},
-            "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
-        })
+        try:
+            await self._request(sess, "initialize", {
+                "protocolVersion": 1,
+                "clientCapabilities": {},
+                "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
+            })
+        except (RuntimeError, TimeoutError, asyncio.CancelledError):
+            sess.proc.terminate()
+            raise
+        # strictly increasing bases so a same-ms respawn can't reuse ids
+        sess.event_base = max(
+            int(time.time() * 1000), self._last_event_base + 1
+        )
+        self._last_event_base = sess.event_base
+        return sess
+
+    async def _get_or_resume(self, session_id: str) -> _AcpSession | None:
+        sess = self.sessions.get(session_id)
+        if sess is None and session_id not in self._terminated:
+            sess = await self._resume(session_id)
         return sess
 
     async def _resume(self, session_id: str) -> _AcpSession:
+        # dedupe concurrent loads (watcher poll + user turn) — a second
+        # process would orphan the first one's replies
+        task = self._resuming.get(session_id)
+        if task is None:
+            task = asyncio.create_task(self._resume_once(session_id))
+            self._resuming[session_id] = task
+        try:
+            return await task
+        finally:
+            if self._resuming.get(session_id) is task:
+                self._resuming.pop(session_id)
+
+    async def _resume_once(self, session_id: str) -> _AcpSession:
         """Reload a persisted CLI session into a fresh `devin acp` process.
         Sessions outlive bridge restarts in the CLI's session DB — the
         in-memory map is only the live-process index."""
+        existing = self.sessions.get(session_id)
+        if existing is not None:
+            return existing
         acp_id = session_id.removeprefix(LOCAL_PREFIX)
         sess = await self._spawn()
         try:
@@ -366,6 +420,7 @@ class LocalClient:
             ) from exc
         sess.acp_id = acp_id
         sess.title = await self._session_title(sess, acp_id)
+        await self._evict()
         self.sessions[session_id] = sess
         logger.info("resumed local session %s", acp_id)
         return sess
