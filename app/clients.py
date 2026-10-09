@@ -410,25 +410,35 @@ class DevinClient:
             return cached[1]
         secrets: list[tuple[str, str]] = []
         if self.v3_enabled:
+            after: str | None = None
             try:
-                page = await self._json(
-                    "GET",
-                    self._v3("/secrets"),
-                    headers=self._v3_headers(),
-                )
+                for _ in range(20):
+                    params: dict[str, str] = {}
+                    if after:
+                        params["after"] = after
+                    page = await self._json(
+                        "GET",
+                        self._v3("/secrets"),
+                        params=params,
+                        headers=self._v3_headers(),
+                    )
+                    items = page.get("items")
+                    if isinstance(items, list):
+                        secrets.extend(
+                            (str(item["key"]), str(item["secret_id"]))
+                            for item in items
+                            if isinstance(item, dict)
+                            and item.get("key")
+                            and item.get("secret_id")
+                        )
+                    if not page.get("has_next_page"):
+                        self._secrets_cache = (time.monotonic(), secrets)
+                        return secrets
+                    after = self._optional_str(page.get("end_cursor"))
             except httpx.HTTPError:
-                return []
-            items = page.get("items")
-            if isinstance(items, list):
-                secrets = [
-                    (str(item["key"]), str(item["secret_id"]))
-                    for item in items
-                    if isinstance(item, dict)
-                    and item.get("key")
-                    and item.get("secret_id")
-                ]
-            self._secrets_cache = (time.monotonic(), secrets)
-        return secrets
+                pass
+        # Partial list (page failure or page cap) is not authoritative.
+        return []
 
     async def platforms(self) -> list[str]:
         """Hosted platform labels + outpost pool names this org accepts.

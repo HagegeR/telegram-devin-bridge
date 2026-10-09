@@ -468,63 +468,49 @@ async def handle_command(
                 )
     elif command == "acu":
         value = args.strip()
-        v3_hint = (
-            ""
-            if runtime.devin.v3_enabled
-            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
-        )
         if not value:
             current = runtime.store.get_settings(conv_key).acu_limit
             await runtime.send_text(
                 message,
                 f"ACU limit: {current if current is not None else 'default'}\n"
-                "/acu <n> to set · /acu default to reset"
-                + v3_hint,
+                "/acu <n> to set · /acu default to reset",
                 ephemeral=True,
             )
         elif value.casefold() in {"default", "off", "reset"}:
             runtime.store.update_chat_settings(conv_key, acu_limit=None)
             await runtime.send_text(
                 message,
-                "ACU limit reset — new sessions use the org default." + v3_hint,
+                "ACU limit reset — new sessions use the org default.",
                 ephemeral=True,
             )
-        elif value.isdigit() and int(value) > 0:
+        elif value.isdigit() and 0 < int(value) <= 1000:
             runtime.store.update_chat_settings(conv_key, acu_limit=int(value))
             await runtime.send_text(
                 message,
-                f"ACU limit: {value} — applies to the next new session."
-                + v3_hint,
+                f"ACU limit: {value} — applies to the next new session.",
                 ephemeral=True,
             )
         else:
             await runtime.send_text(
                 message,
-                "Usage: /acu <positive n> · /acu default",
+                "Usage: /acu 1-1000 · /acu default",
                 ephemeral=True,
             )
     elif command == "tags":
         value = args.strip()
-        v3_hint = (
-            ""
-            if runtime.devin.v3_enabled
-            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
-        )
         if not value:
             current = runtime.store.get_settings(conv_key).tags
             await runtime.send_text(
                 message,
                 f"Tags: {current or 'telegram-bridge only'}\n"
-                "/tags alpha,beta to set · /tags clear to reset"
-                + v3_hint,
+                "/tags alpha,beta to set · /tags clear to reset",
                 ephemeral=True,
             )
         elif value.casefold() in {"clear", "default", "off", "reset"}:
             runtime.store.update_chat_settings(conv_key, tags=None)
             await runtime.send_text(
                 message,
-                "Tags cleared — new sessions only carry telegram-bridge."
-                + v3_hint,
+                "Tags cleared — new sessions only carry telegram-bridge.",
                 ephemeral=True,
             )
         else:
@@ -535,8 +521,7 @@ async def handle_command(
                 )
                 await runtime.send_text(
                     message,
-                    f"Tags: {', '.join(tags)} — applies to the next new session."
-                    + v3_hint,
+                    f"Tags: {', '.join(tags)} — applies to the next new session.",
                     ephemeral=True,
                 )
             else:
@@ -546,6 +531,10 @@ async def handle_command(
                     ephemeral=True,
                 )
     elif command == "secrets":
+        # Attaching org secrets exposes them to the session — admins only.
+        sender_id = _int(_mapping(message.get("from")).get("id"))
+        if sender_id not in runtime.settings.admin_user_ids:
+            return
         value = args.strip()
         v3_hint = (
             ""
@@ -583,8 +572,16 @@ async def handle_command(
             )
         else:
             keys = [part.strip() for part in value.split(",") if part.strip()]
+            if not available:
+                await runtime.send_text(
+                    message,
+                    "Couldn't fetch the org's secrets — try again shortly."
+                    + v3_hint,
+                    ephemeral=True,
+                )
+                return
             unknown = [key for key in keys if key not in key_to_id]
-            if unknown and available:
+            if unknown:
                 await runtime.send_text(
                     message,
                     f"Unknown secrets: {', '.join(unknown)}\n"

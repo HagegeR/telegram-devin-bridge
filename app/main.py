@@ -2196,6 +2196,13 @@ class Bridge:
                     acu_limit=None if value == "default" else int(value),
                 )
             elif field == "secrets":
+                # Attaching org secrets exposes them to the session —
+                # same admin gate as pre-crawl toggles.
+                if user_id not in self.settings.admin_user_ids:
+                    await self.telegram.answer_callback_query(
+                        callback_id, "Admins only"
+                    )
+                    return
                 if value == "clear":
                     self.store.update_chat_settings(conv_key, secret_ids=None)
                 else:
