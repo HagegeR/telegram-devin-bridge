@@ -25,7 +25,14 @@ FAKE_ACP = textwrap.dedent(
                               "result": {"protocolVersion": 1}}), flush=True)
         elif meth == "session/new":
             print(json.dumps({"jsonrpc": "2.0", "id": i,
-                              "result": {"sessionId": sid}}), flush=True)
+                              "result": {"sessionId": sid, "modes": {
+                                  "currentModeId": "accept-edits",
+                                  "availableModes": [
+                                      {"id": "accept-edits"},
+                                      {"id": "smart"},
+                                  ]}}}), flush=True)
+        elif meth in ("session/set_mode", "session/set_config_option"):
+            print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
         elif meth == "session/prompt":
             text = m["params"]["prompt"][0]["text"]
             for chunk in ("echo: ", text):
@@ -47,7 +54,14 @@ async def shell_client(tmp_path: Path):
     fake = tmp_path / "fake_acp.py"
     fake.write_text(FAKE_ACP)
     shim = tmp_path / "devin"
-    shim.write_text(f"#!/bin/sh\nexec {sys.executable} {fake} \"$@\"\n")
+    shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "models" ]; then\n'
+        '  printf "Available models (1 family)\\n\\nSWE (swe)\\n'
+        '  swe-2-high   SWE-2 High  [x]\\n  swe-2-low   SWE-2 Low  [x]\\n"\n'
+        "  exit 0\nfi\n"
+        f"exec {sys.executable} {fake} \"$@\"\n"
+    )
     shim.chmod(0o755)
     client = LocalClient(cli_command=str(shim), api_key=None)
     yield client
@@ -85,6 +99,22 @@ async def test_send_message_appends_events(shell_client: LocalClient) -> None:
     await _wait_for(shell_client, session_id, "echo: second")
     state = await shell_client.get_session(session_id, since_event_id=last)
     assert [m.message for m in state.messages] == ["echo: second"]
+
+
+@pytest.mark.asyncio
+async def test_modes_and_models_probe(shell_client: LocalClient) -> None:
+    assert await shell_client.modes() == ["accept-edits", "smart"]
+    assert await shell_client.models() == ["swe-2-high", "swe-2-low"]
+
+
+@pytest.mark.asyncio
+async def test_create_applies_mode_and_model(shell_client: LocalClient) -> None:
+    session_id, _ = await shell_client.create_session(
+        "hi", mode="smart", model="swe-2-high"
+    )
+    await _wait_for(shell_client, session_id, "echo: hi")
+    await shell_client.set_mode(session_id, "smart")
+    await shell_client.set_model(session_id, "swe-2-low")
 
 
 @pytest.mark.asyncio

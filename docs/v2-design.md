@@ -108,6 +108,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     mode/model config applies instead. The service-user key is sent as a
     `/login` command on session start when set. Requires the Devin CLI
     (`DEVIN_LOCAL_CLI`/`DEVIN_LOCAL_CWD`).
+  - On `platform=local` chats, `/mode` + the 🤖 Devin mode submenu
+    enumerate the local ACP modes (accept-edits/smart/ask/plan/bypass,
+    probed via a throwaway `devin acp` and cached 5 min) and apply live via
+    `session/set_mode` (reset maps to the CLI default `accept-edits`).
+    `/model` + a 🧠 Model settings row enumerate `devin models list` slugs
+    and apply via `session/set_config_option configId=model`, persisted in
+    `conversation_settings.local_model` and sent at session create.
 - `/mode [name]` – per-chat Devin mode for new sessions (`/mode default` resets). No-arg prints the current mode plus `Available: …` from `DevinClient.devin_modes()`; a name not in that list is rejected with `Unknown mode` (empty probe = accepted, Devin arbitrates). Same option list as the /settings 🤖 Devin mode submenu.
 - `/acu [n]` – per-chat `max_acu_limit` for new sessions (`/acu default` resets). `/settings` ⚡ ACU limit submenu offers preset values.
 - `/tags [a,b]` – extra tags merged into `tags` on create (`telegram-bridge` is always included; `/tags clear` resets).

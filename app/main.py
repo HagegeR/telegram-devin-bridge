@@ -1007,7 +1007,10 @@ class Bridge:
                     silent=True,
                 )
             session_id, session_url = await self.local.create_session(
-                prompt, title
+                prompt,
+                title,
+                mode=conv_settings.devin_mode,
+                model=conv_settings.local_model,
             )
         else:
             session_id, session_url = await self.devin.create_session(
@@ -2016,6 +2019,10 @@ class Bridge:
                 [{"text": f"🤖 Devin mode: {current.devin_mode or 'org default'}", "callback_data": "cfg:mode:menu"}],
                 [{"text": f"📂 Repos: {current.repos or 'all'}", "callback_data": "cfg:repos:menu"}],
                 [{"text": f"🖥 Platform: {current.platform or 'default'}", "callback_data": "cfg:platform:menu"}],
+                [{
+                    "text": f"🧠 Model: {current.local_model or 'cli default'}",
+                    "callback_data": "cfg:model:menu",
+                }] if current.platform == "local" else [],
                 [{"text": f"⚡ ACU limit: {current.acu_limit if current.acu_limit is not None else 'default'}", "callback_data": "cfg:acu:menu"}],
                 [{"text": f"🔑 Secrets: {secret_count or 'none'}", "callback_data": "cfg:secrets:menu"}],
                 [{"text": f"👁 Unlisted: {unlisted}", "callback_data": "cfg:unlisted:menu"}],
@@ -2089,7 +2096,11 @@ class Bridge:
                     {"inline_keyboard": rows},
                 )
             elif field == "mode":
-                modes = await self.devin.devin_modes()
+                modes = (
+                    await self.local.modes()
+                    if self.store.get_settings(conv_key).platform == "local"
+                    else await self.devin.devin_modes()
+                )
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
@@ -2097,6 +2108,28 @@ class Bridge:
                         "text": "org default" if mode == "default" else mode,
                         "callback_data": f"cfg:mode:{mode}",
                     }] for mode in ("default", *modes)]},
+                )
+            elif field == "model":
+                models = await self.local.models()
+                rows = [[{
+                    "text": "cli default",
+                    "callback_data": "cfg:model:default",
+                }]]
+                for model in models:
+                    callback = f"cfg:model:{model}"
+                    if len(callback.encode()) > 64:
+                        continue
+                    rows.append([{
+                        "text": (
+                            f"{'✓ ' if model == self.store.get_settings(conv_key).local_model else ''}"
+                            f"{model}"
+                        ),
+                        "callback_data": callback,
+                    }])
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": rows},
                 )
             elif field == "repos":
                 selected = set(self.store.get_settings(conv_key).repo_list or [])
@@ -2201,6 +2234,26 @@ class Bridge:
                     conv_key,
                     devin_mode=None if value == "default" else value,
                 )
+                conversation = self.store.get_conversation(conv_key)
+                if conversation and is_local(conversation.session_id):
+                    try:
+                        await self.local.set_mode(
+                            conversation.session_id,
+                            "accept-edits" if value == "default" else value,
+                        )
+                    except (KeyError, RuntimeError):
+                        pass
+            elif field == "model":
+                self.store.update_chat_settings(
+                    conv_key,
+                    local_model=None if value == "default" else value,
+                )
+                conversation = self.store.get_conversation(conv_key)
+                if conversation and is_local(conversation.session_id) and value != "default":
+                    try:
+                        await self.local.set_model(conversation.session_id, value)
+                    except (KeyError, RuntimeError):
+                        pass
             elif field == "repos":
                 if value == "all":
                     self.store.update_chat_settings(conv_key, repos=None)

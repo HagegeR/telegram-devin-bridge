@@ -58,8 +58,104 @@ class LocalClient:
         self.api_key = api_key
         self.sessions: dict[str, _AcpSession] = {}
         self._next_id = 0
+        self._modes_cache: tuple[float, list[str]] | None = None
+        self._models_cache: tuple[float, list[str]] | None = None
 
-    async def create_session(self, prompt: str, title: str | None = None, **_: object) -> tuple[str, str]:
+    async def modes(self) -> list[str]:
+        """ACP session modes (accept-edits/smart/ask/plan/bypass), probed
+        once per 5 min by booting a throwaway acp process. Empty on probe
+        failure — callers must not treat that as authoritative."""
+        cached = self._modes_cache
+        if cached is not None and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cli_command,
+                "acp",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                cwd=os.path.abspath(self.cwd or os.getcwd()),
+            )
+        except OSError:
+            return []
+        sess = _AcpSession(proc=proc, acp_id="")
+        asyncio.create_task(self._reader(sess))
+        try:
+            await self._request(sess, "initialize", {
+                "protocolVersion": 1,
+                "clientCapabilities": {},
+                "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
+            })
+            created = await self._request(sess, "session/new", {
+                "cwd": os.path.abspath(self.cwd or os.getcwd()),
+                "mcpServers": [],
+            })
+            modes = [
+                str(m["id"])
+                for m in created.get("modes", {}).get("availableModes", [])
+                if isinstance(m, dict) and m.get("id")
+            ]
+        except (RuntimeError, TimeoutError, KeyError):
+            modes = []
+        proc.terminate()
+        await proc.wait()
+        if modes:
+            self._modes_cache = (time.monotonic(), modes)
+        return modes
+
+    async def models(self) -> list[str]:
+        """Model slugs accepted by the `model` config option, parsed from
+        `devin models list`. Empty on failure."""
+        cached = self._models_cache
+        if cached is not None and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cli_command,
+                "models",
+                "list",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError:
+            return []
+        out, _ = await asyncio.wait_for(proc.communicate(), 15)
+        models = [
+            line.split()[0]
+            for line in out.decode(errors="replace").splitlines()
+            if line.startswith("  ")
+            and not line.strip().startswith("aliases:")
+            and line.split()
+        ]
+        if models:
+            self._models_cache = (time.monotonic(), models)
+        return models
+
+    async def set_mode(self, session_id: str, mode: str) -> None:
+        sess = self.sessions[session_id]
+        await self._request(sess, "session/set_mode", {
+            "sessionId": sess.acp_id,
+            "modeId": mode,
+        })
+
+    async def set_model(self, session_id: str, model: str) -> None:
+        sess = self.sessions[session_id]
+        await self._request(sess, "session/set_config_option", {
+            "sessionId": sess.acp_id,
+            "configId": "model",
+            "value": model,
+        })
+
+    async def create_session(
+        self,
+        prompt: str,
+        title: str | None = None,
+        *,
+        mode: str | None = None,
+        model: str | None = None,
+        **_: object,
+    ) -> tuple[str, str]:
         cwd = os.path.abspath(self.cwd or os.getcwd())
         proc = await asyncio.create_subprocess_exec(
             self.cli_command,
@@ -83,6 +179,16 @@ class LocalClient:
         sess.acp_id = str(created["sessionId"])
         session_id = f"{LOCAL_PREFIX}{sess.acp_id}"
         self.sessions[session_id] = sess
+        if model is not None:
+            try:
+                await self.set_model(session_id, model)
+            except RuntimeError as exc:
+                self._emit(sess, f"⚠ model {model} rejected: {exc}")
+        if mode is not None:
+            try:
+                await self.set_mode(session_id, mode)
+            except RuntimeError as exc:
+                self._emit(sess, f"⚠ mode {mode} rejected: {exc}")
         if self.api_key:
             # shortcut: silent one-shot /login turn, cheap enough to run per
             # session; upgrade to checking `devin auth status` once when the
@@ -90,7 +196,7 @@ class LocalClient:
             sess.suppress_turn = True
             await self.send_message(session_id, f"/login {self.api_key}")
         await self.send_message(session_id, prompt)
-        return session_id, f"{sess.acp_id} (local CLI on this host — no cloud URL)"
+        return session_id, f"{title or sess.acp_id} · local CLI (no cloud URL)"
 
     async def send_message(self, session_id: str, message: str) -> None:
         sess = self.sessions[session_id]

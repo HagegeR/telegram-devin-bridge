@@ -18,6 +18,7 @@ from app.formatting import (
     rich_text_code,
     rich_text_link,
 )
+from app.local import LocalClient, is_local
 from app.store import Conversation, Store
 
 SYSTEM_PREAMBLE = (
@@ -71,6 +72,7 @@ class CommandRuntime(Protocol):
     settings: Settings
     store: Store
     devin: DevinClient
+    local: LocalClient
     bot_topics_enabled: bool
     approved_users: set[int]
 
@@ -426,14 +428,19 @@ async def handle_command(
             )
     elif command == "mode":
         value = args.strip()
+        local = runtime.store.get_settings(conv_key).platform == "local"
         v3_hint = (
             ""
-            if runtime.devin.v3_enabled
+            if runtime.devin.v3_enabled or local
             else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
+        modes = (
+            await runtime.local.modes()
+            if local
+            else await runtime.devin.devin_modes()
         )
         if not value:
             current = runtime.store.get_settings(conv_key).devin_mode
-            modes = await runtime.devin.devin_modes()
             options_line = f"\nAvailable: {', '.join(modes)}" if modes else ""
             await runtime.send_text(
                 message,
@@ -445,13 +452,22 @@ async def handle_command(
             )
         elif value.casefold() in {"default", "off", "reset"}:
             runtime.store.update_chat_settings(conv_key, devin_mode=None)
+            applied = ""
+            conversation = runtime.store.get_conversation(conv_key)
+            if local and conversation and is_local(conversation.session_id):
+                try:
+                    await runtime.local.set_mode(
+                        conversation.session_id, "accept-edits"
+                    )
+                    applied = " Running session switched to Code (the CLI default)."
+                except RuntimeError:
+                    pass
             await runtime.send_text(
                 message,
-                "Mode reset — new sessions use the org default." + v3_hint,
+                "Mode reset — new sessions use the org default." + applied + v3_hint,
                 ephemeral=True,
             )
         else:
-            modes = await runtime.devin.devin_modes()
             if modes and value not in modes:
                 await runtime.send_text(
                     message,
@@ -460,12 +476,75 @@ async def handle_command(
                 )
             else:
                 runtime.store.update_chat_settings(conv_key, devin_mode=value)
+                applied = ""
+                conversation = runtime.store.get_conversation(conv_key)
+                if local and conversation and is_local(conversation.session_id):
+                    try:
+                        await runtime.local.set_mode(conversation.session_id, value)
+                        applied = " Applied to the running session too."
+                    except RuntimeError:
+                        applied = " Couldn't apply to the running session."
                 await runtime.send_text(
                     message,
                     f"Mode: {value} — applies to the next new session."
+                    + applied
                     + v3_hint,
                     ephemeral=True,
                 )
+    elif command == "model":
+        value = args.strip()
+        if runtime.store.get_settings(conv_key).platform != "local":
+            await runtime.send_text(
+                message,
+                "Model selection only applies to local sessions — "
+                "set /platform local first (cloud sessions use /mode).",
+                ephemeral=True,
+            )
+        elif not value:
+            current = runtime.store.get_settings(conv_key).local_model
+            models = await runtime.local.models()
+            options_line = f"\nAvailable: {', '.join(models)}" if models else ""
+            await runtime.send_text(
+                message,
+                f"Model: {current or 'cli default'}"
+                + options_line
+                + "\n/model <slug> to set · /model default to reset",
+                ephemeral=True,
+            )
+        elif value.casefold() in {"default", "off", "reset"}:
+            runtime.store.update_chat_settings(conv_key, local_model=None)
+            await runtime.send_text(
+                message,
+                "Model reset — new local sessions use the CLI default.",
+                ephemeral=True,
+            )
+        elif re.fullmatch(r"[\w.-]+", value):
+            models = await runtime.local.models()
+            if models and value not in models:
+                await runtime.send_text(
+                    message,
+                    f"Unknown model: {value}\nAvailable: {', '.join(models)}",
+                    ephemeral=True,
+                )
+            else:
+                runtime.store.update_chat_settings(conv_key, local_model=value)
+                applied = ""
+                conversation = runtime.store.get_conversation(conv_key)
+                if conversation and is_local(conversation.session_id):
+                    try:
+                        await runtime.local.set_model(conversation.session_id, value)
+                        applied = " Applied to the running session too."
+                    except RuntimeError:
+                        applied = " Couldn't apply to the running session."
+                await runtime.send_text(
+                    message,
+                    f"Model: {value} — applies to the next new session." + applied,
+                    ephemeral=True,
+                )
+        else:
+            await runtime.send_text(
+                message, "Usage: /model <slug> · /model default", ephemeral=True
+            )
     elif command == "acu":
         value = args.strip()
         if not value:
@@ -1122,6 +1201,7 @@ _HELP_SECTIONS = (
             "/playbook [n] [text] — list or run a playbook",
             "/settings — notifications, drafts, mode, defaults",
             "/mode [name] — Devin mode for new sessions",
+            "/model [slug] — model for local (`/platform local`) sessions",
             "/repos [a/b,c/d] — restrict sessions to repos",
             "/platform [name] — outpost pool, VM platform, or `local` (CLI on this host)",
             "/acu [n] — per-chat ACU limit",

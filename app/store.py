@@ -47,6 +47,7 @@ class ConversationSettings:
     status_timer: bool | None = None
     default_playbook: str | None = None
     devin_mode: str | None = None
+    local_model: str | None = None
     repos: str | None = None
     platform: str | None = None
     tags: str | None = None
@@ -228,6 +229,7 @@ class Store:
                     status_timer INTEGER,
                     default_playbook TEXT,
                     devin_mode TEXT,
+                    local_model TEXT,
                     repos TEXT,
                     platform TEXT,
                     tags TEXT,
@@ -317,6 +319,7 @@ class Store:
             }
             for new_column, column_type in {
                 "devin_mode": "TEXT",
+                "local_model": "TEXT",
                 "repos": "TEXT",
                 "platform": "TEXT",
                 "tags": "TEXT",
@@ -615,7 +618,7 @@ class Store:
             for key in {conv_key, chat_key}:
                 row = self.connection.execute(
                     "SELECT silent, drafts, status_timer, default_playbook, "
-                    "devin_mode, repos, platform, tags, secret_ids, "
+                    "devin_mode, local_model, repos, platform, tags, secret_ids, "
                     "knowledge_ids, snapshot_id, acu_limit, unlisted, "
                     "idempotent "
                     "FROM conversation_settings WHERE conv_key = ?",
@@ -651,6 +654,9 @@ class Store:
             ),
             devin_mode=(
                 None if pick("devin_mode") is None else str(pick("devin_mode"))
+            ),
+            local_model=(
+                None if pick("local_model") is None else str(pick("local_model"))
             ),
             repos=None if pick("repos") is None else str(pick("repos")),
             platform=(
@@ -693,6 +699,7 @@ class Store:
             "status_timer",
             "default_playbook",
             "devin_mode",
+            "local_model",
             "repos",
             "platform",
             "tags",

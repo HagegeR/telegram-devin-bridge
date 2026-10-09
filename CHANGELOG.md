@@ -25,6 +25,13 @@ and deployment update channels.
   and outpost pool the org accepts (parsed from the create-session 400
   body, same probe as `devin_modes()`), and `/platform` with no args
   prints the same list.
+- `/model <slug>` + `/settings` → 🧠 Model — pick the model local CLI
+  sessions run (enumerated from `devin models list`, applied at create and
+  live via ACP `session/set_config_option`). On `platform=local` chats,
+  `/mode` and the 🤖 Devin mode submenu enumerate the local ACP modes
+  (accept-edits/smart/ask/plan/bypass) instead of cloud modes and apply
+  immediately to the running session. Local sessions are now titled with
+  the conversation title instead of the ACP session id.
 - `/platform local` — prototype local-CLI backend: new sessions spawn a
   `devin acp` subprocess on the bridge host itself (fully local execution,
   the CLI's own model set, no cloud session URL). Shown as
