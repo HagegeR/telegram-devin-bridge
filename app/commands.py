@@ -513,9 +513,17 @@ async def handle_command(
             )
         elif value.casefold() in {"default", "off", "reset"}:
             runtime.store.update_chat_settings(conv_key, local_model=None)
+            applied = ""
+            conversation = runtime.store.get_conversation(conv_key)
+            if conversation and is_local(conversation.session_id):
+                try:
+                    await runtime.local.set_model_default(conversation.session_id)
+                    applied = " Running session restored to the CLI default too."
+                except RuntimeError:
+                    applied = " Running session keeps its current model."
             await runtime.send_text(
                 message,
-                "Model reset — new local sessions use the CLI default.",
+                "Model reset — new local sessions use the CLI default." + applied,
                 ephemeral=True,
             )
         elif re.fullmatch(r"[\w.-]+", value):
@@ -916,11 +924,15 @@ async def _sessions(
         title = entry.title if len(entry.title) <= 200 else entry.title[:200] + "…"
         rows.append(f"{marker}{index}. {title} — {status}")
         details.append(f"{index}. {escape(entry.session_url)}")
-        links.append(
-            rich_paragraph(
-                [f"{index}. ", rich_text_link(entry.session_url, entry.session_url)]
+        if entry.session_url.startswith("http"):
+            links.append(
+                rich_paragraph(
+                    [f"{index}. ", rich_text_link(entry.session_url, entry.session_url)]
+                )
             )
-        )
+        else:
+            # local sessions have a label, not a URL
+            links.append(rich_paragraph([f"{index}. {entry.session_url}"]))
     # send_message's HTML path has no chunker: keep the rows under the
     # 4096 cap (oldest entries drop first), then keep as many details
     # entries as still fit.

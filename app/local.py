@@ -30,6 +30,7 @@ def is_local(session_id: str) -> bool:
 class _AcpSession:
     proc: asyncio.subprocess.Process
     acp_id: str
+    title: str = ""
     events: list[DevinMessage] = field(default_factory=list)
     buffer: list[str] = field(default_factory=list)
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
@@ -44,6 +45,14 @@ class _AcpSession:
         return self.turns > 0
 
 
+# detached sessions stay addressable for /resume, but bound them: each
+# owns a subprocess, so cap the pool and evict the oldest first
+_MAX_SESSIONS = 32
+# turns can run for a long time; prompts get no deadline (they end on
+# stopReason or terminate), everything else uses the control timeout
+_CONTROL_TIMEOUT = 30
+
+
 class LocalClient:
     """DevinClient-shaped interface backed by `devin acp` on this host."""
 
@@ -52,10 +61,18 @@ class LocalClient:
         cli_command: str = "devin",
         cwd: str | None = None,
         api_key: str | None = None,
+        pr_fetcher: object = None,
     ) -> None:
         self.cli_command = cli_command
-        self.cwd = cwd
+        # never default into the bridge checkout: agents would get the
+        # deployment's .env and app sources as their workspace
+        self.cwd = cwd or os.path.join(
+            os.path.expanduser("~"), ".devin-local-sessions"
+        )
         self.api_key = api_key
+        self.pr_fetcher = pr_fetcher
+        self._default_model: str | None = None
+        self._cli_logged_in: bool | None = None
         self.sessions: dict[str, _AcpSession] = {}
         self._next_id = 0
         self._modes_cache: tuple[float, list[str]] | None = None
@@ -75,7 +92,7 @@ class LocalClient:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
-                cwd=os.path.abspath(self.cwd or os.getcwd()),
+                cwd=self._cwd(),
             )
         except OSError:
             return []
@@ -88,7 +105,7 @@ class LocalClient:
                 "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
             })
             created = await self._request(sess, "session/new", {
-                "cwd": os.path.abspath(self.cwd or os.getcwd()),
+                "cwd": self._cwd(),
                 "mcpServers": [],
             })
             modes = [
@@ -96,6 +113,11 @@ class LocalClient:
                 for m in created.get("modes", {}).get("availableModes", [])
                 if isinstance(m, dict) and m.get("id")
             ]
+            for opt in created.get("configOptions", []):
+                if isinstance(opt, dict) and opt.get("id") == "model":
+                    current = opt.get("currentValue")
+                    if current:
+                        self._default_model = str(current)
         except (RuntimeError, TimeoutError, KeyError):
             modes = []
         proc.terminate()
@@ -132,6 +154,10 @@ class LocalClient:
             self._models_cache = (time.monotonic(), models)
         return models
 
+    async def set_model_default(self, session_id: str) -> None:
+        if self._default_model:
+            await self.set_model(session_id, self._default_model)
+
     async def set_mode(self, session_id: str, mode: str) -> None:
         sess = self.sessions[session_id]
         await self._request(sess, "session/set_mode", {
@@ -156,7 +182,8 @@ class LocalClient:
         model: str | None = None,
         **_: object,
     ) -> tuple[str, str]:
-        cwd = os.path.abspath(self.cwd or os.getcwd())
+        cwd = self._cwd()
+        os.makedirs(cwd, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
             self.cli_command,
             "acp",
@@ -167,17 +194,24 @@ class LocalClient:
         )
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
-        await self._request(sess, "initialize", {
-            "protocolVersion": 1,
-            "clientCapabilities": {},
-            "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
-        })
-        created = await self._request(sess, "session/new", {
-            "cwd": cwd,
-            "mcpServers": [],
-        })
+        try:
+            await self._request(sess, "initialize", {
+                "protocolVersion": 1,
+                "clientCapabilities": {},
+                "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
+            })
+            created = await self._request(sess, "session/new", {
+                "cwd": cwd,
+                "mcpServers": [],
+            })
+        except (RuntimeError, TimeoutError, asyncio.CancelledError):
+            proc.terminate()
+            raise
         sess.acp_id = str(created["sessionId"])
+        sess.title = title or ""
         session_id = f"{LOCAL_PREFIX}{sess.acp_id}"
+        while len(self.sessions) >= _MAX_SESSIONS:
+            await self.terminate(next(iter(self.sessions)))
         self.sessions[session_id] = sess
         if model is not None:
             try:
@@ -189,10 +223,9 @@ class LocalClient:
                 await self.set_mode(session_id, mode)
             except RuntimeError as exc:
                 self._emit(sess, f"⚠ mode {mode} rejected: {exc}")
-        if self.api_key:
-            # shortcut: silent one-shot /login turn, cheap enough to run per
-            # session; upgrade to checking `devin auth status` once when the
-            # CLI grows a non-interactive status path
+        if self.api_key and not await self._cli_logged_in():
+            # only login when the CLI isn't already authed — every /login
+            # turn leaves the key in the session transcript
             sess.suppress_turn = True
             await self.send_message(session_id, f"/login {self.api_key}")
         await self.send_message(session_id, prompt)
@@ -214,7 +247,7 @@ class LocalClient:
             return await self._request(sess, "session/prompt", {
                 "sessionId": sess.acp_id,
                 "prompt": [{"type": "text", "text": message}],
-            })
+            }, timeout=None)
 
         sess.tail = asyncio.create_task(_turn())
         sess.tail.add_done_callback(lambda f: self._turn_done(sess, f))
@@ -267,7 +300,7 @@ class LocalClient:
         status = "expired" if sess.dead else ("working" if sess.running else "blocked")
         return SessionState(
             status_enum=status,
-            title=sess.acp_id,
+            title=sess.title,
             pr_url=None,
             messages=messages if fetch_messages else [],
         )
@@ -297,6 +330,35 @@ class LocalClient:
     async def download_attachment(self, url: str) -> tuple[bytes, str]:
         return b"", "file"
 
+    async def fetch_github_pr(
+        self, url: str, token: str | None = None
+    ) -> dict[str, object] | None:
+        # PR enrichment is cloud metadata, not execution — delegate to the
+        # cloud client the bridge injects
+        if self.pr_fetcher is None:
+            return None
+        return await self.pr_fetcher(url, token)
+
+    def _cwd(self) -> str:
+        return os.path.abspath(self.cwd)
+
+    async def _cli_logged_in(self) -> bool:
+        if self._cli_logged_in is not None:
+            return self._cli_logged_in
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cli_command,
+                "auth",
+                "status",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), 15)
+            self._cli_logged_in = b"Logged in" in out
+        except (OSError, TimeoutError):
+            self._cli_logged_in = False
+        return self._cli_logged_in
+
     # -- JSON-RPC plumbing -------------------------------------------------
 
     def _send(self, sess: _AcpSession, method: str, params: dict) -> asyncio.Future:
@@ -311,9 +373,16 @@ class LocalClient:
         )
         return fut
 
-    async def _request(self, sess: _AcpSession, method: str, params: dict) -> dict:
+    async def _request(
+        self,
+        sess: _AcpSession,
+        method: str,
+        params: dict,
+        *,
+        timeout: float | None = _CONTROL_TIMEOUT,
+    ) -> dict:
         fut = self._send(sess, method, params)
-        result = await asyncio.wait_for(fut, timeout=30)
+        result = await fut if timeout is None else await asyncio.wait_for(fut, timeout)
         if "error" in result:
             raise RuntimeError(f"{method}: {result['error']}")
         return result.get("result", {})
@@ -328,6 +397,31 @@ class LocalClient:
             req_id = msg.get("id")
             if req_id is not None and req_id in sess.pending:
                 sess.pending.pop(req_id).set_result(msg)
+                continue
+            if msg.get("method") == "session/request_permission":
+                # ACP sends permission prompts as server->client requests;
+                # unanswered they stall the turn — pick an allow option so
+                # every mode keeps working (bypass-tier access is the
+                # prototype's operating mode anyway)
+                options = msg.get("params", {}).get("options") or []
+                pick = next(
+                    (
+                        o for o in options
+                        if "allow" in str(o.get("kind", "") + o.get("name", "")).lower()
+                    ),
+                    options[0] if options else None,
+                )
+                if pick is not None and req_id is not None and sess.proc.stdin is not None:
+                    sess.proc.stdin.write(
+                        json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {"outcome": {
+                                "outcome": "selected",
+                                "optionId": pick.get("optionId", pick.get("id")),
+                            }},
+                        }).encode() + b"\n"
+                    )
                 continue
             if msg.get("method") != "session/update":
                 continue
