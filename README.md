@@ -104,6 +104,11 @@ deployment check list.
 | `/repos [a/b,c/d]` | Show, set, or clear the repos list for new sessions (`/repos all` resets) |
 | `/platform [name]` | Show, set, or clear the platform/outpost pool for new sessions (`/platform default` resets) |
 | `/mode [name]` | Show, set, or clear the Devin mode for new sessions (`/mode default` resets) |
+| `/acu [n]` | Per-chat ACU limit for new sessions (`/acu default` resets) |
+| `/tags [a,b]` | Extra session tags (`/tags clear` resets) |
+| `/secrets [KEY,KEY2]` | Secrets attached to new sessions (`/secrets clear` resets) |
+| `/knowledge [id,id]` | Knowledge entries attached to new sessions (`/knowledge clear` resets) |
+| `/snapshot [id]` | Environment snapshot for new sessions (`/snapshot clear` resets) |
 | `/crawl` | Show which sites get pre-crawled (toggle in `/settings`; `CRAWL_SITES` is the env default); extracted text + media are attached to the Devin prompt |
 | `/usage` | Devin ACU usage (needs `DEVIN_ORG_ID` + service-user key) |
 | `/lang [code]` | Per-user voice-transcription language (`auto`, `off`) |

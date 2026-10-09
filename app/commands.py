@@ -466,6 +466,226 @@ async def handle_command(
                     + v3_hint,
                     ephemeral=True,
                 )
+    elif command == "acu":
+        value = args.strip()
+        v3_hint = (
+            ""
+            if runtime.devin.v3_enabled
+            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
+        if not value:
+            current = runtime.store.get_settings(conv_key).acu_limit
+            await runtime.send_text(
+                message,
+                f"ACU limit: {current if current is not None else 'default'}\n"
+                "/acu <n> to set · /acu default to reset"
+                + v3_hint,
+                ephemeral=True,
+            )
+        elif value.casefold() in {"default", "off", "reset"}:
+            runtime.store.update_chat_settings(conv_key, acu_limit=None)
+            await runtime.send_text(
+                message,
+                "ACU limit reset — new sessions use the org default." + v3_hint,
+                ephemeral=True,
+            )
+        elif value.isdigit() and int(value) > 0:
+            runtime.store.update_chat_settings(conv_key, acu_limit=int(value))
+            await runtime.send_text(
+                message,
+                f"ACU limit: {value} — applies to the next new session."
+                + v3_hint,
+                ephemeral=True,
+            )
+        else:
+            await runtime.send_text(
+                message,
+                "Usage: /acu <positive n> · /acu default",
+                ephemeral=True,
+            )
+    elif command == "tags":
+        value = args.strip()
+        v3_hint = (
+            ""
+            if runtime.devin.v3_enabled
+            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
+        if not value:
+            current = runtime.store.get_settings(conv_key).tags
+            await runtime.send_text(
+                message,
+                f"Tags: {current or 'telegram-bridge only'}\n"
+                "/tags alpha,beta to set · /tags clear to reset"
+                + v3_hint,
+                ephemeral=True,
+            )
+        elif value.casefold() in {"clear", "default", "off", "reset"}:
+            runtime.store.update_chat_settings(conv_key, tags=None)
+            await runtime.send_text(
+                message,
+                "Tags cleared — new sessions only carry telegram-bridge."
+                + v3_hint,
+                ephemeral=True,
+            )
+        else:
+            tags = [part.strip() for part in value.split(",") if part.strip()]
+            if tags and all(re.fullmatch(r"[\w.-]+", tag) for tag in tags):
+                runtime.store.update_chat_settings(
+                    conv_key, tags=",".join(tags)
+                )
+                await runtime.send_text(
+                    message,
+                    f"Tags: {', '.join(tags)} — applies to the next new session."
+                    + v3_hint,
+                    ephemeral=True,
+                )
+            else:
+                await runtime.send_text(
+                    message,
+                    "Usage: /tags alpha[,beta] · /tags clear",
+                    ephemeral=True,
+                )
+    elif command == "secrets":
+        value = args.strip()
+        v3_hint = (
+            ""
+            if runtime.devin.v3_enabled
+            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
+        available = await runtime.devin.secrets()
+        key_to_id = {key: secret_id for key, secret_id in available}
+        if not value:
+            current = set(
+                runtime.store.get_settings(conv_key).secret_id_list or []
+            )
+            current_keys = [
+                key for key, secret_id in available if secret_id in current
+            ]
+            options_line = (
+                f"\nAvailable: {', '.join(key for key, _ in available)}"
+                if available
+                else ""
+            )
+            await runtime.send_text(
+                message,
+                f"Secrets: {', '.join(sorted(current_keys)) or 'none'}"
+                + options_line
+                + "\n/secrets KEY1,KEY2 to set · /secrets clear to reset"
+                + v3_hint,
+                ephemeral=True,
+            )
+        elif value.casefold() in {"clear", "default", "off", "reset"}:
+            runtime.store.update_chat_settings(conv_key, secret_ids=None)
+            await runtime.send_text(
+                message,
+                "Secrets cleared — new sessions get org defaults." + v3_hint,
+                ephemeral=True,
+            )
+        else:
+            keys = [part.strip() for part in value.split(",") if part.strip()]
+            unknown = [key for key in keys if key not in key_to_id]
+            if unknown and available:
+                await runtime.send_text(
+                    message,
+                    f"Unknown secrets: {', '.join(unknown)}\n"
+                    f"Available: {', '.join(key for key, _ in available)}",
+                    ephemeral=True,
+                )
+            elif not keys:
+                await runtime.send_text(
+                    message,
+                    "Usage: /secrets KEY1[,KEY2] · /secrets clear",
+                    ephemeral=True,
+                )
+            else:
+                runtime.store.update_chat_settings(
+                    conv_key,
+                    secret_ids=",".join(key_to_id[key] for key in keys),
+                )
+                await runtime.send_text(
+                    message,
+                    f"Secrets: {', '.join(keys)} — applies to the next "
+                    "new session." + v3_hint,
+                    ephemeral=True,
+                )
+    elif command == "knowledge":
+        value = args.strip()
+        v3_hint = (
+            ""
+            if runtime.devin.v3_enabled
+            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
+        if not value:
+            current = runtime.store.get_settings(conv_key).knowledge_ids
+            await runtime.send_text(
+                message,
+                f"Knowledge: {current or 'org default'}\n"
+                "/knowledge id1,id2 to set · /knowledge clear to reset"
+                + v3_hint,
+                ephemeral=True,
+            )
+        elif value.casefold() in {"clear", "default", "off", "reset"}:
+            runtime.store.update_chat_settings(conv_key, knowledge_ids=None)
+            await runtime.send_text(
+                message,
+                "Knowledge cleared — new sessions use org defaults." + v3_hint,
+                ephemeral=True,
+            )
+        else:
+            ids = [part.strip() for part in value.split(",") if part.strip()]
+            if ids and all(re.fullmatch(r"[\w-]+", item) for item in ids):
+                runtime.store.update_chat_settings(
+                    conv_key, knowledge_ids=",".join(ids)
+                )
+                await runtime.send_text(
+                    message,
+                    f"Knowledge: {', '.join(ids)} — applies to the next "
+                    "new session." + v3_hint,
+                    ephemeral=True,
+                )
+            else:
+                await runtime.send_text(
+                    message,
+                    "Usage: /knowledge id1[,id2] · /knowledge clear",
+                    ephemeral=True,
+                )
+    elif command == "snapshot":
+        value = args.strip()
+        v3_hint = (
+            ""
+            if runtime.devin.v3_enabled
+            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
+        if not value:
+            current = runtime.store.get_settings(conv_key).snapshot_id
+            await runtime.send_text(
+                message,
+                f"Snapshot: {current or 'org default'}\n"
+                "/snapshot <id> to set · /snapshot clear to reset"
+                + v3_hint,
+                ephemeral=True,
+            )
+        elif value.casefold() in {"clear", "default", "off", "reset"}:
+            runtime.store.update_chat_settings(conv_key, snapshot_id=None)
+            await runtime.send_text(
+                message,
+                "Snapshot cleared — new sessions use org defaults." + v3_hint,
+                ephemeral=True,
+            )
+        elif re.fullmatch(r"[\w-]+", value):
+            runtime.store.update_chat_settings(conv_key, snapshot_id=value)
+            await runtime.send_text(
+                message,
+                f"Snapshot: {value} — applies to the next new session."
+                + v3_hint,
+                ephemeral=True,
+            )
+        else:
+            await runtime.send_text(
+                message,
+                "Usage: /snapshot <id> · /snapshot clear",
+                ephemeral=True,
+            )
     elif command == "crawl":
         enabled = sorted(runtime.crawl_sites())
         await runtime.send_text(
@@ -907,6 +1127,11 @@ _HELP_SECTIONS = (
             "/mode [name] — Devin mode for new sessions",
             "/repos [a/b,c/d] — restrict sessions to repos",
             "/platform [name] — run sessions on an outpost pool or VM platform",
+            "/acu [n] — per-chat ACU limit",
+            "/tags [a,b] — extra tags on new sessions",
+            "/secrets [KEY,KEY2] — secrets attached to new sessions",
+            "/knowledge [id,id] — knowledge entries on new sessions",
+            "/snapshot [id] — environment snapshot for new sessions",
             "/crawl — show which sites get pre-crawled (toggle in /settings)",
             "/lang [code] — voice-note language",
             "/usage — Devin ACU usage",

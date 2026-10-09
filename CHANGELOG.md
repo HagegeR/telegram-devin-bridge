@@ -35,6 +35,18 @@ and deployment update channels.
   a typo replies `Not connected to this org: …` instead of silently
   breaking future sessions. The `/settings` 📂 Repos submenu toggles
   repos from the same list with ✓ marks; `/repos all` still resets.
+- `/acu [n]` — per-chat ACU limit for new sessions, plus preset buttons in
+  the `/settings` ⚡ ACU limit submenu; `/acu default` resets.
+- `/tags [a,b]` — extra tags on new sessions (`telegram-bridge` is always
+  sent); `/tags clear` resets.
+- `/secrets [KEY,KEY2]` — attach org secrets to new sessions by key,
+  resolved to IDs via `GET /v3/organizations/{org}/secrets` and toggleable
+  in the `/settings` 🔑 Secrets submenu; `/secrets clear` resets.
+- `/knowledge [id,id]` and `/snapshot [id]` — per-chat knowledge entries
+  and environment snapshot for new sessions (IDs are free-text; the API
+  has no list endpoint for them); `clear` resets.
+- `/settings` 👁 Unlisted and 🔁 Idempotent rows — per-chat tri-state
+  flags (inherit/on/off) passed to create-session when set.
 - Restart backlog digest — when a bridge restart leaves 3+ undelivered
   Devin replies in a conversation, the recovery watcher sends one
   `📥 While the bridge was restarting` digest instead of bursting every
