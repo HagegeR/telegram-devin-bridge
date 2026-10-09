@@ -72,11 +72,11 @@ class LocalClient:
         self.api_key = api_key
         self.pr_fetcher = pr_fetcher
         self._default_model: str | None = None
+        self._model_options: list[str] | None = None
         self._cli_authed: bool | None = None
         self.sessions: dict[str, _AcpSession] = {}
         self._next_id = 0
         self._modes_cache: tuple[float, list[str]] | None = None
-        self._models_cache: tuple[float, list[str]] | None = None
 
     async def modes(self) -> list[str]:
         """ACP session modes (accept-edits/smart/ask/plan/bypass), probed
@@ -98,6 +98,8 @@ class LocalClient:
             return []
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
+        # fresh probe: stale model choices must not survive a failed refresh
+        self._model_options = None
         try:
             await self._request(sess, "initialize", {
                 "protocolVersion": 1,
@@ -118,6 +120,13 @@ class LocalClient:
                     current = opt.get("currentValue")
                     if current:
                         self._default_model = str(current)
+                    values = [
+                        str(o["value"])
+                        for o in opt.get("options", [])
+                        if isinstance(o, dict) and o.get("value")
+                    ]
+                    if values:
+                        self._model_options = values
         except (RuntimeError, TimeoutError, KeyError):
             modes = []
         proc.terminate()
@@ -127,32 +136,12 @@ class LocalClient:
         return modes
 
     async def models(self) -> list[str]:
-        """Model slugs accepted by the `model` config option, parsed from
-        `devin models list`. Empty on failure."""
-        cached = self._models_cache
-        if cached is not None and time.monotonic() - cached[0] < 300:
-            return cached[1]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.cli_command,
-                "models",
-                "list",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except OSError:
-            return []
-        out, _ = await asyncio.wait_for(proc.communicate(), 15)
-        models = [
-            line.split()[0]
-            for line in out.decode(errors="replace").splitlines()
-            if line.startswith("  ")
-            and not line.strip().startswith("aliases:")
-            and line.split()
-        ]
-        if models:
-            self._models_cache = (time.monotonic(), models)
-        return models
+        """Model values the `model` config option actually accepts, from
+        session/new's configOptions. (`devin models list` advertises every
+        family — including ones this account can't set, e.g. swe-2-max —
+        so it is not a source of truth.) Empty on probe failure."""
+        await self.modes()  # the probe populates _model_options
+        return self._model_options or []
 
     async def set_model_default(self, session_id: str) -> None:
         if self._default_model:
@@ -183,7 +172,6 @@ class LocalClient:
         **_: object,
     ) -> tuple[str, str]:
         cwd = self._cwd()
-        os.makedirs(cwd, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
             self.cli_command,
             "acp",
@@ -340,7 +328,10 @@ class LocalClient:
         return await self.pr_fetcher(url, token)
 
     def _cwd(self) -> str:
-        return os.path.abspath(self.cwd)
+        path = os.path.abspath(self.cwd)
+        # the probe spawns here too, before any session exists
+        os.makedirs(path, exist_ok=True)
+        return path
 
     async def _cli_logged_in(self) -> bool:
         if self._cli_authed is not None:
