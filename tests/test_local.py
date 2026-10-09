@@ -49,6 +49,14 @@ FAKE_ACP = textwrap.dedent(
                       flush=True)
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"stopReason": "end_turn"}}), flush=True)
+        elif meth == "session/load":
+            print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
+        elif meth == "session/list":
+            print(json.dumps({"jsonrpc": "2.0", "id": i,
+                              "result": {"sessions": [{
+                                  "sessionId": sid,
+                                  "title": "resumed title",
+                              }]}}), flush=True)
         elif meth == "session/delete":
             print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
     """
@@ -125,6 +133,25 @@ async def test_terminate_marks_expired(shell_client: LocalClient) -> None:
     await shell_client.terminate(session_id)
     state = await shell_client.get_session(session_id)
     assert state.status_enum == "expired"
+
+
+@pytest.mark.asyncio
+async def test_send_message_resumes_detached_session(shell_client: LocalClient) -> None:
+    # bridge restart drops in-memory sessions; the CLI's session DB still
+    # has them — send_message must reload via session/load
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    state = await shell_client.get_session(session_id)
+    last = state.messages[-1].event_id
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+    await shell_client.send_message(session_id, "second")
+    await _wait_for(shell_client, session_id, "echo: second")
+    state = await shell_client.get_session(session_id)
+    assert state.title == "resumed title"
+    # the watcher's persisted cursor must not filter post-restart replies
+    state = await shell_client.get_session(session_id, since_event_id=last)
+    assert [m.message for m in state.messages] == ["echo: second"]
 
 
 @pytest.mark.asyncio

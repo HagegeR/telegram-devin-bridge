@@ -102,8 +102,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     backend** (`app/local.py`): each session is a `devin acp` subprocess on
     the bridge host speaking ACP JSON-RPC over stdio (`initialize` +
     `session/new`, prompts via `session/prompt`, replies collected from
-    `agent_message_chunk` updates into one message per turn). Sessions are
-    in-memory (bridge restart kills them), have no cloud URL, can't receive
+    `agent_message_chunk` updates into one message per turn). Sessions
+    persist in the CLI's own DB and are reloaded via `session/load` after a
+    bridge restart (the in-memory map is only the live-process index; `/stop`
+    still deletes the record), have no cloud URL, can't receive
     file attachments, and ignore the cloud session options — the CLI's own
     mode/model config applies instead. The service-user key is sent as a
     `/login` command on session start when set. Requires the Devin CLI
