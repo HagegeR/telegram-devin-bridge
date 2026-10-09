@@ -19,6 +19,42 @@ def _stream(data: bytes) -> asyncio.StreamReader:
     return reader
 
 
+# portable stand-ins for POSIX helpers (sleep/false/touch/yes/echo):
+# same behavior on any OS the tests run on
+_HEARTBEAT = (
+    "import time,sys\nwhile True:\n"
+    " open(sys.argv[1],'a').write('x')\n"
+    " time.sleep(0.05)"
+)
+_SLEEP30 = [sys.executable, "-c", "import time; time.sleep(30)"]
+_EXIT1 = [sys.executable, "-c", "import sys; sys.exit(1)"]
+_INFINITE_OUTPUT = [
+    sys.executable,
+    "-c",
+    "import sys\nwhile True:\n print('y' * 1000, flush=True)",
+]
+_PRINT_OK = [sys.executable, "-c", "print('ok')"]
+
+
+def _touch(marker: Path) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        "import sys; open(sys.argv[1], 'w').close()",
+        str(marker),
+    ]
+
+
+async def _pulse_stopped(marker: Path) -> None:
+    """Assert no living process is still writing heartbeats to `marker` —
+    the portable replacement for `ps -eo args` liveness checks."""
+    if not marker.exists():
+        return
+    before = marker.read_bytes()
+    await asyncio.sleep(0.3)
+    assert marker.read_bytes() == before, f"{marker} is still being written"
+
+
 @pytest.mark.asyncio
 async def test_transcribe_whispercpp_returns_none_for_missing_binary(
     monkeypatch: pytest.MonkeyPatch,
@@ -166,31 +202,65 @@ async def test_transcribe_local_joins_segments(
 
 @pytest.mark.asyncio
 async def test_run_whispercpp_command_kills_process_on_timeout(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(transcription, "_TIMEOUT", 0.1)
-    assert await transcription._run_whispercpp_command("sleep", "30") is None
-    ps = await asyncio.create_subprocess_exec(
-        "ps", "-eo", "args", stdout=asyncio.subprocess.PIPE
+    marker = tmp_path / "pulse"
+    assert (
+        await transcription._run_whispercpp_command(
+            sys.executable, "-c", _HEARTBEAT, str(marker)
+        )
+        is None
     )
-    stdout, _ = await ps.communicate()
-    assert b"sleep 30" not in stdout
+    await _pulse_stopped(marker)
 
 
 @pytest.mark.asyncio
 async def test_run_whispercpp_command_kills_grandchildren_on_timeout(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(transcription, "_TIMEOUT", 0.1)
+    marker = tmp_path / "pulse"
+    # parent sleeps; its child keeps a heartbeat in `marker` — the kill
+    # must reach the grandchild (killpg on POSIX, taskkill /T on Windows)
+    spawn_child = (
+        "import subprocess,sys,time;"
+        "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]);"
+        "time.sleep(30)"
+    )
     assert (
-        await transcription._run_whispercpp_command("sh", "-c", "sleep 31; sleep 32")
+        await transcription._run_whispercpp_command(
+            sys.executable, "-c", spawn_child, _HEARTBEAT, str(marker)
+        )
         is None
     )
-    ps = await asyncio.create_subprocess_exec(
-        "ps", "-eo", "args", stdout=asyncio.subprocess.PIPE
+    await _pulse_stopped(marker)
+
+
+def test_kill_uses_taskkill_tree_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # no POSIX CI coverage otherwise: Windows kills via taskkill /T since
+    # there are no process groups to signal
+    calls: list[list[str]] = []
+    monkeypatch.setattr(transcription.os, "name", "nt")
+    monkeypatch.setattr(
+        transcription.subprocess,
+        "run",
+        lambda args, **_: calls.append(args),
     )
-    stdout, _ = await ps.communicate()
-    assert b"sleep 31" not in stdout
+
+    class Proc:
+        pid = 42
+        killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    proc = Proc()
+    transcription._kill(proc)
+    assert calls == [["taskkill", "/F", "/T", "/PID", "42"]]
+    assert proc.killed
 
 
 @pytest.mark.asyncio
@@ -198,8 +268,8 @@ async def test_run_whispercpp_command_caps_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(transcription, "_MAX_OUTPUT", 1000)
-    assert await transcription._run_whispercpp_command("yes") is None
-    assert await transcription._run_whispercpp_command("echo", "ok") == b"ok\n"
+    assert await transcription._run_whispercpp_command(*_INFINITE_OUTPUT) is None
+    assert await transcription._run_whispercpp_command(*_PRINT_OK) == b"ok\n"
 
 
 @pytest.mark.asyncio
@@ -454,7 +524,7 @@ async def test_transcribe_command_runs_cleanup_after_failure(
     marker = tmp_path / "cleaned"
     assert (
         await transcription.transcribe_command(
-            b"audio", "voice.ogg", ["false"], None, cleanup=["touch", str(marker)]
+            b"audio", "voice.ogg", _EXIT1, None, cleanup=_touch(marker)
         )
         is None
     )
@@ -462,7 +532,7 @@ async def test_transcribe_command_runs_cleanup_after_failure(
     marker.unlink()
     task = asyncio.ensure_future(
         transcription.transcribe_command(
-            b"audio", "voice.ogg", ["sleep", "30"], None, cleanup=["touch", str(marker)]
+            b"audio", "voice.ogg", _SLEEP30, None, cleanup=_touch(marker)
         )
     )
     await asyncio.sleep(0.3)

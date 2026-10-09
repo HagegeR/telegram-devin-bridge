@@ -11,6 +11,11 @@ from pathlib import Path
 
 import pytest
 
+# the artifact under test is a POSIX shell script — nothing to port
+pytestmark = pytest.mark.skipif(
+    os.name == "nt", reason="deploy/self-update.sh is POSIX-only"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "deploy" / "self-update.sh"
 
