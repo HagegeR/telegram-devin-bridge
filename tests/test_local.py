@@ -35,14 +35,54 @@ FAKE_ACP = textwrap.dedent(
                                       {"id": "accept-edits"},
                                       {"id": "smart"},
                                   ]}, "configOptions": [{
+                                  "id": "mode",
+                                  "currentValue": "accept-edits",
+                                  "options": [
+                                      {"value": "accept-edits",
+                                       "name": "Code",
+                                       "description": "Write and edit code"},
+                                      {"value": "smart",
+                                       "name": "Smart",
+                                       "description": "Auto-approve safe"},
+                                  ]}, {
                                   "id": "model",
                                   "currentValue": "swe-2-high",
                                   "options": [
                                       {"value": "swe-2-high"},
                                       {"value": "swe-2-low"},
+                                  ]}, {
+                                  "id": "thought_level",
+                                  "currentValue": "high",
+                                  "options": [
+                                      {"value": "medium"},
+                                      {"value": "high"},
+                                      {"value": "max"},
                                   ]}]}}), flush=True)
-        elif meth in ("session/set_mode", "session/set_config_option"):
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                              "params": {"sessionId": sid, "update": {
+                                  "sessionUpdate": "available_commands_update",
+                                  "availableCommands": [
+                                      {"name": "fast",
+                                       "description": "Fastest model",
+                                       "input": {"hint": "[prompt]"},
+                                       "_meta": {"cognition.ai/category":
+                                                 "Session"}},
+                                      {"name": "ponytail",
+                                       "description": "Lazy dev",
+                                       "_meta": {"cognition.ai/category":
+                                                 "Skills"}},
+                                  ]}}}), flush=True)
+        elif meth == "session/set_mode":
             print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
+        elif meth == "session/set_config_option":
+            print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                              "params": {"sessionId": sid, "update": {
+                                  "sessionUpdate": "config_option_update",
+                                  "configOptions": [{
+                                      "id": m["params"]["configId"],
+                                      "currentValue": m["params"]["value"],
+                                  }]}}}), flush=True)
         elif meth == "session/prompt":
             text = m["params"]["prompt"][0]["text"]
             chunks = ["echo: ", text]
@@ -163,6 +203,15 @@ async def test_send_message_appends_events(shell_client: LocalClient) -> None:
 async def test_modes_and_models_probe(shell_client: LocalClient) -> None:
     assert await shell_client.modes() == ["accept-edits", "smart"]
     assert await shell_client.models() == ["swe-2-high", "swe-2-low"]
+    details = await shell_client.mode_details()
+    assert {d["id"] for d in details} == {"accept-edits", "smart"}
+    assert details[1]["name"] == "Smart"
+    assert details[1]["description"] == "Auto-approve safe"
+    assert await shell_client.think_levels() == ["medium", "high", "max"]
+    commands = {c["name"]: c for c in await shell_client.commands()}
+    assert commands["fast"]["category"] == "Session"
+    assert commands["fast"]["hint"] == "[prompt]"
+    assert commands["ponytail"]["category"] == "Skills"
 
 
 @pytest.mark.asyncio
@@ -173,6 +222,23 @@ async def test_create_applies_mode_and_model(shell_client: LocalClient) -> None:
     await _wait_for(shell_client, session_id, "echo: hi")
     await shell_client.set_mode(session_id, "smart")
     await shell_client.set_model(session_id, "swe-2-low")
+
+
+@pytest.mark.asyncio
+async def test_thought_level_applies_and_reports_in_status(
+    shell_client: LocalClient,
+) -> None:
+    session_id, _ = await shell_client.create_session("hi", thought_level="max")
+    await _wait_for(shell_client, session_id, "echo: hi")
+    for _ in range(50):
+        state = await shell_client.get_session(session_id)
+        if state.local_info and "thought_level max" in state.local_info:
+            break
+        await asyncio.sleep(0.1)
+    assert state.local_info is not None
+    assert "thought_level max" in state.local_info
+    assert "model swe-2-high" in state.local_info
+    await shell_client.set_thought_level(session_id, "medium")
 
 
 @pytest.mark.asyncio

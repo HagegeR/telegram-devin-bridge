@@ -48,6 +48,7 @@ class ConversationSettings:
     default_playbook: str | None = None
     devin_mode: str | None = None
     local_model: str | None = None
+    thought_level: str | None = None
     repos: str | None = None
     platform: str | None = None
     tags: str | None = None
@@ -230,6 +231,7 @@ class Store:
                     default_playbook TEXT,
                     devin_mode TEXT,
                     local_model TEXT,
+                    thought_level TEXT,
                     repos TEXT,
                     platform TEXT,
                     tags TEXT,
@@ -320,6 +322,7 @@ class Store:
             for new_column, column_type in {
                 "devin_mode": "TEXT",
                 "local_model": "TEXT",
+                "thought_level": "TEXT",
                 "repos": "TEXT",
                 "platform": "TEXT",
                 "tags": "TEXT",
@@ -618,9 +621,9 @@ class Store:
             for key in {conv_key, chat_key}:
                 row = self.connection.execute(
                     "SELECT silent, drafts, status_timer, default_playbook, "
-                    "devin_mode, local_model, repos, platform, tags, secret_ids, "
-                    "knowledge_ids, snapshot_id, acu_limit, unlisted, "
-                    "idempotent "
+                    "devin_mode, local_model, thought_level, repos, platform, "
+                    "tags, secret_ids, knowledge_ids, snapshot_id, acu_limit, "
+                    "unlisted, idempotent "
                     "FROM conversation_settings WHERE conv_key = ?",
                     (key,),
                 ).fetchone()
@@ -657,6 +660,11 @@ class Store:
             ),
             local_model=(
                 None if pick("local_model") is None else str(pick("local_model"))
+            ),
+            thought_level=(
+                None
+                if pick("thought_level") is None
+                else str(pick("thought_level"))
             ),
             repos=None if pick("repos") is None else str(pick("repos")),
             platform=(
@@ -700,6 +708,7 @@ class Store:
             "default_playbook",
             "devin_mode",
             "local_model",
+            "thought_level",
             "repos",
             "platform",
             "tags",

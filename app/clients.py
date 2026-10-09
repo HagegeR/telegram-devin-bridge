@@ -99,6 +99,8 @@ class SessionState:
     status_detail: str | None = None
     acus_consumed: float | None = None
     pr_urls: tuple[str, ...] = ()
+    # local CLI sessions: live mode/model/thinking summary for /status
+    local_info: str | None = None
 
 
 @dataclass(frozen=True)

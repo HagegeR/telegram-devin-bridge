@@ -8168,3 +8168,180 @@ async def test_model_settings_submenu_paginates(tmp_path: Path) -> None:
 
 async def _async(value: object) -> object:
     return value
+
+
+@pytest.mark.asyncio
+async def test_unknown_command_forwards_to_local_session(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, text: str) -> None:
+        sent.append((session_id, text))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+    start_calls: list[int | None] = []
+
+    async def start_watcher(
+        conversation: object, *, trigger_message_id: int | None = None
+    ) -> None:
+        start_calls.append(trigger_message_id)
+
+    runtime.start_watcher = start_watcher  # type: ignore[method-assign]
+    await handle_command(
+        runtime, message("/fast skip thinking", message_id=19), "/fast skip thinking"
+    )
+    assert sent == [("local:s1", "/fast skip thinking")]
+    assert telegram.reactions[-1] == "👀"
+    assert start_calls == [19]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unknown_command_stays_unknown_off_local(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/bogus"), "/bogus")
+    assert "Unknown command" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_think_command_sets_shows_and_resets(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.update_chat_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.local.think_levels = lambda: _async(["medium", "high", "max"])  # type: ignore[method-assign]
+    await handle_command(runtime, message("/think max"), "/think max")
+    assert store.get_settings("222").thought_level == "max"
+    await handle_command(runtime, message("/think"), "/think")
+    assert "max" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/think bogus"), "/think bogus")
+    assert "Unknown thinking level" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/think default"), "/think default")
+    assert store.get_settings("222").thought_level is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_think_command_rejects_non_local(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram
+    )  # type: ignore[arg-type]
+    await handle_command(runtime, message("/think"), "/think")
+    assert "local sessions" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_think_settings_submenu(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.update_chat_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.local.think_levels = lambda: _async(["medium", "high", "max"])  # type: ignore[method-assign]
+    callback = {
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback({**callback, "id": "t-1", "data": "cfg:think:menu"})
+    callbacks = [
+        b["callback_data"]
+        for row in telegram.markup_edits[-1]["inline_keyboard"]
+        for b in row
+    ]
+    assert "cfg:think:high" in callbacks
+    await runtime.handle_callback({**callback, "id": "t-2", "data": "cfg:think:max"})
+    assert store.get_settings("222").thought_level == "max"
+    await runtime.handle_callback({**callback, "id": "t-3", "data": "cfg:think:default"})
+    assert store.get_settings("222").thought_level is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_commands_browser_and_run(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.local.commands = lambda: _async([  # type: ignore[method-assign]
+        {"name": "fast", "description": "Fastest model",
+         "category": "Session", "hint": "[prompt]"},
+        {"name": "ponytail", "description": "Lazy dev",
+         "category": "Skills", "hint": ""},
+    ])
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, text: str) -> None:
+        sent.append((session_id, text))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+
+    async def noop_watcher(
+        conversation: object, *, trigger_message_id: int | None = None
+    ) -> None:
+        return None
+
+    runtime.start_watcher = noop_watcher  # type: ignore[method-assign]
+    callback = {
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+
+    await handle_command(runtime, message("/commands"), "/commands")
+    keyboard = telegram.sent[-1]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+    callbacks = [b["callback_data"] for row in keyboard for b in row]
+    assert "cmd:c:Session" in callbacks
+    assert "cmd:c:Skills" in callbacks
+
+    await runtime.handle_callback({**callback, "id": "c-1", "data": "cmd:c:Session"})
+    keyboard = telegram.markup_edits[-1]["inline_keyboard"]
+    callbacks = [b["callback_data"] for row in keyboard for b in row]
+    assert "cmd:r:fast" in callbacks
+
+    await runtime.handle_callback({**callback, "id": "c-2", "data": "cmd:r:fast"})
+    assert sent == [("local:s1", "/fast")]
+    assert telegram.answers[-1] == "Sent /fast"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_commands_run_needs_local_session(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram
+    )  # type: ignore[arg-type]
+    callback = {
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback({**callback, "id": "c-1", "data": "cmd:r:fast"})
+    assert telegram.answers[-1] == "Needs a running local session"
+    await runtime.shutdown()

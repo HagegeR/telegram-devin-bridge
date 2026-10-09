@@ -175,6 +175,13 @@ class CommandRuntime(Protocol):
         edit_message_id: int | None = None,
     ) -> None: ...
 
+    async def commands_menu(
+        self,
+        message: Mapping[str, object],
+        *,
+        edit_message_id: int | None = None,
+    ) -> None: ...
+
     async def usage(self, message: Mapping[str, object]) -> None: ...
 
     async def list_users(self, message: Mapping[str, object]) -> None: ...
@@ -442,6 +449,18 @@ async def handle_command(
         if not value:
             current = runtime.store.get_settings(conv_key).devin_mode
             options_line = f"\nAvailable: {', '.join(modes)}" if modes else ""
+            if local:
+                details = await runtime.local.mode_details()
+                if details:
+                    options_line = "".join(
+                        f"\n• {detail['id']}"
+                        + (
+                            f" — {detail['description']}"
+                            if detail["description"]
+                            else ""
+                        )
+                        for detail in details
+                    )
             await runtime.send_text(
                 message,
                 f"Mode: {current or 'default'}"
@@ -553,6 +572,79 @@ async def handle_command(
             await runtime.send_text(
                 message, "Usage: /model <slug> · /model default", ephemeral=True
             )
+    elif command == "think":
+        value = args.strip()
+        if runtime.store.get_settings(conv_key).platform != "local":
+            await runtime.send_text(
+                message,
+                "Thinking level only applies to local sessions — "
+                "set /platform local first.",
+                ephemeral=True,
+            )
+        elif not value:
+            current = runtime.store.get_settings(conv_key).thought_level
+            levels = await runtime.local.think_levels()
+            options_line = f"\nAvailable: {', '.join(levels)}" if levels else ""
+            await runtime.send_text(
+                message,
+                f"Thinking: {current or 'cli default'}"
+                + options_line
+                + "\n/think <level> to set · /think default to reset",
+                ephemeral=True,
+            )
+        elif value.casefold() in {"default", "off", "reset"}:
+            runtime.store.update_chat_settings(conv_key, thought_level=None)
+            applied = ""
+            conversation = runtime.store.get_conversation(conv_key)
+            if conversation and is_local(conversation.session_id):
+                try:
+                    await runtime.local.set_thought_default(
+                        conversation.session_id
+                    )
+                    applied = " Running session restored to the CLI default too."
+                except RuntimeError:
+                    applied = " Running session keeps its current level."
+            await runtime.send_text(
+                message,
+                "Thinking reset — new local sessions use the CLI default."
+                + applied,
+                ephemeral=True,
+            )
+        elif re.fullmatch(r"[\w.-]+", value):
+            levels = await runtime.local.think_levels()
+            if levels and value not in levels:
+                await runtime.send_text(
+                    message,
+                    f"Unknown thinking level: {value}\n"
+                    f"Available: {', '.join(levels)}",
+                    ephemeral=True,
+                )
+            else:
+                runtime.store.update_chat_settings(
+                    conv_key, thought_level=value
+                )
+                applied = ""
+                conversation = runtime.store.get_conversation(conv_key)
+                if conversation and is_local(conversation.session_id):
+                    try:
+                        await runtime.local.set_thought_level(
+                            conversation.session_id, value
+                        )
+                        applied = " Applied to the running session too."
+                    except RuntimeError:
+                        applied = " Couldn't apply to the running session."
+                await runtime.send_text(
+                    message,
+                    f"Thinking: {value} — applies to the next new session."
+                    + applied,
+                    ephemeral=True,
+                )
+        else:
+            await runtime.send_text(
+                message, "Usage: /think <level> · /think default", ephemeral=True
+            )
+    elif command == "commands":
+        await runtime.commands_menu(message)
     elif command == "acu":
         value = args.strip()
         if not value:
@@ -894,6 +986,28 @@ async def handle_command(
         await runtime.send_text(message, "📌 This chat is now the notification home.")
     elif command == "update":
         await runtime.self_update(message, args)
+    elif (
+        command
+        and conversation is not None
+        and is_local(conversation.session_id)
+    ):
+        # not a bridge command — local CLI sessions take slash commands
+        # (/fast, /compact, /loop, skills like /ponytail) as plain prompts
+        forwarded = f"/{command}" + (f" {args}" if args else "")
+        try:
+            await runtime.send_session_message(
+                conversation.session_id, forwarded
+            )
+        except RuntimeError:
+            await runtime.send_text(
+                message,
+                "Local session is gone — send a message to start a new one.",
+            )
+            return
+        await runtime.react(message, "👀")
+        await runtime.start_watcher(
+            conversation, trigger_message_id=_int(message.get("message_id"))
+        )
     else:
         await runtime.send_text(message, "Unknown command; /help")
 
@@ -1147,6 +1261,8 @@ def _expandable(lines: list[str]) -> str:
 
 def _status_details(conversation: Conversation, state: SessionState) -> list[str]:
     lines = [f"id: <code>{escape(conversation.session_id)}</code>"]
+    if state.local_info:
+        lines.append(f"local: {escape(state.local_info)}")
     if state.status_detail:
         lines.append(f"detail: {escape(state.status_detail)}")
     if state.acus_consumed:
@@ -1197,6 +1313,7 @@ _HELP_SECTIONS = (
             "/retry — resend your last message",
             "/steer <text> — inject into the running session",
             "/sessions · /resume <n> — history and switching",
+            "/commands — browse & run local CLI commands and skills",
         ],
     ),
     (
@@ -1212,8 +1329,9 @@ _HELP_SECTIONS = (
         [
             "/playbook [n] [text] — list or run a playbook",
             "/settings — notifications, drafts, mode, defaults",
-            "/mode [name] — Devin mode for new sessions",
+            "/mode [name] — session mode (smart/plan/ask/… for local)",
             "/model [slug] — model for local (`/platform local`) sessions",
+            "/think [level] — thinking level for local sessions",
             "/repos [a/b,c/d] — restrict sessions to repos",
             "/platform [name] — outpost pool, VM platform, or `local` (CLI on this host)",
             "/acu [n] — per-chat ACU limit",
