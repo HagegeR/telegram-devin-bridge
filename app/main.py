@@ -2092,7 +2092,7 @@ class Bridge:
         toast: str | None = None
         if field == "close":
             await self.telegram.edit_message_reply_markup(chat_id, message_id)
-        elif value == "menu":
+        elif value == "menu" or field == "modelpage":
             if field == "playbook":
                 rows = [[{"text": "None", "callback_data": "cfg:playbook:none"}]]
                 for playbook in await self.devin.list_playbooks():
@@ -2119,13 +2119,18 @@ class Bridge:
                         "callback_data": f"cfg:mode:{mode}",
                     }] for mode in ("default", *modes)]},
                 )
-            elif field == "model":
+            elif field == "model" or field == "modelpage":
+                # the CLI can offer 100+ models — Telegram rejects oversized
+                # keyboards, so page through them
+                page = int(value) if field == "modelpage" and value.isdigit() else 0
                 models = await self.local.models()
+                per_page = 30
+                start = page * per_page
                 rows = [[{
                     "text": "cli default",
                     "callback_data": "cfg:model:default",
                 }]]
-                for model in models:
+                for model in models[start:start + per_page]:
                     callback = f"cfg:model:{model}"
                     if len(callback.encode()) > 64:
                         continue
@@ -2136,6 +2141,19 @@ class Bridge:
                         ),
                         "callback_data": callback,
                     }])
+                nav = []
+                if start:
+                    nav.append({
+                        "text": "‹ prev",
+                        "callback_data": f"cfg:modelpage:{page - 1}",
+                    })
+                if start + per_page < len(models):
+                    nav.append({
+                        "text": f"next › ({len(models) - start - per_page} more)",
+                        "callback_data": f"cfg:modelpage:{page + 1}",
+                    })
+                if nav:
+                    rows.append(nav)
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
