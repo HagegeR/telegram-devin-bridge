@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -33,9 +34,14 @@ class _AcpSession:
     buffer: list[str] = field(default_factory=list)
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
     next_event: int = 0
-    running: bool = False
+    turns: int = 0
+    tail: asyncio.Task | None = None
     dead: bool = False
     suppress_turn: bool = False
+
+    @property
+    def running(self) -> bool:
+        return self.turns > 0
 
 
 class LocalClient:
@@ -54,13 +60,14 @@ class LocalClient:
         self._next_id = 0
 
     async def create_session(self, prompt: str, title: str | None = None, **_: object) -> tuple[str, str]:
+        cwd = os.path.abspath(self.cwd or os.getcwd())
         proc = await asyncio.create_subprocess_exec(
             self.cli_command,
             "acp",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
-            cwd=self.cwd,
+            cwd=cwd,
         )
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
@@ -70,7 +77,7 @@ class LocalClient:
             "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
         })
         created = await self._request(sess, "session/new", {
-            "cwd": self.cwd or ".",
+            "cwd": cwd,
             "mcpServers": [],
         })
         sess.acp_id = str(created["sessionId"])
@@ -87,15 +94,27 @@ class LocalClient:
 
     async def send_message(self, session_id: str, message: str) -> None:
         sess = self.sessions[session_id]
-        sess.running = True
-        fut = self._send(sess, "session/prompt", {
-            "sessionId": sess.acp_id,
-            "prompt": [{"type": "text", "text": message}],
-        })
-        fut.add_done_callback(lambda f: self._turn_done(sess, f))
+        # chain turns so two in-flight prompts can't interleave chunks into
+        # one merged reply; ACP serializes prompts per session anyway
+        sess.turns += 1
+        prev = sess.tail
+
+        async def _turn() -> dict:
+            if prev is not None:
+                try:
+                    await prev
+                except (RuntimeError, TimeoutError, asyncio.CancelledError) as exc:
+                    logger.debug("prior local turn failed: %s", exc)
+            return await self._request(sess, "session/prompt", {
+                "sessionId": sess.acp_id,
+                "prompt": [{"type": "text", "text": message}],
+            })
+
+        sess.tail = asyncio.create_task(_turn())
+        sess.tail.add_done_callback(lambda f: self._turn_done(sess, f))
 
     def _turn_done(self, sess: _AcpSession, fut: asyncio.Future) -> None:
-        sess.running = False
+        sess.turns -= 1
         if sess.suppress_turn:
             sess.suppress_turn = False
             sess.buffer.clear()
@@ -146,6 +165,10 @@ class LocalClient:
             pr_url=None,
             messages=messages if fetch_messages else [],
         )
+
+    async def aclose(self) -> None:
+        for session_id in list(self.sessions):
+            await self.terminate(session_id)
 
     async def terminate(self, session_id: str) -> None:
         sess = self.sessions.pop(session_id, None)

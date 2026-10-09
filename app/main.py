@@ -333,6 +333,7 @@ class Bridge:
             task.cancel()
         if self.background_tasks:
             await asyncio.gather(*self.background_tasks, return_exceptions=True)
+        await self.local.aclose()
         await self.devin.close()
         await self.telegram.close()
         if self._transcription_client is not None:
@@ -882,11 +883,13 @@ class Bridge:
             text = await self._append_crawled_content(text, enabled_crawls)
         if attachment is not None:
             filename, content, content_type = attachment
-            try:
+            if self.store.get_settings(conv_key).platform == "local":
+                # local sessions can't receive files, and uploading to cloud
+                # storage would defeat running locally
+                text = f"{text}\n\nAttached file: {filename} (not sent — local sessions can't receive files)".strip()
+            else:
                 url = await self.devin.upload_attachment(filename, content, content_type)
                 text = f"{text}\n\nAttached file: {url} ({filename})".strip()
-            except RuntimeError:
-                text = f"{text}\n\nAttached file: {filename} (local sessions can't receive files)".strip()
         if not text:
             text = "Please inspect the attached file."
         sent_at: float | None = None
@@ -997,6 +1000,12 @@ class Bridge:
         conv_settings = self.store.get_settings(conv_key)
         if conv_settings.platform == "local":
             # local CLI sessions don't take the cloud session options
+            if playbook_id is not None:
+                await self.send_text(
+                    message,
+                    "⚠ playbooks aren't supported on local sessions — starting without it",
+                    silent=True,
+                )
             session_id, session_url = await self.local.create_session(
                 prompt, title
             )

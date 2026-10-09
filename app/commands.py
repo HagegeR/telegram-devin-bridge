@@ -1123,7 +1123,7 @@ _HELP_SECTIONS = (
             "/settings — notifications, drafts, mode, defaults",
             "/mode [name] — Devin mode for new sessions",
             "/repos [a/b,c/d] — restrict sessions to repos",
-            "/platform [name] — run sessions on an outpost pool or VM platform",
+            "/platform [name] — outpost pool, VM platform, or `local` (CLI on this host)",
             "/acu [n] — per-chat ACU limit",
             "/tags [a,b] — extra tags on new sessions",
             "/secrets [KEY,KEY2] — secrets attached to new sessions",
