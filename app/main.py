@@ -472,6 +472,11 @@ class Bridge:
                 "repos",
                 "platform",
                 "mode",
+                "acu",
+                "tags",
+                "secrets",
+                "knowledge",
+                "snapshot",
                 "crawl",
                 "usage",
                 "users",
@@ -985,6 +990,13 @@ class Bridge:
             devin_mode=conv_settings.devin_mode,
             repos=conv_settings.repo_list,
             platform=conv_settings.platform,
+            acu_limit=conv_settings.acu_limit,
+            tags=conv_settings.tag_list,
+            secret_ids=conv_settings.secret_id_list,
+            knowledge_ids=conv_settings.knowledge_id_list,
+            snapshot_id=conv_settings.snapshot_id,
+            unlisted=conv_settings.unlisted,
+            idempotent=conv_settings.idempotent,
         )
         self.store.delete_setting(f"pending_title:{conv_key}")
         stored_title = (
@@ -1963,6 +1975,9 @@ class Bridge:
         current = self.store.get_settings(conv_key)
         drafts = "inherit" if current.drafts is None else ("on" if current.drafts else "off")
         timer = "inherit" if current.status_timer is None else ("on" if current.status_timer else "off")
+        unlisted = "inherit" if current.unlisted is None else ("on" if current.unlisted else "off")
+        idempotent = "inherit" if current.idempotent is None else ("on" if current.idempotent else "off")
+        secret_count = len(current.secret_id_list or [])
         rows = [
             [{"text": f"🔔 Notifications: {'silent' if current.silent else 'on'}", "callback_data": f"cfg:silent:{0 if current.silent else 1}"}],
             [{"text": f"✍️ Drafts: {drafts}", "callback_data": "cfg:drafts:menu"}],
@@ -1974,6 +1989,10 @@ class Bridge:
                 [{"text": f"🤖 Devin mode: {current.devin_mode or 'org default'}", "callback_data": "cfg:mode:menu"}],
                 [{"text": f"📂 Repos: {current.repos or 'all'}", "callback_data": "cfg:repos:menu"}],
                 [{"text": f"🖥 Platform: {current.platform or 'default'}", "callback_data": "cfg:platform:menu"}],
+                [{"text": f"⚡ ACU limit: {current.acu_limit if current.acu_limit is not None else 'default'}", "callback_data": "cfg:acu:menu"}],
+                [{"text": f"🔑 Secrets: {secret_count or 'none'}", "callback_data": "cfg:secrets:menu"}],
+                [{"text": f"👁 Unlisted: {unlisted}", "callback_data": "cfg:unlisted:menu"}],
+                [{"text": f"🔁 Idempotent: {idempotent}", "callback_data": "cfg:idempotent:menu"}],
             ]
         crawl = ",".join(sorted(self.crawl_sites())) or "off"
         rows += [
@@ -2095,6 +2114,37 @@ class Bridge:
                     message_id,
                     {"inline_keyboard": rows},
                 )
+            elif field == "acu":
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": [[{
+                        "text": "default" if preset == "default" else str(preset),
+                        "callback_data": f"cfg:acu:{preset}",
+                    }] for preset in ("default", 1, 5, 10, 25, 50, 100)]},
+                )
+            elif field == "secrets":
+                selected = set(
+                    self.store.get_settings(conv_key).secret_id_list or []
+                )
+                rows = []
+                for key, secret_id in await self.devin.secrets():
+                    callback = f"cfg:secrets:{secret_id}"
+                    if len(callback.encode()) > 64:
+                        continue
+                    rows.append([{
+                        "text": f"{'✓ ' if secret_id in selected else ''}{key}",
+                        "callback_data": callback,
+                    }])
+                rows.append([{
+                    "text": "no secrets (default)",
+                    "callback_data": "cfg:secrets:clear",
+                }])
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": rows},
+                )
             elif field == "crawl":
                 await self._crawl_submenu(callback_message, message_id)
             else:
@@ -2110,7 +2160,7 @@ class Bridge:
         else:
             if field == "silent":
                 self.store.update_chat_settings(conv_key, silent=value == "1")
-            elif field in {"drafts", "status_timer"}:
+            elif field in {"drafts", "status_timer", "unlisted", "idempotent"}:
                 parsed = None if value == "inherit" else value == "on"
                 self.store.update_chat_settings(conv_key, **{field: parsed})
             elif field == "playbook":
@@ -2140,6 +2190,30 @@ class Bridge:
                     conv_key,
                     platform=None if value == "default" else value,
                 )
+            elif field == "acu":
+                self.store.update_chat_settings(
+                    conv_key,
+                    acu_limit=None if value == "default" else int(value),
+                )
+            elif field == "secrets":
+                # Attaching org secrets exposes them to the session —
+                # same admin gate as pre-crawl toggles.
+                if user_id not in self.settings.admin_user_ids:
+                    await self.telegram.answer_callback_query(
+                        callback_id, "Admins only"
+                    )
+                    return
+                if value == "clear":
+                    self.store.update_chat_settings(conv_key, secret_ids=None)
+                else:
+                    selected = set(
+                        self.store.get_settings(conv_key).secret_id_list or []
+                    )
+                    selected ^= {value}
+                    self.store.update_chat_settings(
+                        conv_key,
+                        secret_ids=",".join(sorted(selected)) or None,
+                    )
             elif field == "crawl":
                 if (
                     value not in {"back", "menu"}

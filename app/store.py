@@ -49,12 +49,36 @@ class ConversationSettings:
     devin_mode: str | None = None
     repos: str | None = None
     platform: str | None = None
+    tags: str | None = None
+    secret_ids: str | None = None
+    knowledge_ids: str | None = None
+    snapshot_id: str | None = None
+    acu_limit: int | None = None
+    unlisted: bool | None = None
+    idempotent: bool | None = None
 
     @property
     def repo_list(self) -> list[str] | None:
         if not self.repos:
             return None
         return [repo.strip() for repo in self.repos.split(",") if repo.strip()]
+
+    def _list(self, field: str | None) -> list[str] | None:
+        if not field:
+            return None
+        return [item.strip() for item in field.split(",") if item.strip()]
+
+    @property
+    def tag_list(self) -> list[str] | None:
+        return self._list(self.tags)
+
+    @property
+    def secret_id_list(self) -> list[str] | None:
+        return self._list(self.secret_ids)
+
+    @property
+    def knowledge_id_list(self) -> list[str] | None:
+        return self._list(self.knowledge_ids)
 
 
 @dataclass(frozen=True)
@@ -205,7 +229,14 @@ class Store:
                     default_playbook TEXT,
                     devin_mode TEXT,
                     repos TEXT,
-                    platform TEXT
+                    platform TEXT,
+                    tags TEXT,
+                    secret_ids TEXT,
+                    knowledge_ids TEXT,
+                    snapshot_id TEXT,
+                    acu_limit INTEGER,
+                    unlisted INTEGER,
+                    idempotent INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS access_requests (
                     user_id INTEGER PRIMARY KEY,
@@ -284,11 +315,22 @@ class Store:
                     "PRAGMA table_info(conversation_settings)"
                 )
             }
-            for new_column in ("devin_mode", "repos", "platform"):
+            for new_column, column_type in {
+                "devin_mode": "TEXT",
+                "repos": "TEXT",
+                "platform": "TEXT",
+                "tags": "TEXT",
+                "secret_ids": "TEXT",
+                "knowledge_ids": "TEXT",
+                "snapshot_id": "TEXT",
+                "acu_limit": "INTEGER",
+                "unlisted": "INTEGER",
+                "idempotent": "INTEGER",
+            }.items():
                 if new_column not in settings_columns:
                     self.connection.execute(
                         "ALTER TABLE conversation_settings "
-                        f"ADD COLUMN {new_column} TEXT"
+                        f"ADD COLUMN {new_column} {column_type}"
                     )
             message_index_columns = {
                 str(row["name"])
@@ -573,7 +615,9 @@ class Store:
             for key in {conv_key, chat_key}:
                 row = self.connection.execute(
                     "SELECT silent, drafts, status_timer, default_playbook, "
-                    "devin_mode, repos, platform "
+                    "devin_mode, repos, platform, tags, secret_ids, "
+                    "knowledge_ids, snapshot_id, acu_limit, unlisted, "
+                    "idempotent "
                     "FROM conversation_settings WHERE conv_key = ?",
                     (key,),
                 ).fetchone()
@@ -612,6 +656,27 @@ class Store:
             platform=(
                 None if pick("platform") is None else str(pick("platform"))
             ),
+            tags=None if pick("tags") is None else str(pick("tags")),
+            secret_ids=(
+                None if pick("secret_ids") is None else str(pick("secret_ids"))
+            ),
+            knowledge_ids=(
+                None
+                if pick("knowledge_ids") is None
+                else str(pick("knowledge_ids"))
+            ),
+            snapshot_id=(
+                None if pick("snapshot_id") is None else str(pick("snapshot_id"))
+            ),
+            acu_limit=(
+                None if pick("acu_limit") is None else int(pick("acu_limit"))
+            ),
+            unlisted=(
+                None if pick("unlisted") is None else bool(pick("unlisted"))
+            ),
+            idempotent=(
+                None if pick("idempotent") is None else bool(pick("idempotent"))
+            ),
         )
 
     def update_chat_settings(self, conv_key: str, **fields: object) -> None:
@@ -630,6 +695,13 @@ class Store:
             "devin_mode",
             "repos",
             "platform",
+            "tags",
+            "secret_ids",
+            "knowledge_ids",
+            "snapshot_id",
+            "acu_limit",
+            "unlisted",
+            "idempotent",
         }
         if not fields or any(key not in allowed for key in fields):
             raise ValueError("Unknown conversation setting")

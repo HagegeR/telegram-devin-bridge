@@ -232,6 +232,7 @@ class DevinClient:
         self._modes_cache: list[str] | None = None
         self._repos_cache: tuple[float, list[str]] | None = None
         self._platforms_cache: tuple[float, list[str]] | None = None
+        self._secrets_cache: tuple[float, list[tuple[str, str]]] | None = None
 
     def _v3_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.service_user_api_key}"}
@@ -255,11 +256,20 @@ class DevinClient:
         devin_mode: str | None = None,
         repos: list[str] | None = None,
         platform: str | None = None,
+        acu_limit: int | None = None,
+        tags: list[str] | None = None,
+        secret_ids: list[str] | None = None,
+        knowledge_ids: list[str] | None = None,
+        snapshot_id: str | None = None,
+        unlisted: bool | None = None,
+        idempotent: bool | None = None,
     ) -> tuple[str, str]:
         body: dict[str, object] = {
             "prompt": prompt,
-            "max_acu_limit": self.max_acu_limit,
-            "tags": ["telegram-bridge"],
+            "max_acu_limit": (
+                acu_limit if acu_limit is not None else self.max_acu_limit
+            ),
+            "tags": ["telegram-bridge", *(tags or [])],
         }
         if title is not None:
             body["title"] = title
@@ -272,6 +282,16 @@ class DevinClient:
                 body["repos"] = repos
             if platform:
                 body["platform"] = platform
+            if secret_ids:
+                body["secret_ids"] = secret_ids
+            if knowledge_ids:
+                body["knowledge_ids"] = knowledge_ids
+            if snapshot_id:
+                body["snapshot_id"] = snapshot_id
+            if unlisted is not None:
+                body["unlisted"] = unlisted
+            if idempotent is not None:
+                body["idempotent"] = idempotent
             payload = await self._json(
                 "POST",
                 self._v3("/sessions"),
@@ -279,9 +299,20 @@ class DevinClient:
                 headers=self._v3_headers(),
             )
         else:
-            if devin_mode is not None or repos or platform:
+            if any(
+                (
+                    devin_mode is not None,
+                    repos,
+                    platform,
+                    secret_ids,
+                    knowledge_ids,
+                    snapshot_id,
+                    unlisted is not None,
+                    idempotent is not None,
+                )
+            ):
                 logger.warning(
-                    "devin_mode/repos/platform need DEVIN_SERVICE_USER_API_KEY + "
+                    "v3 session options need DEVIN_SERVICE_USER_API_KEY + "
                     "DEVIN_ORG_ID; ignored on the v1 API"
                 )
             payload = await self._json("POST", "/v1/sessions", json=body)
@@ -364,6 +395,45 @@ class DevinClient:
                     if not page.get("has_next_page"):
                         self._repos_cache = (time.monotonic(), repos)
                         return repos
+                    after = self._optional_str(page.get("end_cursor"))
+            except httpx.HTTPError:
+                pass
+        # Partial list (page failure or page cap) is not authoritative.
+        return []
+
+    async def secrets(self) -> list[tuple[str, str]]:
+        """(key, secret_id) pairs defined for this org, cached briefly.
+        Empty means the fetch failed (or the org has no secrets) —
+        callers must not treat it as authoritative on failure."""
+        cached = self._secrets_cache
+        if cached is not None and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        secrets: list[tuple[str, str]] = []
+        if self.v3_enabled:
+            after: str | None = None
+            try:
+                for _ in range(20):
+                    params: dict[str, str] = {}
+                    if after:
+                        params["after"] = after
+                    page = await self._json(
+                        "GET",
+                        self._v3("/secrets"),
+                        params=params,
+                        headers=self._v3_headers(),
+                    )
+                    items = page.get("items")
+                    if isinstance(items, list):
+                        secrets.extend(
+                            (str(item["key"]), str(item["secret_id"]))
+                            for item in items
+                            if isinstance(item, dict)
+                            and item.get("key")
+                            and item.get("secret_id")
+                        )
+                    if not page.get("has_next_page"):
+                        self._secrets_cache = (time.monotonic(), secrets)
+                        return secrets
                     after = self._optional_str(page.get("end_cursor"))
             except httpx.HTTPError:
                 pass

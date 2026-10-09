@@ -653,6 +653,162 @@ async def test_platform_command_sets_shows_and_clears(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_options_commands_round_trip(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/acu 25"), "/acu 25")
+    await handle_command(runtime, message("/tags alpha,beta"), "/tags alpha,beta")
+    await handle_command(runtime, message("/knowledge k1,k2"), "/knowledge k1,k2")
+    await handle_command(runtime, message("/snapshot snap-1"), "/snapshot snap-1")
+    current = store.get_settings("222")
+    assert current.acu_limit == 25
+    assert current.tag_list == ["alpha", "beta"]
+    assert current.knowledge_id_list == ["k1", "k2"]
+    assert current.snapshot_id == "snap-1"
+    await handle_command(runtime, message("/acu nope"), "/acu nope")
+    assert "Usage" in str(telegram.sent[-1]["text"])
+    await runtime.handle_user_turn(message("hello"), "hello")
+    options = devin.created_options[-1]
+    assert options == {
+        "acu_limit": 25,
+        "tags": ["alpha", "beta"],
+        "secret_ids": None,
+        "knowledge_ids": ["k1", "k2"],
+        "snapshot_id": "snap-1",
+        "unlisted": None,
+        "idempotent": None,
+    }
+    await handle_command(runtime, message("/acu default"), "/acu default")
+    await handle_command(runtime, message("/tags clear"), "/tags clear")
+    current = store.get_settings("222")
+    assert current.acu_limit is None
+    assert current.tags is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_secrets_command_resolves_keys(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/secrets KEY_ONE"), "/secrets KEY_ONE")
+    assert store.get_settings("222").secret_id_list == ["secret-1"]
+    await handle_command(runtime, message("/secrets NOPE"), "/secrets NOPE")
+    assert "Unknown secrets" in str(telegram.sent[-1]["text"])
+    assert store.get_settings("222").secret_id_list == ["secret-1"]
+    await runtime.handle_user_turn(message("hello"), "hello")
+    assert devin.created_options[-1]["secret_ids"] == ["secret-1"]
+    await handle_command(runtime, message("/secrets clear"), "/secrets clear")
+    assert store.get_settings("222").secret_ids is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_secrets_acu_and_flag_settings_submenus(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    callback = {
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback({**callback, "id": "c1", "data": "cfg:secrets:menu"})
+    callbacks = [
+        b["callback_data"]
+        for row in telegram.markup_edits[-1]["inline_keyboard"]
+        for b in row
+    ]
+    assert "cfg:secrets:secret-1" in callbacks
+    assert "cfg:secrets:clear" in callbacks
+    await runtime.handle_callback({**callback, "id": "c2", "data": "cfg:secrets:secret-1"})
+    assert store.get_settings("222").secret_id_list == ["secret-1"]
+    await runtime.handle_callback({**callback, "id": "c3", "data": "cfg:secrets:secret-1"})
+    assert store.get_settings("222").secret_ids is None
+    await runtime.handle_callback({**callback, "id": "c4", "data": "cfg:acu:10"})
+    assert store.get_settings("222").acu_limit == 10
+    await runtime.handle_callback({**callback, "id": "c5", "data": "cfg:acu:default"})
+    assert store.get_settings("222").acu_limit is None
+    await runtime.handle_callback({**callback, "id": "c6", "data": "cfg:unlisted:on"})
+    assert store.get_settings("222").unlisted is True
+    await runtime.handle_callback({**callback, "id": "c7", "data": "cfg:idempotent:off"})
+    assert store.get_settings("222").idempotent is False
+    await runtime.handle_callback({**callback, "id": "c8", "data": "cfg:unlisted:inherit"})
+    assert store.get_settings("222").unlisted is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_devin_client_secrets_lists_and_caches() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/v3/organizations/o1/secrets"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"key": "KEY_ONE", "secret_id": "secret-1"},
+                    {"key": "KEY_TWO", "secret_id": "secret-2"},
+                ]
+            },
+        )
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.secrets() == [("KEY_ONE", "secret-1"), ("KEY_TWO", "secret-2")]
+    assert await devin.secrets() == [("KEY_ONE", "secret-1"), ("KEY_TWO", "secret-2")]
+    assert calls == 1
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_devin_client_create_session_sends_new_options() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert request.url.path == "/v3/organizations/o1/sessions"
+        assert body["max_acu_limit"] == 7
+        assert body["tags"] == ["telegram-bridge", "alpha"]
+        assert body["secret_ids"] == ["secret-1"]
+        assert body["knowledge_ids"] == ["k1"]
+        assert body["snapshot_id"] == "snap-1"
+        assert body["unlisted"] is True
+        assert body["idempotent"] is False
+        return httpx.Response(200, json={"session_id": "s1", "url": "u"})
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    await devin.create_session(
+        "p",
+        None,
+        acu_limit=7,
+        tags=["alpha"],
+        secret_ids=["secret-1"],
+        knowledge_ids=["k1"],
+        snapshot_id="snap-1",
+        unlisted=True,
+        idempotent=False,
+    )
+    await devin.close()
+
+
+@pytest.mark.asyncio
 async def test_telegram_topic_error_includes_description() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -1764,6 +1920,7 @@ class _FakeDevin:
         self.created_modes: list[str | None] = []
         self.created_repos: list[list[str] | None] = []
         self.created_platforms: list[str | None] = []
+        self.created_options: list[dict[str, object]] = []
         self.sent: list[tuple[str, str]] = []
         self.terminated: list[str] = []
         self.playbooks: list[tuple[str, str]] = []
@@ -1776,6 +1933,7 @@ class _FakeDevin:
         devin_mode: str | None = None,
         repos: list[str] | None = None,
         platform: str | None = None,
+        **options: object,
     ) -> tuple[str, str]:
         self.created.append(prompt)
         self.created_titles.append(title)
@@ -1783,6 +1941,7 @@ class _FakeDevin:
         self.created_modes.append(devin_mode)
         self.created_repos.append(repos)
         self.created_platforms.append(platform)
+        self.created_options.append(options)
         return "s1", "https://devin.test/s1"
 
     async def send_message(self, session_id: str, text: str) -> None:
@@ -1809,6 +1968,9 @@ class _FakeDevin:
 
     async def platforms(self) -> list[str]:
         return ["linux", "macos", "windows", "mypool"]
+
+    async def secrets(self) -> list[tuple[str, str]]:
+        return [("KEY_ONE", "secret-1"), ("KEY_TWO", "secret-2")]
 
     async def terminate(self, session_id: str) -> None:
         self.terminated.append(session_id)
@@ -1978,6 +2140,7 @@ async def test_dispatch_failure_notifies_and_reacts(tmp_path: Path) -> None:
             devin_mode: str | None = None,
             repos: list[str] | None = None,
             platform: str | None = None,
+            **options: object,
         ) -> tuple[str, str]:
             raise RuntimeError("backend unavailable")
 
@@ -5391,12 +5554,14 @@ async def test_pending_title_survives_create_failure(tmp_path: Path) -> None:
             devin_mode: str | None = None,
             repos: list[str] | None = None,
             platform: str | None = None,
+            **options: object,
         ) -> tuple[str, str]:
             if self.fail_next:
                 self.fail_next = False
                 raise RuntimeError("create failed")
             return await super().create_session(
-                prompt, title, playbook_id, devin_mode, repos, platform
+                prompt, title, playbook_id, devin_mode, repos, platform,
+                **options,
             )
 
     store = Store(":memory:")
