@@ -255,10 +255,20 @@ class LocalClient:
                 await asyncio.sleep(_FLUSH_INTERVAL)
                 if not sess.turns or sess.suppress_turn:
                     continue
-                text = "".join(sess.buffer).strip()
-                if text:
-                    sess.buffer.clear()
-                    self._emit(sess, text)
+                raw = "".join(sess.buffer)
+                # only complete lines: markers/fences are line-scoped, and
+                # keeping the trailing partial line preserves boundary
+                # whitespace + never splits a marker mid-token
+                head, sep, tail = raw.rpartition("\n")
+                if not sep or not head.strip():
+                    continue
+                if head.count("```") % 2:
+                    # inside an unclosed fence — a fragment would reach
+                    # Telegram with broken MarkdownV2
+                    continue
+                sess.buffer.clear()
+                sess.buffer.append(tail)
+                self._emit(sess, head)
         except asyncio.CancelledError:
             pass
 

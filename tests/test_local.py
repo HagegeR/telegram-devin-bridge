@@ -45,6 +45,8 @@ FAKE_ACP = textwrap.dedent(
         elif meth == "session/prompt":
             text = m["params"]["prompt"][0]["text"]
             chunks = ["echo: ", text]
+            if os.environ.get("FAKE_SLOW"):
+                chunks = ["echo: \n", text]
             if os.environ.get("FAKE_JUNK_LINES"):
                 # a valid JSON-RPC line larger than the old 64KB limit
                 chunks.append("big:" + "Z" * 200_000)
@@ -192,7 +194,7 @@ async def test_partial_replies_stream_mid_turn(
             break
         await asyncio.sleep(0.05)
     assert state is not None and state.messages
-    assert state.messages[0].message == "echo:"
+    assert state.messages[0].message.strip() == "echo:"
     await _wait_for(shell_client, session_id, "hello")
 
 
