@@ -41,7 +41,10 @@ and deployment update channels.
   `session/load` (the CLI keeps them in its own DB). Overlong ACP output
   lines no longer kill the session reader (a >64KB chunk used to silently
   orphan every turn), and reply text streams into the topic every ~20s
-  while a turn runs instead of appearing only at stopReason.
+  while a turn runs instead of appearing only at stopReason. The edited
+  ⏳ Working status message also shows a live `→ …` line with the latest
+  local thought or tool call (cloud exposes no thought stream — it gets
+  the line only for free-text `status_detail` values).
   Requires the Devin CLI on the host (`DEVIN_LOCAL_CLI`,
   `DEVIN_LOCAL_CWD`); the service-user key is reused for `/login`.
 - `/mode [name]` — per-chat Devin mode for new sessions, validated

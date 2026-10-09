@@ -43,6 +43,16 @@ class _AcpSession:
     flusher: asyncio.Task | None = None
     dead: bool = False
     suppress_turn: bool = False
+    # session/load replays the persisted history as session/update
+    # notifications — ignore them until a real turn starts, or the old
+    # reply would be re-emitted as if it were new
+    replaying: bool = False
+    # latest agent activity (tool-call title / thought tail) for the
+    # watcher's live status line — cloud exposes nothing this granular
+    activity: str = ""
+    # bounded rolling tail of the thought stream — enough to find the
+    # current line without quadratic rejoins
+    thought: str = ""
 
     @property
     def running(self) -> bool:
@@ -239,6 +249,12 @@ class LocalClient:
                     await prev
                 except (RuntimeError, TimeoutError, asyncio.CancelledError) as exc:
                     logger.debug("prior local turn failed: %s", exc)
+            # reset at the real turn start (after any queued turn): the
+            # status line must not show the previous turn's tool/thought
+            sess.activity = ""
+            sess.thought = ""
+            sess.buffer.clear()
+            sess.replaying = False
             return await self._request(sess, "session/prompt", {
                 "sessionId": sess.acp_id,
                 "prompt": [{"type": "text", "text": message}],
@@ -328,6 +344,7 @@ class LocalClient:
             title=sess.title,
             pr_url=None,
             messages=messages if fetch_messages else [],
+            status_detail=sess.activity or None,
         )
 
     async def aclose(self) -> None:
@@ -455,6 +472,7 @@ class LocalClient:
                 f"local session {acp_id} couldn't resume: {exc}"
             ) from exc
         sess.acp_id = acp_id
+        sess.replaying = True
         sess.title = await self._session_title(sess, acp_id)
         await self._evict()
         self.sessions[session_id] = sess
@@ -540,7 +558,12 @@ class LocalClient:
                     msg = json.loads(raw)
                 except ValueError:
                     continue
-                self._handle(sess, msg)
+                try:
+                    self._handle(sess, msg)
+                except (KeyError, IndexError, TypeError):
+                    # a malformed update must not kill the reader — its
+                    # pending turns would otherwise hang forever
+                    logger.warning("bad acp update skipped: %.200s", raw)
         sess.dead = True
         for fut in sess.pending.values():
             if not fut.done():
@@ -579,7 +602,23 @@ class LocalClient:
         if msg.get("method") != "session/update":
             return
         update = msg.get("params", {}).get("update", {})
-        if update.get("sessionUpdate") == "agent_message_chunk":
+        if sess.replaying:
+            return
+        kind = update.get("sessionUpdate")
+        if kind == "agent_message_chunk":
             text = update.get("content", {}).get("text", "")
             if text:
                 sess.buffer.append(text)
+            return
+        if kind == "agent_thought_chunk":
+            text = update.get("content", {}).get("text", "")
+            if text:
+                sess.thought = (sess.thought + text)[-4096:]
+                lines = sess.thought.strip().splitlines()
+                if lines:
+                    sess.activity = lines[-1][-120:]
+            return
+        if kind in {"tool_call", "tool_call_update"}:
+            title = update.get("title") or update.get("kind")
+            if title:
+                sess.activity = str(title)[:120]

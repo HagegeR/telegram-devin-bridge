@@ -106,7 +106,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     topic every ~20s mid-turn (complete lines only — the trailing partial
     line stays buffered, and a flush inside an unclosed code fence is
     deferred — so markers/fences are never split), with the remainder
-    emitted at stopReason; acp stdout is read in chunks and split on
+    emitted at stopReason; `agent_thought_chunk` and `tool_call` updates
+    set the session's activity, shown live as a `→ …` line in the edited
+    ⏳ Working status message (cloud sessions get the same line from any
+    non-enum `status_detail`); acp stdout is read in chunks and split on
     newlines manually, so replies of any size survive — no line-length
     limit). Sessions
     persist in the CLI's own DB and are reloaded via `session/load` after a
