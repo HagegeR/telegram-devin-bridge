@@ -26,7 +26,7 @@ and deployment update channels.
   body, same probe as `devin_modes()`), and `/platform` with no args
   prints the same list.
 - `/model <slug>` + `/settings` → 🧠 Model — pick the model local CLI
-  sessions run (enumerated from `devin models list`, applied at create and
+  sessions run (enumerated from the ACP `model` config option, applied at create and
   live via ACP `session/set_config_option`). On `platform=local` chats,
   `/mode` and the 🤖 Devin mode submenu enumerate the local ACP modes
   (accept-edits/smart/ask/plan/bypass) instead of cloud modes and apply

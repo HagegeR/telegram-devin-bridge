@@ -98,6 +98,8 @@ class LocalClient:
             return []
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
+        # fresh probe: stale model choices must not survive a failed refresh
+        self._model_options = None
         try:
             await self._request(sess, "initialize", {
                 "protocolVersion": 1,
@@ -170,7 +172,6 @@ class LocalClient:
         **_: object,
     ) -> tuple[str, str]:
         cwd = self._cwd()
-        os.makedirs(cwd, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
             self.cli_command,
             "acp",
@@ -327,7 +328,10 @@ class LocalClient:
         return await self.pr_fetcher(url, token)
 
     def _cwd(self) -> str:
-        return os.path.abspath(self.cwd)
+        path = os.path.abspath(self.cwd)
+        # the probe spawns here too, before any session exists
+        os.makedirs(path, exist_ok=True)
+        return path
 
     async def _cli_logged_in(self) -> bool:
         if self._cli_authed is not None:
