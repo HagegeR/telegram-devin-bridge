@@ -123,3 +123,28 @@ async def test_terminate_marks_expired(shell_client: LocalClient) -> None:
     await shell_client.terminate(session_id)
     state = await shell_client.get_session(session_id)
     assert state.status_enum == "expired"
+
+
+@pytest.mark.asyncio
+async def test_login_turn_suppressed_when_logged_out(tmp_path: Path) -> None:
+    # regression: a configured api_key must reach the auth check (the
+    # _cli_authed/_cli_logged_in name shadow used to TypeError here), and
+    # the /login turn must not surface as a user-visible event
+    fake = tmp_path / "fake_acp.py"
+    fake.write_text(FAKE_ACP)
+    shim = tmp_path / "devin"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "auth" ]; then printf "Logged out\\n"; exit 0; fi\n'
+        f"exec {sys.executable} {fake} \"$@\"\n"
+    )
+    shim.chmod(0o755)
+    client = LocalClient(cli_command=str(shim), api_key="sekrit")
+    try:
+        session_id, _ = await client.create_session("hi")
+        await _wait_for(client, session_id, "echo: hi")
+        state = await client.get_session(session_id)
+        assert [m.message for m in state.messages] == ["echo: hi"]
+    finally:
+        for sid in list(client.sessions):
+            await client.terminate(sid)
