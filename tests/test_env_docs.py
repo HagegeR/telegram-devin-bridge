@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _settings_env_names() -> set[str]:
-    src = (ROOT / "app" / "config.py").read_text()
+    # encoding: Windows runners default to cp1252, the file is utf-8
+    src = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
     body = re.search(r"class Settings.*?(?=\nclass |\Z)", src, re.DOTALL)
     assert body, "Settings class not found in app/config.py"
     return {
@@ -21,7 +22,7 @@ def _settings_env_names() -> set[str]:
 
 def _env_example_names() -> set[str]:
     names = set()
-    for line in (ROOT / ".env.example").read_text().splitlines():
+    for line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
         if "=" in line:
             names.add(line.split("=", 1)[0].lstrip("#").strip())
     return names
@@ -33,7 +34,7 @@ def test_every_settings_field_is_in_env_example() -> None:
 
 
 def test_every_settings_field_is_in_configuration_docs() -> None:
-    docs = (ROOT / "docs" / "configuration.md").read_text()
+    docs = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
     # first cell of reference-table rows only — a prose mention must not
     # satisfy the test the way a deleted table row would
     documented = set(
