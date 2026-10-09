@@ -27,7 +27,7 @@ and deployment update channels.
   prints the same list.
 - `/model <slug>` + `/settings` → 🧠 Model — pick the model local CLI
   sessions run (enumerated from the ACP `model` config option, applied at create and
-  live via ACP `session/set_config_option`). On `platform=local` chats,
+  to the running session; the settings submenu pages 30 per screen).
   `/mode` and the 🤖 Devin mode submenu enumerate the local ACP modes
   (accept-edits/smart/ask/plan/bypass) instead of cloud modes and apply
   immediately to the running session. Local sessions are now titled with
