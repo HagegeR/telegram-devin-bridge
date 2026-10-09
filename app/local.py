@@ -54,6 +54,10 @@ _MAX_SESSIONS = 32
 # turns can run for a long time; prompts get no deadline (they end on
 # stopReason or terminate), everything else uses the control timeout
 _CONTROL_TIMEOUT = 30
+# ACP replies can carry whole files; stdout is read in chunks and split
+# on newlines manually because the default 64KB StreamReader limit used
+# to crash the reader and orphan every turn on that session
+_STREAM_CHUNK = 65536
 
 
 class LocalClient:
@@ -490,48 +494,60 @@ class LocalClient:
 
     async def _reader(self, sess: _AcpSession) -> None:
         assert sess.proc.stdout is not None
-        async for line in sess.proc.stdout:
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                continue
-            req_id = msg.get("id")
-            if req_id is not None and req_id in sess.pending:
-                sess.pending.pop(req_id).set_result(msg)
-                continue
-            if msg.get("method") == "session/request_permission":
-                # ACP sends permission prompts as server->client requests;
-                # unanswered they stall the turn — pick an allow option so
-                # every mode keeps working (bypass-tier access is the
-                # prototype's operating mode anyway)
-                options = msg.get("params", {}).get("options") or []
-                pick = next(
-                    (
-                        o for o in options
-                        if "allow" in str(o.get("kind", "") + o.get("name", "")).lower()
-                    ),
-                    options[0] if options else None,
-                )
-                if pick is not None and req_id is not None and sess.proc.stdin is not None:
-                    sess.proc.stdin.write(
-                        json.dumps({
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "result": {"outcome": {
-                                "outcome": "selected",
-                                "optionId": pick.get("optionId", pick.get("id")),
-                            }},
-                        }).encode() + b"\n"
-                    )
-                continue
-            if msg.get("method") != "session/update":
-                continue
-            update = msg.get("params", {}).get("update", {})
-            if update.get("sessionUpdate") == "agent_message_chunk":
-                text = update.get("content", {}).get("text", "")
-                if text:
-                    sess.buffer.append(text)
+        buf = b""
+        while True:
+            chunk = await sess.proc.stdout.read(_STREAM_CHUNK)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                if not raw:
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except ValueError:
+                    continue
+                self._handle(sess, msg)
         sess.dead = True
         for fut in sess.pending.values():
             if not fut.done():
                 fut.set_exception(RuntimeError("acp process exited"))
+
+    def _handle(self, sess: _AcpSession, msg: dict) -> None:
+        req_id = msg.get("id")
+        if req_id is not None and req_id in sess.pending:
+            sess.pending.pop(req_id).set_result(msg)
+            return
+        if msg.get("method") == "session/request_permission":
+            # ACP sends permission prompts as server->client requests;
+            # unanswered they stall the turn — pick an allow option so
+            # every mode keeps working (bypass-tier access is the
+            # prototype's operating mode anyway)
+            options = msg.get("params", {}).get("options") or []
+            pick = next(
+                (
+                    o for o in options
+                    if "allow" in str(o.get("kind", "") + o.get("name", "")).lower()
+                ),
+                options[0] if options else None,
+            )
+            if pick is not None and req_id is not None and sess.proc.stdin is not None:
+                sess.proc.stdin.write(
+                    json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {"outcome": {
+                            "outcome": "selected",
+                            "optionId": pick.get("optionId", pick.get("id")),
+                        }},
+                    }).encode() + b"\n"
+                )
+            return
+        if msg.get("method") != "session/update":
+            return
+        update = msg.get("params", {}).get("update", {})
+        if update.get("sessionUpdate") == "agent_message_chunk":
+            text = update.get("content", {}).get("text", "")
+            if text:
+                sess.buffer.append(text)

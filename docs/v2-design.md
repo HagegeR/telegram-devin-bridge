@@ -102,7 +102,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     backend** (`app/local.py`): each session is a `devin acp` subprocess on
     the bridge host speaking ACP JSON-RPC over stdio (`initialize` +
     `session/new`, prompts via `session/prompt`, replies collected from
-    `agent_message_chunk` updates into one message per turn). Sessions
+    `agent_message_chunk` updates into one message per turn; acp stdout is
+    read in chunks and split on newlines manually, so replies of any size
+    survive — no line-length limit). Sessions
     persist in the CLI's own DB and are reloaded via `session/load` after a
     bridge restart (the in-memory map is only the live-process index; `/stop`
     still deletes the record), have no cloud URL, can't receive
