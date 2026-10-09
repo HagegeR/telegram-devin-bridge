@@ -8345,3 +8345,69 @@ async def test_commands_run_needs_local_session(tmp_path: Path) -> None:
     await runtime.handle_callback({**callback, "id": "c-1", "data": "cmd:r:fast"})
     assert telegram.answers[-1] == "Needs a running local session"
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_namespaced_skill_forwards_to_local_session(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, text: str) -> None:
+        sent.append((session_id, text))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+    await handle_command(
+        runtime,
+        message("/ponytail:ponytail-review"),
+        "/ponytail:ponytail-review",
+    )
+    assert sent == [("local:s1", "/ponytail:ponytail-review")]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_passthrough_respects_rate_limit(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_rate_limit_per_minute=1),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, text: str) -> None:
+        sent.append((session_id, text))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+
+    async def noop_watcher(
+        conversation: object, *, trigger_message_id: int | None = None
+    ) -> None:
+        return None
+
+    runtime.start_watcher = noop_watcher  # type: ignore[method-assign]
+    await handle_command(runtime, message("/compact"), "/compact")
+    await handle_command(runtime, message("/context"), "/context")
+    assert sent == [("local:s1", "/compact")]
+    assert "Slow down" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()

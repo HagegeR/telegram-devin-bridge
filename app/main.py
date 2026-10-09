@@ -787,6 +787,9 @@ class Bridge:
             except Exception:
                 logger.exception("Janitor sweep failed")
 
+    def rate_limited(self, user_id: int) -> bool:
+        return self._rate_limited(user_id)
+
     def _rate_limited(self, user_id: int) -> bool:
         limit = self.settings.telegram_rate_limit_per_minute
         if limit <= 0 or user_id <= 0:
@@ -2319,15 +2322,17 @@ class Bridge:
                     if local
                     else await self.devin.devin_modes()
                 )
-                labels = (
-                    {
-                        detail["id"]: detail["name"]
-                        for detail in await self.local.mode_details()
+                details = await self.local.mode_details() if local else []
+                labels = {}
+                for detail in details:
+                    label = (
+                        f"{detail['name']} ({detail['id']})"
                         if detail.get("name") and detail["name"] != detail["id"]
-                    }
-                    if local
-                    else {}
-                )
+                        else detail["id"]
+                    )
+                    if detail["description"]:
+                        label += f" — {detail['description']}"
+                    labels[detail["id"]] = label
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
@@ -2335,11 +2340,7 @@ class Bridge:
                         "text": (
                             ("cli default" if local else "org default")
                             if mode == "default"
-                            else (
-                                f"{labels[mode]} ({mode})"
-                                if mode in labels
-                                else mode
-                            )
+                            else labels.get(mode, mode)
                         ),
                         "callback_data": f"cfg:mode:{mode}",
                     }] for mode in ("default", *modes)]},

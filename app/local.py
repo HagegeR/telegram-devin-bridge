@@ -186,8 +186,9 @@ class LocalClient:
                     if values:
                         self._think_options = values
             # available_commands_update is pushed asynchronously; give the
-            # CLI a moment before caching an empty list
-            deadline = time.monotonic() + 6
+            # CLI a moment — long enough for first discovery, short once a
+            # list is cached so /mode and /model don't pay for it
+            deadline = time.monotonic() + (6 if not self._commands else 1.5)
             while sess.commands is None and time.monotonic() < deadline:
                 await asyncio.sleep(0.1)
             if sess.commands:
@@ -246,6 +247,7 @@ class LocalClient:
         await self._set_config(session_id, "thought_level", level)
 
     async def set_thought_default(self, session_id: str) -> None:
+        await self.modes()  # populate _default_thought on a fresh process
         if self._default_thought:
             await self.set_thought_level(session_id, self._default_thought)
 

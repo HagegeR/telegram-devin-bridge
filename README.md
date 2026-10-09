@@ -104,6 +104,8 @@ deployment check list.
 | `/repos [a/b,c/d]` | Show, set, or clear the repos list for new sessions (`/repos all` resets) |
 | `/platform [name]` | Show, set, or clear the platform/outpost pool for new sessions (`/platform default` resets; `/platform local` runs sessions on the bridge host via `devin acp`) |
 | `/model [slug]` | Pick the model for local (`/platform local`) sessions, enumerated from the CLI |
+| `/think [level]` | Pick the thinking level (medium/high/max) for local sessions (`/think default` resets) |
+| `/commands` | Browse and tap-to-run the local CLI's slash commands and skills; any `/foo` that isn't a bridge command is forwarded to a local session too |
 | `/mode [name]` | Show, set, or clear the Devin mode for new sessions (`/mode default` resets) |
 | `/acu [n]` | Per-chat ACU limit for new sessions (`/acu default` resets) |
 | `/tags [a,b]` | Extra session tags (`/tags clear` resets) |

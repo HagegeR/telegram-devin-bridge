@@ -166,6 +166,8 @@ class CommandRuntime(Protocol):
 
     def new_choice_id(self) -> str: ...
 
+    def rate_limited(self, user_id: int) -> bool: ...
+
     async def list_playbooks(self) -> list[Playbook]: ...
 
     async def settings_menu(
@@ -987,13 +989,23 @@ async def handle_command(
     elif command == "update":
         await runtime.self_update(message, args)
     elif (
-        command
-        and conversation is not None
+        conversation is not None
         and is_local(conversation.session_id)
+        and re.fullmatch(
+            r"/[\w:.-]+(@\S+)?", text.partition(" ")[0]
+        )
     ):
         # not a bridge command — local CLI sessions take slash commands
-        # (/fast, /compact, /loop, skills like /ponytail) as plain prompts
-        forwarded = f"/{command}" + (f" {args}" if args else "")
+        # (/fast, /compact, /loop, skills like /ponytail:ponytail) as
+        # plain prompts; forward the raw head so namespaced names and
+        # arg casing survive (_parse rejects ':' and lowercases)
+        if runtime.rate_limited(_int(_mapping(message.get("from")).get("id"))):
+            await runtime.send_text(
+                message, "⏳ Slow down — try again in a moment."
+            )
+            return
+        head, _, rest = text.partition(" ")
+        forwarded = head.split("@", 1)[0] + (f" {rest.strip()}" if rest.strip() else "")
         try:
             await runtime.send_session_message(
                 conversation.session_id, forwarded
@@ -1285,6 +1297,8 @@ def _status_rich(
     detail_blocks: list[dict[str, object]] = [
         rich_paragraph(["id: ", rich_text_code(conversation.session_id)])
     ]
+    if state.local_info:
+        detail_blocks.append(rich_paragraph(f"local: {state.local_info}"))
     if state.status_detail:
         detail_blocks.append(rich_paragraph(f"detail: {state.status_detail}"))
     if state.acus_consumed:
