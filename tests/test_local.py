@@ -50,6 +50,15 @@ FAKE_ACP = textwrap.dedent(
             if os.environ.get("FAKE_JUNK_LINES"):
                 # a valid JSON-RPC line larger than the old 64KB limit
                 chunks.append("big:" + "Z" * 200_000)
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                              "params": {"sessionId": sid, "update": {
+                                  "sessionUpdate": "agent_thought_chunk",
+                                  "content": {"type": "text",
+                                              "text": "musing\\n"}}}}), flush=True)
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                              "params": {"sessionId": sid, "update": {
+                                  "sessionUpdate": "tool_call",
+                                  "title": "Running pytest"}}}), flush=True)
             for chunk in chunks:
                 if os.environ.get("FAKE_SLOW"):
                     time.sleep(0.4)
@@ -176,6 +185,16 @@ async def test_reader_survives_overlong_lines(
     state = await shell_client.get_session(session_id)
     assert state.status_enum != "expired"
     assert any("big:" + "Z" * 100 in m.message for m in state.messages)
+
+
+@pytest.mark.asyncio
+async def test_activity_surfaces_in_status_detail(
+    shell_client: LocalClient,
+) -> None:
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_detail == "Running pytest"
 
 
 @pytest.mark.asyncio

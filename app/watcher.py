@@ -988,6 +988,14 @@ class SessionWatcher:
         summary = self._structured_summary(state.structured_output)
         if summary:
             text += f"\n{summary}"
+        detail = state.status_detail
+        if detail and detail not in {
+            "working",
+            "waiting_for_user",
+            "waiting_for_approval",
+            "finished",
+        }:
+            text += f"\n→ {detail[:120]}"
         return text
 
     @staticmethod
