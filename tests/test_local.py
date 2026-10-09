@@ -46,7 +46,7 @@ FAKE_ACP = textwrap.dedent(
             text = m["params"]["prompt"][0]["text"]
             chunks = ["echo: ", text]
             if os.environ.get("FAKE_SLOW"):
-                chunks = ["echo: \n", text]
+                chunks = ["echo: \\n", text]
             if os.environ.get("FAKE_JUNK_LINES"):
                 # a valid JSON-RPC line larger than the old 64KB limit
                 chunks.append("big:" + "Z" * 200_000)
