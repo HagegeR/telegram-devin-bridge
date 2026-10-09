@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import os
-import shlex
 import time
 from dataclasses import dataclass, field
 
@@ -80,12 +79,16 @@ class LocalClient:
 
     def __init__(
         self,
-        cli_command: str = "devin",
+        # a plain string is ONE executable path (may contain spaces);
+        # a sequence is an argv prefix for an interpreter-style command
+        cli_command: str | list[str] = "devin",
         cwd: str | None = None,
         api_key: str | None = None,
         pr_fetcher: object = None,
     ) -> None:
-        self.cli_command = cli_command
+        self._argv = (
+            [cli_command] if isinstance(cli_command, str) else list(cli_command)
+        )
         # never default into the bridge checkout: agents would get the
         # deployment's .env and app sources as their workspace
         self.cwd = cwd or os.path.join(
@@ -112,7 +115,7 @@ class LocalClient:
             return cached[1]
         try:
             proc = await asyncio.create_subprocess_exec(
-                *shlex.split(self.cli_command),
+                *self._argv,
                 "acp",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -408,7 +411,7 @@ class LocalClient:
     async def _spawn(self) -> _AcpSession:
         """Spawn a `devin acp` process and complete the ACP handshake."""
         proc = await asyncio.create_subprocess_exec(
-            *shlex.split(self.cli_command),
+            *self._argv,
             "acp",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -503,7 +506,7 @@ class LocalClient:
             return self._cli_authed
         try:
             proc = await asyncio.create_subprocess_exec(
-                *shlex.split(self.cli_command),
+                *self._argv,
                 "auth",
                 "status",
                 stdout=asyncio.subprocess.PIPE,

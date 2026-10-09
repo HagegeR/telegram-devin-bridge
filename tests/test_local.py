@@ -97,14 +97,16 @@ FAKE_ACP = textwrap.dedent(
 )
 
 
-def _devin_command(tmp_path: Path, fake: Path, *, logged_out: bool = False) -> str:
-    """A fake `devin` launcher: POSIX sh script, or a direct
-    `python fake_acp.py` command on Windows where create_subprocess_exec
-    cannot run batch shims (cli_command is shlex-split)."""
+def _devin_command(
+    tmp_path: Path, fake: Path, *, logged_out: bool = False
+) -> str | list[str]:
+    """A fake `devin` launcher: POSIX sh script, or an argv list for
+    `python fake_acp.py` on Windows where create_subprocess_exec cannot
+    run batch shims."""
     if os.name == "nt":
         # `auth status` gets no answer from the fake — that IS logged out,
         # so the logged_out flag needs no Windows branch
-        return f'"{sys.executable}" "{fake}"'
+        return [sys.executable, str(fake)]
     shim = tmp_path / "devin"
     body = "#!/bin/sh\n"
     if logged_out:
