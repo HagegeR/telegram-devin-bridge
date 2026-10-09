@@ -112,7 +112,7 @@ def _devin_command(
     if logged_out:
         body += 'if [ "$1" = "auth" ]; then printf "Logged out\\n"; exit 0; fi\n'
     body += f'exec "{sys.executable}" "{fake}" "$@"\n'
-    shim.write_text(body)
+    shim.write_text(body, encoding="utf-8")
     shim.chmod(0o755)
     return str(shim)
 
@@ -120,7 +120,7 @@ def _devin_command(
 @pytest_asyncio.fixture
 async def shell_client(tmp_path: Path):
     fake = tmp_path / "fake_acp.py"
-    fake.write_text(FAKE_ACP)
+    fake.write_text(FAKE_ACP, encoding="utf-8")
     client = LocalClient(cli_command=_devin_command(tmp_path, fake), api_key=None)
     yield client
     for session_id in list(client.sessions):
@@ -253,7 +253,7 @@ async def test_login_turn_suppressed_when_logged_out(tmp_path: Path) -> None:
     # _cli_authed/_cli_logged_in name shadow used to TypeError here), and
     # the /login turn must not surface as a user-visible event
     fake = tmp_path / "fake_acp.py"
-    fake.write_text(FAKE_ACP)
+    fake.write_text(FAKE_ACP, encoding="utf-8")
     client = LocalClient(
         cli_command=_devin_command(tmp_path, fake, logged_out=True),
         api_key="sekrit",
