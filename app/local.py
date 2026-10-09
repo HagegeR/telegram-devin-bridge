@@ -75,6 +75,7 @@ class LocalClient:
         self._model_options: list[str] | None = None
         self._cli_authed: bool | None = None
         self.sessions: dict[str, _AcpSession] = {}
+        self._terminated: set[str] = set()
         self._next_id = 0
         self._modes_cache: tuple[float, list[str]] | None = None
 
@@ -172,28 +173,14 @@ class LocalClient:
         **_: object,
     ) -> tuple[str, str]:
         cwd = self._cwd()
-        proc = await asyncio.create_subprocess_exec(
-            self.cli_command,
-            "acp",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            cwd=cwd,
-        )
-        sess = _AcpSession(proc=proc, acp_id="")
-        asyncio.create_task(self._reader(sess))
+        sess = await self._spawn()
         try:
-            await self._request(sess, "initialize", {
-                "protocolVersion": 1,
-                "clientCapabilities": {},
-                "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
-            })
             created = await self._request(sess, "session/new", {
                 "cwd": cwd,
                 "mcpServers": [],
             })
         except (RuntimeError, TimeoutError, asyncio.CancelledError):
-            proc.terminate()
+            sess.proc.terminate()
             raise
         sess.acp_id = str(created["sessionId"])
         sess.title = title or ""
@@ -220,7 +207,13 @@ class LocalClient:
         return session_id, f"{title or sess.acp_id} · local CLI (no cloud URL)"
 
     async def send_message(self, session_id: str, message: str) -> None:
-        sess = self.sessions[session_id]
+        sess = self.sessions.get(session_id)
+        if sess is None and session_id not in self._terminated:
+            sess = await self._resume(session_id)
+        if sess is None:
+            raise RuntimeError(f"local session {session_id} is gone")
+        if sess.dead:
+            raise RuntimeError(f"local session {sess.acp_id} is gone")
         # chain turns so two in-flight prompts can't interleave chunks into
         # one merged reply; ACP serializes prompts per session anyway
         sess.turns += 1
@@ -278,6 +271,13 @@ class LocalClient:
         fetch_messages: bool = True,
     ) -> SessionState:
         sess = self.sessions.get(session_id)
+        if sess is None and session_id not in self._terminated:
+            try:
+                # a watcher may outlive the process after a bridge restart —
+                # resume so polls keep tracking instead of going expired
+                sess = await self._resume(session_id)
+            except RuntimeError:
+                pass
         if sess is None:
             return SessionState(status_enum="expired", title="", pr_url=None, messages=[])
         messages = sess.events
@@ -299,6 +299,7 @@ class LocalClient:
 
     async def terminate(self, session_id: str) -> None:
         sess = self.sessions.pop(session_id, None)
+        self._terminated.add(session_id)
         if sess is None:
             return
         sess.dead = True
@@ -326,6 +327,60 @@ class LocalClient:
         if self.pr_fetcher is None:
             return None
         return await self.pr_fetcher(url, token)
+
+    async def _spawn(self) -> _AcpSession:
+        """Spawn a `devin acp` process and complete the ACP handshake."""
+        proc = await asyncio.create_subprocess_exec(
+            self.cli_command,
+            "acp",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            cwd=self._cwd(),
+        )
+        sess = _AcpSession(proc=proc, acp_id="")
+        asyncio.create_task(self._reader(sess))
+        await self._request(sess, "initialize", {
+            "protocolVersion": 1,
+            "clientCapabilities": {},
+            "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
+        })
+        return sess
+
+    async def _resume(self, session_id: str) -> _AcpSession:
+        """Reload a persisted CLI session into a fresh `devin acp` process.
+        Sessions outlive bridge restarts in the CLI's session DB — the
+        in-memory map is only the live-process index."""
+        acp_id = session_id.removeprefix(LOCAL_PREFIX)
+        sess = await self._spawn()
+        try:
+            await self._request(sess, "session/load", {
+                "sessionId": acp_id,
+                "cwd": self._cwd(),
+                "mcpServers": [],
+            })
+        except (RuntimeError, TimeoutError) as exc:
+            sess.proc.terminate()
+            raise RuntimeError(
+                f"local session {acp_id} couldn't resume: {exc}"
+            ) from exc
+        sess.acp_id = acp_id
+        sess.title = await self._session_title(sess, acp_id)
+        self.sessions[session_id] = sess
+        logger.info("resumed local session %s", acp_id)
+        return sess
+
+    async def _session_title(self, sess: _AcpSession, acp_id: str) -> str:
+        try:
+            listed = await self._request(sess, "session/list", {
+                "cwd": self._cwd(),
+            })
+            for entry in listed.get("sessions", []):
+                if entry.get("sessionId") == acp_id:
+                    return str(entry.get("title") or "")
+        except (RuntimeError, TimeoutError):
+            pass
+        return ""
 
     def _cwd(self) -> str:
         path = os.path.abspath(self.cwd)
