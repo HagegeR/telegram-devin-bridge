@@ -471,6 +471,7 @@ class Bridge:
                 "settings",
                 "repos",
                 "platform",
+                "mode",
                 "crawl",
                 "usage",
                 "users",

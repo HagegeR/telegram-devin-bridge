@@ -424,6 +424,48 @@ async def handle_command(
                 "Usage: /platform <pool-or-label> · /platform default",
                 ephemeral=True,
             )
+    elif command == "mode":
+        value = args.strip()
+        v3_hint = (
+            ""
+            if runtime.devin.v3_enabled
+            else "\n⚠ Ignored until DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID are set"
+        )
+        if not value:
+            current = runtime.store.get_settings(conv_key).devin_mode
+            modes = await runtime.devin.devin_modes()
+            options_line = f"\nAvailable: {', '.join(modes)}" if modes else ""
+            await runtime.send_text(
+                message,
+                f"Mode: {current or 'default'}"
+                + options_line
+                + "\n/mode <name> to set · /mode default to reset"
+                + v3_hint,
+                ephemeral=True,
+            )
+        elif value.casefold() in {"default", "off", "reset"}:
+            runtime.store.update_chat_settings(conv_key, devin_mode=None)
+            await runtime.send_text(
+                message,
+                "Mode reset — new sessions use the org default." + v3_hint,
+                ephemeral=True,
+            )
+        else:
+            modes = await runtime.devin.devin_modes()
+            if modes and value not in modes:
+                await runtime.send_text(
+                    message,
+                    f"Unknown mode: {value}\nAvailable: {', '.join(modes)}",
+                    ephemeral=True,
+                )
+            else:
+                runtime.store.update_chat_settings(conv_key, devin_mode=value)
+                await runtime.send_text(
+                    message,
+                    f"Mode: {value} — applies to the next new session."
+                    + v3_hint,
+                    ephemeral=True,
+                )
     elif command == "crawl":
         enabled = sorted(runtime.crawl_sites())
         await runtime.send_text(
@@ -862,6 +904,7 @@ _HELP_SECTIONS = (
         [
             "/playbook [n] [text] — list or run a playbook",
             "/settings — notifications, drafts, mode, defaults",
+            "/mode [name] — Devin mode for new sessions",
             "/repos [a/b,c/d] — restrict sessions to repos",
             "/platform [name] — run sessions on an outpost pool or VM platform",
             "/crawl — show which sites get pre-crawled (toggle in /settings)",

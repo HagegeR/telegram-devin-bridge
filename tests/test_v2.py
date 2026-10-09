@@ -536,6 +536,25 @@ async def test_topic_command_writes_chat_settings_and_clears_override(
 
 
 @pytest.mark.asyncio
+async def test_mode_command_sets_shows_and_clears(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/mode fast"), "/mode fast")
+    assert store.get_settings("222").devin_mode == "fast"
+    await handle_command(runtime, message("/mode"), "/mode")
+    assert "fast" in str(telegram.sent[-1]["text"])
+    assert "Available:" in str(telegram.sent[-1]["text"])
+    await handle_command(runtime, message("/mode nosuchmode"), "/mode nosuchmode")
+    assert "Unknown mode" in str(telegram.sent[-1]["text"])
+    assert store.get_settings("222").devin_mode == "fast"
+    await handle_command(runtime, message("/mode default"), "/mode default")
+    assert store.get_settings("222").devin_mode is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_repos_command_sets_shows_and_clears(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
     store = Store(":memory:")
