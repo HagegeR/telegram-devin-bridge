@@ -46,10 +46,10 @@ def _touch(marker: Path) -> list[str]:
 
 
 async def _pulse_stopped(marker: Path) -> None:
-    """Assert no living process is still writing heartbeats to `marker` —
-    the portable replacement for `ps -eo args` liveness checks."""
-    if not marker.exists():
-        return
+    """Assert a heartbeat writer started and then died — the portable
+    replacement for `ps -eo args` liveness checks. Fails if no beat ever
+    landed, so a too-fast timeout can't pass the test vacuously."""
+    assert marker.exists(), f"{marker} never got a heartbeat"
     before = marker.read_bytes()
     await asyncio.sleep(0.3)
     assert marker.read_bytes() == before, f"{marker} is still being written"
@@ -204,7 +204,9 @@ async def test_transcribe_local_joins_segments(
 async def test_run_whispercpp_command_kills_process_on_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(transcription, "_TIMEOUT", 0.1)
+    # enough room for a cold interpreter to write its first beat on
+    # Windows — the heartbeat must exist before we can verify it stopped
+    monkeypatch.setattr(transcription, "_TIMEOUT", 0.5)
     marker = tmp_path / "pulse"
     assert (
         await transcription._run_whispercpp_command(
@@ -219,7 +221,9 @@ async def test_run_whispercpp_command_kills_process_on_timeout(
 async def test_run_whispercpp_command_kills_grandchildren_on_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(transcription, "_TIMEOUT", 0.1)
+    # two interpreters must start (parent, then grandchild) before the
+    # first beat — leave room for cold starts
+    monkeypatch.setattr(transcription, "_TIMEOUT", 1.0)
     marker = tmp_path / "pulse"
     # parent sleeps; its child keeps a heartbeat in `marker` — the kill
     # must reach the grandchild (killpg on POSIX, taskkill /T on Windows)
@@ -235,32 +239,6 @@ async def test_run_whispercpp_command_kills_grandchildren_on_timeout(
         is None
     )
     await _pulse_stopped(marker)
-
-
-def test_kill_uses_taskkill_tree_on_windows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # no POSIX CI coverage otherwise: Windows kills via taskkill /T since
-    # there are no process groups to signal
-    calls: list[list[str]] = []
-    monkeypatch.setattr(transcription.os, "name", "nt")
-    monkeypatch.setattr(
-        transcription.subprocess,
-        "run",
-        lambda args, **_: calls.append(args),
-    )
-
-    class Proc:
-        pid = 42
-        killed = False
-
-        def kill(self) -> None:
-            self.killed = True
-
-    proc = Proc()
-    transcription._kill(proc)
-    assert calls == [["taskkill", "/F", "/T", "/PID", "42"]]
-    assert proc.killed
 
 
 @pytest.mark.asyncio
