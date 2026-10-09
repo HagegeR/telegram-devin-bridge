@@ -37,7 +37,10 @@ and deployment update channels.
   the CLI's own model set, no cloud session URL). Shown as
   `local (this host)` in the 🖥 Platform submenu. Cloud session options
   (mode/repos/acu/secrets/…) don't apply, file attachments can't be
-  delivered, and sessions resume across bridge restarts via ACP `session/load` (the CLI keeps them in its own DB).
+  delivered, and sessions resume across bridge restarts via ACP
+  `session/load` (the CLI keeps them in its own DB). Overlong ACP output
+  lines no longer kill the session reader (a >64KB chunk used to silently
+  orphan every turn).
   Requires the Devin CLI on the host (`DEVIN_LOCAL_CLI`,
   `DEVIN_LOCAL_CWD`); the service-user key is reused for `/login`.
 - `/mode [name]` — per-chat Devin mode for new sessions, validated
