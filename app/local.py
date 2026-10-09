@@ -43,6 +43,10 @@ class _AcpSession:
     flusher: asyncio.Task | None = None
     dead: bool = False
     suppress_turn: bool = False
+    # session/load replays the persisted history as session/update
+    # notifications — ignore them until a real turn starts, or the old
+    # reply would be re-emitted as if it were new
+    replaying: bool = False
     # latest agent activity (tool-call title / thought tail) for the
     # watcher's live status line — cloud exposes nothing this granular
     activity: str = ""
@@ -249,6 +253,8 @@ class LocalClient:
             # status line must not show the previous turn's tool/thought
             sess.activity = ""
             sess.thought = ""
+            sess.buffer.clear()
+            sess.replaying = False
             return await self._request(sess, "session/prompt", {
                 "sessionId": sess.acp_id,
                 "prompt": [{"type": "text", "text": message}],
@@ -466,6 +472,7 @@ class LocalClient:
                 f"local session {acp_id} couldn't resume: {exc}"
             ) from exc
         sess.acp_id = acp_id
+        sess.replaying = True
         sess.title = await self._session_title(sess, acp_id)
         await self._evict()
         self.sessions[session_id] = sess
@@ -595,6 +602,8 @@ class LocalClient:
         if msg.get("method") != "session/update":
             return
         update = msg.get("params", {}).get("update", {})
+        if sess.replaying:
+            return
         kind = update.get("sessionUpdate")
         if kind == "agent_message_chunk":
             text = update.get("content", {}).get("text", "")

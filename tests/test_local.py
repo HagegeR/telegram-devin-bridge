@@ -75,6 +75,14 @@ FAKE_ACP = textwrap.dedent(
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"stopReason": "end_turn"}}), flush=True)
         elif meth == "session/load":
+            # the real CLI replays persisted history as session/update
+            # notifications during load — those must not be re-emitted
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                              "params": {"sessionId": sid, "update": {
+                                  "sessionUpdate": "agent_message_chunk",
+                                  "content": {"type": "text",
+                                              "text": "replayed: old"}}}}),
+                      flush=True)
             print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
         elif meth == "session/list":
             print(json.dumps({"jsonrpc": "2.0", "id": i,
@@ -174,6 +182,8 @@ async def test_send_message_resumes_detached_session(shell_client: LocalClient) 
     await _wait_for(shell_client, session_id, "echo: second")
     state = await shell_client.get_session(session_id)
     assert state.title == "resumed title"
+    # replayed history must never surface as a new reply
+    assert not any("replayed" in m.message for m in state.messages)
     # the watcher's persisted cursor must not filter post-restart replies
     state = await shell_client.get_session(session_id, since_event_id=last)
     assert [m.message for m in state.messages] == ["echo: second"]
