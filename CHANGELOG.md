@@ -25,6 +25,11 @@ and deployment update channels.
   and outpost pool the org accepts (parsed from the create-session 400
   body, same probe as `devin_modes()`), and `/platform` with no args
   prints the same list.
+- `/mode [name]` — per-chat Devin mode for new sessions, validated
+  against the org's mode list (`/mode` no-args prints it,
+  `/mode default` resets). Mirrors the /settings 🤖 Devin mode submenu;
+  verified to combine with `platform` (outpost sessions accept
+  `devin_mode`).
 - `/repos` now validates names against the org's connected repos
   (`GET /v3beta1/organizations/{org}/repositories`, cached 5 min) —
   a typo replies `Not connected to this org: …` instead of silently

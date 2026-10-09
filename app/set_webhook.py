@@ -25,6 +25,7 @@ COMMANDS = [
     ("settings", "Conversation settings"),
     ("repos", "Restrict sessions to repositories"),
     ("platform", "Run sessions on an outpost pool or VM platform"),
+    ("mode", "Set the Devin mode for new sessions"),
     ("crawl", "Pre-crawl URLs before they reach Devin"),
     ("lang", "Set your voice note language"),
     ("usage", "Show Devin usage"),
@@ -55,6 +56,7 @@ GROUP_COMMANDS = {
     "settings",
     "repos",
     "platform",
+    "mode",
     "crawl",
     "lang",
     "usage",
@@ -70,6 +72,7 @@ EPHEMERAL_COMMANDS = {
     "sessions",
     "repos",
     "platform",
+    "mode",
     "crawl",
     "lang",
 }
