@@ -33,7 +33,12 @@ _INFINITE_OUTPUT = [
     "-c",
     "import sys\nwhile True:\n print('y' * 1000, flush=True)",
 ]
-_PRINT_OK = [sys.executable, "-c", "print('ok')"]
+# stdout.buffer: print() writes \r\n on Windows (text-mode translation)
+_PRINT_OK = [
+    sys.executable,
+    "-c",
+    "import sys; sys.stdout.buffer.write(b'ok\\n')",
+]
 
 
 def _touch(marker: Path) -> list[str]:
@@ -689,7 +694,10 @@ def test_kill_takes_down_the_tree_on_windows(monkeypatch: pytest.MonkeyPatch) ->
     killed: list[int] = []
     monkeypatch.setattr(transcription.os, "name", "nt")
     monkeypatch.setattr(
-        transcription.os, "killpg", lambda *_: pytest.fail("no killpg on Windows")
+        transcription.os,
+        "killpg",
+        lambda *_: pytest.fail("no killpg on Windows"),
+        raising=False,  # os.killpg doesn't exist on Windows
     )
     monkeypatch.setattr(
         transcription.subprocess, "run", lambda argv, **_: ran.append(argv)

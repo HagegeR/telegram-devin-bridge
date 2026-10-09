@@ -97,16 +97,14 @@ FAKE_ACP = textwrap.dedent(
 )
 
 
-def _devin_shim(tmp_path: Path, fake: Path, *, logged_out: bool = False) -> Path:
-    """A fake `devin` launcher: POSIX sh script, or .cmd on Windows where
-    create_subprocess_exec runs batch files through cmd.exe anyway."""
+def _devin_command(tmp_path: Path, fake: Path, *, logged_out: bool = False) -> str:
+    """A fake `devin` launcher: POSIX sh script, or a direct
+    `python fake_acp.py` command on Windows where create_subprocess_exec
+    cannot run batch shims (cli_command is shlex-split)."""
     if os.name == "nt":
-        shim = tmp_path / "devin.cmd"
-        body = "@echo off\r\n"
-        if logged_out:
-            body += 'if "%~1"=="auth" (echo Logged out& exit /b 0)\r\n'
-        shim.write_text(body + f'"{sys.executable}" "{fake}" %*\r\n')
-        return shim
+        # `auth status` gets no answer from the fake — that IS logged out,
+        # so the logged_out flag needs no Windows branch
+        return f'"{sys.executable}" "{fake}"'
     shim = tmp_path / "devin"
     body = "#!/bin/sh\n"
     if logged_out:
@@ -114,15 +112,14 @@ def _devin_shim(tmp_path: Path, fake: Path, *, logged_out: bool = False) -> Path
     body += f'exec "{sys.executable}" "{fake}" "$@"\n'
     shim.write_text(body)
     shim.chmod(0o755)
-    return shim
+    return str(shim)
 
 
 @pytest_asyncio.fixture
 async def shell_client(tmp_path: Path):
     fake = tmp_path / "fake_acp.py"
     fake.write_text(FAKE_ACP)
-    shim = _devin_shim(tmp_path, fake)
-    client = LocalClient(cli_command=str(shim), api_key=None)
+    client = LocalClient(cli_command=_devin_command(tmp_path, fake), api_key=None)
     yield client
     for session_id in list(client.sessions):
         await client.terminate(session_id)
@@ -255,8 +252,10 @@ async def test_login_turn_suppressed_when_logged_out(tmp_path: Path) -> None:
     # the /login turn must not surface as a user-visible event
     fake = tmp_path / "fake_acp.py"
     fake.write_text(FAKE_ACP)
-    shim = _devin_shim(tmp_path, fake, logged_out=True)
-    client = LocalClient(cli_command=str(shim), api_key="sekrit")
+    client = LocalClient(
+        cli_command=_devin_command(tmp_path, fake, logged_out=True),
+        api_key="sekrit",
+    )
     try:
         session_id, _ = await client.create_session("hi")
         await _wait_for(client, session_id, "echo: hi")

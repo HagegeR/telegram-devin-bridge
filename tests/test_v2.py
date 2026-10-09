@@ -58,7 +58,7 @@ def settings(tmp_path: Path, **overrides: object) -> Settings:
         "telegram_queue_while_busy": False,
     }
     values.update(overrides)
-    return Settings(**values)
+    return Settings(_env_file=None, **values)
 
 
 def _png(width: int, height: int) -> bytes:

@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import time
 from dataclasses import dataclass, field
 
@@ -111,7 +112,7 @@ class LocalClient:
             return cached[1]
         try:
             proc = await asyncio.create_subprocess_exec(
-                self.cli_command,
+                *shlex.split(self.cli_command),
                 "acp",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -407,7 +408,7 @@ class LocalClient:
     async def _spawn(self) -> _AcpSession:
         """Spawn a `devin acp` process and complete the ACP handshake."""
         proc = await asyncio.create_subprocess_exec(
-            self.cli_command,
+            *shlex.split(self.cli_command),
             "acp",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -502,7 +503,7 @@ class LocalClient:
             return self._cli_authed
         try:
             proc = await asyncio.create_subprocess_exec(
-                self.cli_command,
+                *shlex.split(self.cli_command),
                 "auth",
                 "status",
                 stdout=asyncio.subprocess.PIPE,
