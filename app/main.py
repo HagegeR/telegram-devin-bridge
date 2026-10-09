@@ -2053,6 +2053,37 @@ class Bridge:
         else:
             await self.send_markup(message, "Conversation settings", markup)
 
+    _OPTION_PAGE_SIZE = 30
+
+    def _page_rows(
+        self,
+        items: list[tuple[str, str]],
+        field: str,
+        page: int,
+    ) -> list[list[dict[str, str]]]:
+        """Slice (text, callback_data) items into keyboard rows, adding
+        ‹ prev / next › navigation when the list exceeds one page —
+        Telegram rejects oversized inline keyboards."""
+        start = page * self._OPTION_PAGE_SIZE
+        rows = [
+            [{"text": text, "callback_data": callback}]
+            for text, callback in items[start:start + self._OPTION_PAGE_SIZE]
+        ]
+        nav = []
+        if start:
+            nav.append({
+                "text": "‹ prev",
+                "callback_data": f"cfg:{field}page:{page - 1}",
+            })
+        if start + self._OPTION_PAGE_SIZE < len(items):
+            nav.append({
+                "text": f"next › ({len(items) - start - self._OPTION_PAGE_SIZE} more)",
+                "callback_data": f"cfg:{field}page:{page + 1}",
+            })
+        if nav:
+            rows.append(nav)
+        return rows
+
     async def _crawl_submenu(
         self,
         callback_message: Mapping[str, object],
@@ -2092,7 +2123,12 @@ class Bridge:
         toast: str | None = None
         if field == "close":
             await self.telegram.edit_message_reply_markup(chat_id, message_id)
-        elif value == "menu":
+        elif value == "menu" or (field.endswith("page") and value.isdigit()):
+            # <field>page:<n> callbacks page long option lists; normalize so
+            # every submenu branch just reads `page`
+            page = int(value) if field.endswith("page") else 0
+            if field.endswith("page"):
+                field = field.removesuffix("page")
             if field == "playbook":
                 rows = [[{"text": "None", "callback_data": "cfg:playbook:none"}]]
                 for playbook in await self.devin.list_playbooks():
@@ -2120,22 +2156,19 @@ class Bridge:
                     }] for mode in ("default", *modes)]},
                 )
             elif field == "model":
+                # the CLI can offer 100+ models — Telegram rejects oversized
+                # keyboards, so long lists page through _page_rows
                 models = await self.local.models()
+                current_model = self.store.get_settings(conv_key).local_model
+                items = [
+                    (f"{'✓ ' if model == current_model else ''}{model}", callback)
+                    for model in models
+                    if len(callback := f"cfg:model:{model}") <= 64
+                ]
                 rows = [[{
                     "text": "cli default",
                     "callback_data": "cfg:model:default",
-                }]]
-                for model in models:
-                    callback = f"cfg:model:{model}"
-                    if len(callback.encode()) > 64:
-                        continue
-                    rows.append([{
-                        "text": (
-                            f"{'✓ ' if model == self.store.get_settings(conv_key).local_model else ''}"
-                            f"{model}"
-                        ),
-                        "callback_data": callback,
-                    }])
+                }]] + self._page_rows(items, "model", page)
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
@@ -2143,21 +2176,16 @@ class Bridge:
                 )
             elif field == "repos":
                 selected = set(self.store.get_settings(conv_key).repo_list or [])
-                rows = []
-                for name in await self.devin.repos():
-                    callback = f"cfg:repos:{name}"
-                    # Telegram caps callback_data at 64 bytes; oversized
-                    # names stay settable via /repos <list>.
-                    if len(callback.encode()) > 64:
-                        continue
-                    rows.append([{
-                        "text": f"{'✓ ' if name in selected else ''}{name}",
-                        "callback_data": callback,
-                    }])
-                rows.append([{
+                # oversized names stay settable via /repos <list>
+                items = [
+                    (f"{'✓ ' if name in selected else ''}{name}", callback)
+                    for name in await self.devin.repos()
+                    if len(callback := f"cfg:repos:{name}") <= 64
+                ]
+                rows = self._page_rows(items, "repos", page) + [[{
                     "text": "all repos (default)",
                     "callback_data": "cfg:repos:all",
-                }])
+                }]]
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
@@ -2198,19 +2226,15 @@ class Bridge:
                 selected = set(
                     self.store.get_settings(conv_key).secret_id_list or []
                 )
-                rows = []
-                for key, secret_id in await self.devin.secrets():
-                    callback = f"cfg:secrets:{secret_id}"
-                    if len(callback.encode()) > 64:
-                        continue
-                    rows.append([{
-                        "text": f"{'✓ ' if secret_id in selected else ''}{key}",
-                        "callback_data": callback,
-                    }])
-                rows.append([{
+                items = [
+                    (f"{'✓ ' if secret_id in selected else ''}{key}", callback)
+                    for key, secret_id in await self.devin.secrets()
+                    if len(callback := f"cfg:secrets:{secret_id}") <= 64
+                ]
+                rows = self._page_rows(items, "secrets", page) + [[{
                     "text": "no secrets (default)",
                     "callback_data": "cfg:secrets:clear",
-                }])
+                }]]
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,

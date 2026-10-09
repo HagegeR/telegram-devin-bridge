@@ -112,7 +112,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     enumerate the local ACP modes (accept-edits/smart/ask/plan/bypass,
     probed via a throwaway `devin acp` and cached 5 min) and apply live via
     `session/set_mode` (reset maps to the CLI default `accept-edits`).
-    `/model` + a 🧠 Model settings row enumerate the values the ACP `model` config option accepts (`session/new` configOptions) — `devin models list` advertises families the account may not be able to select
+    `/model` + a 🧠 Model settings row enumerate the values the ACP `model` config option accepts (`session/new` configOptions), paged 30 per screen (like every long option submenu) — `devin models list` advertises families the account may not be able to select
     and apply via `session/set_config_option configId=model`, persisted in
     `conversation_settings.local_model` and sent at session create.
 - `/mode [name]` – per-chat Devin mode for new sessions (`/mode default` resets). No-arg prints the current mode plus `Available: …` from `DevinClient.devin_modes()`; a name not in that list is rejected with `Unknown mode` (empty probe = accepted, Devin arbitrates). Same option list as the /settings 🤖 Devin mode submenu.

@@ -8133,3 +8133,38 @@ async def test_send_markdown_fenced_quote_stays_rich() -> None:
     await client.send_markdown(222, "example:\n```\n**>fake\n```")
     # A fenced **> is literal text, so the rich path is fine.
     assert calls == ["/botfake/sendRichMessage"]
+
+
+@pytest.mark.asyncio
+async def test_model_settings_submenu_paginates(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.update_chat_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    models = [f"m{i:03d}" for i in range(75)]
+    runtime.local.models = lambda: _async(models)  # type: ignore[method-assign]
+
+    callback = {
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback({**callback, "id": "cfg-1", "data": "cfg:model:menu"})
+    rows = telegram.markup_edits[-1]["inline_keyboard"]
+    callbacks = [b["callback_data"] for row in rows for b in row]
+    assert "cfg:model:default" in callbacks
+    assert "cfg:model:m000" in callbacks
+    assert "cfg:model:m030" not in callbacks
+    assert "cfg:modelpage:1" in callbacks
+
+    await runtime.handle_callback({**callback, "id": "cfg-2", "data": "cfg:modelpage:2"})
+    rows = telegram.markup_edits[-1]["inline_keyboard"]
+    callbacks = [b["callback_data"] for row in rows for b in row]
+    assert "cfg:model:m060" in callbacks
+    assert "cfg:model:m030" not in callbacks
+    assert "cfg:modelpage:1" in callbacks
+    assert "cfg:modelpage:3" not in callbacks
+    await runtime.shutdown()
+
+
+async def _async(value: object) -> object:
+    return value
