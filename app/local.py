@@ -46,7 +46,9 @@ class _AcpSession:
     # latest agent activity (tool-call title / thought tail) for the
     # watcher's live status line — cloud exposes nothing this granular
     activity: str = ""
-    thought: list[str] = field(default_factory=list)
+    # bounded rolling tail of the thought stream — enough to find the
+    # current line without quadratic rejoins
+    thought: str = ""
 
     @property
     def running(self) -> bool:
@@ -243,6 +245,10 @@ class LocalClient:
                     await prev
                 except (RuntimeError, TimeoutError, asyncio.CancelledError) as exc:
                     logger.debug("prior local turn failed: %s", exc)
+            # reset at the real turn start (after any queued turn): the
+            # status line must not show the previous turn's tool/thought
+            sess.activity = ""
+            sess.thought = ""
             return await self._request(sess, "session/prompt", {
                 "sessionId": sess.acp_id,
                 "prompt": [{"type": "text", "text": message}],
@@ -545,7 +551,12 @@ class LocalClient:
                     msg = json.loads(raw)
                 except ValueError:
                     continue
-                self._handle(sess, msg)
+                try:
+                    self._handle(sess, msg)
+                except (KeyError, IndexError, TypeError):
+                    # a malformed update must not kill the reader — its
+                    # pending turns would otherwise hang forever
+                    logger.warning("bad acp update skipped: %.200s", raw)
         sess.dead = True
         for fut in sess.pending.values():
             if not fut.done():
@@ -593,10 +604,10 @@ class LocalClient:
         if kind == "agent_thought_chunk":
             text = update.get("content", {}).get("text", "")
             if text:
-                sess.thought.append(text)
-                sess.activity = "".join(sess.thought).strip().splitlines()[-1][
-                    -120:
-                ]
+                sess.thought = (sess.thought + text)[-4096:]
+                lines = sess.thought.strip().splitlines()
+                if lines:
+                    sess.activity = lines[-1][-120:]
             return
         if kind in {"tool_call", "tool_call_update"}:
             title = update.get("title") or update.get("kind")

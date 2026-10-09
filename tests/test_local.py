@@ -54,6 +54,11 @@ FAKE_ACP = textwrap.dedent(
                               "params": {"sessionId": sid, "update": {
                                   "sessionUpdate": "agent_thought_chunk",
                                   "content": {"type": "text",
+                                              "text": " \\n"}}}}), flush=True)
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                              "params": {"sessionId": sid, "update": {
+                                  "sessionUpdate": "agent_thought_chunk",
+                                  "content": {"type": "text",
                                               "text": "musing\\n"}}}}), flush=True)
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
                               "params": {"sessionId": sid, "update": {
