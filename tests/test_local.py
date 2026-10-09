@@ -10,7 +10,7 @@ from app.local import LocalClient, is_local
 
 FAKE_ACP = textwrap.dedent(
     """
-    import json, sys
+    import json, os, sys
     sid = "fake-sid"
     for line in sys.stdin:
         try:
@@ -24,7 +24,6 @@ FAKE_ACP = textwrap.dedent(
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"protocolVersion": 1}}), flush=True)
         elif meth == "session/new":
-            import os
             if os.environ.get("FAKE_JUNK_LINES"):
                 print("X" * 200_000, flush=True)      # under the stream limit
                 print("Y" * 5_000_000, flush=True)    # over it — skipped
@@ -45,7 +44,11 @@ FAKE_ACP = textwrap.dedent(
             print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
         elif meth == "session/prompt":
             text = m["params"]["prompt"][0]["text"]
-            for chunk in ("echo: ", text):
+            chunks = ["echo: ", text]
+            if os.environ.get("FAKE_JUNK_LINES"):
+                # a valid JSON-RPC line larger than the old 64KB limit
+                chunks.append("big:" + "Z" * 200_000)
+            for chunk in chunks:
                 print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
                                   "params": {"sessionId": sid, "update": {
                                       "sessionUpdate": "agent_message_chunk",
@@ -168,6 +171,7 @@ async def test_reader_survives_overlong_lines(
     await _wait_for(shell_client, session_id, "echo: hello")
     state = await shell_client.get_session(session_id)
     assert state.status_enum != "expired"
+    assert any("big:" + "Z" * 100 in m.message for m in state.messages)
 
 
 @pytest.mark.asyncio
