@@ -28,7 +28,7 @@ def test_no_instance_attribute_shadows_a_method(index: int) -> None:
     methods = {
         name
         for name, member in inspect.getmembers(type(instance))
-        if inspect.isfunction(member)
+        if inspect.isfunction(member) or inspect.ismethod(member)
     }
     shadowed = methods & set(vars(instance))
     assert not shadowed, f"instance attributes shadow methods: {shadowed}"
