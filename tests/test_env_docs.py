@@ -34,6 +34,10 @@ def test_every_settings_field_is_in_env_example() -> None:
 
 def test_every_settings_field_is_in_configuration_docs() -> None:
     docs = (ROOT / "docs" / "configuration.md").read_text()
-    documented = set(re.findall(r"`([A-Z][A-Z0-9_]+)`", docs))
+    # first cell of reference-table rows only — a prose mention must not
+    # satisfy the test the way a deleted table row would
+    documented = set(
+        re.findall(r"^\|\s*`([A-Z][A-Z0-9_]+)`", docs, re.MULTILINE)
+    )
     missing = _settings_env_names() - documented
     assert not missing, f"docs/configuration.md is missing: {sorted(missing)}"
