@@ -72,7 +72,7 @@ class LocalClient:
         self.api_key = api_key
         self.pr_fetcher = pr_fetcher
         self._default_model: str | None = None
-        self._cli_logged_in: bool | None = None
+        self._cli_authed: bool | None = None
         self.sessions: dict[str, _AcpSession] = {}
         self._next_id = 0
         self._modes_cache: tuple[float, list[str]] | None = None
@@ -343,8 +343,8 @@ class LocalClient:
         return os.path.abspath(self.cwd)
 
     async def _cli_logged_in(self) -> bool:
-        if self._cli_logged_in is not None:
-            return self._cli_logged_in
+        if self._cli_authed is not None:
+            return self._cli_authed
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.cli_command,
@@ -354,10 +354,10 @@ class LocalClient:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             out, _ = await asyncio.wait_for(proc.communicate(), 15)
-            self._cli_logged_in = b"Logged in" in out
+            self._cli_authed = b"Logged in" in out
         except (OSError, TimeoutError):
-            self._cli_logged_in = False
-        return self._cli_logged_in
+            self._cli_authed = False
+        return self._cli_authed
 
     # -- JSON-RPC plumbing -------------------------------------------------
 
