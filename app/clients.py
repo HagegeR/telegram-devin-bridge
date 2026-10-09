@@ -311,21 +311,27 @@ class DevinClient:
         set is read from the create-session literal-error once and cached."""
         if self._modes_cache is not None:
             return self._modes_cache
-        modes = list(DEVIN_MODES)
-        if self.v3_enabled:
-            try:
-                await self._call(
-                    "POST",
-                    self._v3("/sessions"),
-                    json={"prompt": "mode-probe", "devin_mode": "_"},
-                    headers=self._v3_headers(),
-                )
-            except httpx.HTTPStatusError as exc:
-                modes = _modes_from_422(exc.response) or modes
-            except httpx.HTTPError:
-                pass
-        self._modes_cache = modes
-        return modes
+        if not self.v3_enabled:
+            return list(DEVIN_MODES)
+        try:
+            await self._call(
+                "POST",
+                self._v3("/sessions"),
+                json={"prompt": "mode-probe", "devin_mode": "_"},
+                headers=self._v3_headers(),
+            )
+        except httpx.HTTPStatusError as exc:
+            probed = _modes_from_422(exc.response)
+            if probed:
+                # Only a parsed org list is authoritative enough to cache
+                # and validate against — a failed probe retries next call
+                # and returns empty ("unverified"), never the bundled
+                # fallback, so valid org-specific modes can't be rejected.
+                self._modes_cache = probed
+                return probed
+        except httpx.HTTPError:
+            pass
+        return []
 
     async def repos(self) -> list[str]:
         """Repo paths (owner/name) connected to this org, cached briefly.
