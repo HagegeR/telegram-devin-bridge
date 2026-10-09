@@ -136,6 +136,11 @@ jobs:
           $env:TELEGRAM_BOT_TOKEN = 'ci'
           .venv\Scripts\python.exe -c "import shlex; from app.config import Settings; print(shlex.split(Settings().self_update_command))"
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: pytest
+        shell: powershell
+        run: |
+          .venv\Scripts\python -m pip install -r requirements-dev.txt
+          .venv\Scripts\python -m pytest --timeout=300
       - name: Self-update check under Git Bash
         shell: bash
         run: sh deploy/self-update.sh --check main

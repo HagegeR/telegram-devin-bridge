@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -96,16 +97,31 @@ FAKE_ACP = textwrap.dedent(
 )
 
 
+def _devin_shim(tmp_path: Path, fake: Path, *, logged_out: bool = False) -> Path:
+    """A fake `devin` launcher: POSIX sh script, or .cmd on Windows where
+    create_subprocess_exec runs batch files through cmd.exe anyway."""
+    if os.name == "nt":
+        shim = tmp_path / "devin.cmd"
+        body = "@echo off\r\n"
+        if logged_out:
+            body += 'if "%~1"=="auth" (echo Logged out& exit /b 0)\r\n'
+        shim.write_text(body + f'"{sys.executable}" "{fake}" %*\r\n')
+        return shim
+    shim = tmp_path / "devin"
+    body = "#!/bin/sh\n"
+    if logged_out:
+        body += 'if [ "$1" = "auth" ]; then printf "Logged out\\n"; exit 0; fi\n'
+    body += f'exec "{sys.executable}" "{fake}" "$@"\n'
+    shim.write_text(body)
+    shim.chmod(0o755)
+    return shim
+
+
 @pytest_asyncio.fixture
 async def shell_client(tmp_path: Path):
     fake = tmp_path / "fake_acp.py"
     fake.write_text(FAKE_ACP)
-    shim = tmp_path / "devin"
-    shim.write_text(
-        "#!/bin/sh\n"
-        f"exec {sys.executable} {fake} \"$@\"\n"
-    )
-    shim.chmod(0o755)
+    shim = _devin_shim(tmp_path, fake)
     client = LocalClient(cli_command=str(shim), api_key=None)
     yield client
     for session_id in list(client.sessions):
@@ -239,13 +255,7 @@ async def test_login_turn_suppressed_when_logged_out(tmp_path: Path) -> None:
     # the /login turn must not surface as a user-visible event
     fake = tmp_path / "fake_acp.py"
     fake.write_text(FAKE_ACP)
-    shim = tmp_path / "devin"
-    shim.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "auth" ]; then printf "Logged out\\n"; exit 0; fi\n'
-        f"exec {sys.executable} {fake} \"$@\"\n"
-    )
-    shim.chmod(0o755)
+    shim = _devin_shim(tmp_path, fake, logged_out=True)
     client = LocalClient(cli_command=str(shim), api_key="sekrit")
     try:
         session_id, _ = await client.create_session("hi")
