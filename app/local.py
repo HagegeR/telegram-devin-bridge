@@ -53,6 +53,9 @@ class _AcpSession:
     # bounded rolling tail of the thought stream — enough to find the
     # current line without quadratic rejoins
     thought: str = ""
+    # child's stderr tail — included in 'acp process exited' errors so a
+    # dead spawn isn't a silent black box
+    stderr_tail: str = ""
 
     @property
     def running(self) -> bool:
@@ -415,11 +418,12 @@ class LocalClient:
             "acp",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             cwd=self._cwd(),
         )
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
+        asyncio.create_task(self._drain_stderr(sess))
         try:
             await self._request(sess, "initialize", {
                 "protocolVersion": 1,
@@ -569,9 +573,18 @@ class LocalClient:
                     # pending turns would otherwise hang forever
                     logger.warning("bad acp update skipped: %.200s", raw)
         sess.dead = True
+        detail = f": {sess.stderr_tail[-400:].strip()}" if sess.stderr_tail else ""
         for fut in sess.pending.values():
             if not fut.done():
-                fut.set_exception(RuntimeError("acp process exited"))
+                fut.set_exception(RuntimeError(f"acp process exited{detail}"))
+
+    async def _drain_stderr(self, sess: _AcpSession) -> None:
+        if sess.proc.stderr is None:
+            return
+        tail = b""
+        while chunk := await sess.proc.stderr.read(4096):
+            tail = (tail + chunk)[-4096:]
+        sess.stderr_tail = tail.decode(errors="replace")
 
     def _handle(self, sess: _AcpSession, msg: dict) -> None:
         req_id = msg.get("id")
