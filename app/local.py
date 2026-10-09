@@ -257,11 +257,16 @@ class LocalClient:
         sess = await self._get_or_resume(session_id)
         if sess is None:
             raise RuntimeError(f"local session {session_id} is gone")
-        await self._request(sess, "session/set_config_option", {
+        result = await self._request(sess, "session/set_config_option", {
             "sessionId": sess.acp_id,
             "configId": config_id,
             "value": value,
         })
+        # the CLI only emits config_option_update once at session/new —
+        # apply the change from the response, which echoes currentValue
+        for opt in result.get("configOptions", []):
+            if isinstance(opt, dict) and opt.get("currentValue") is not None:
+                sess.config[str(opt["id"])] = str(opt["currentValue"])
 
     async def create_session(
         self,
