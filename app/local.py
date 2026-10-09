@@ -54,6 +54,9 @@ _MAX_SESSIONS = 32
 # turns can run for a long time; prompts get no deadline (they end on
 # stopReason or terminate), everything else uses the control timeout
 _CONTROL_TIMEOUT = 30
+# ACP replies can carry whole files; the default 64KB stream limit
+# used to crash the reader and orphan every turn on that session
+_STREAM_LIMIT = 4 * 1024 * 1024
 
 
 class LocalClient:
@@ -99,6 +102,7 @@ class LocalClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
                 cwd=self._cwd(),
+                limit=_STREAM_LIMIT,
             )
         except OSError:
             return []
@@ -360,6 +364,7 @@ class LocalClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             cwd=self._cwd(),
+            limit=_STREAM_LIMIT,
         )
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
@@ -490,7 +495,16 @@ class LocalClient:
 
     async def _reader(self, sess: _AcpSession) -> None:
         assert sess.proc.stdout is not None
-        async for line in sess.proc.stdout:
+        while True:
+            try:
+                line = await sess.proc.stdout.readline()
+            except ValueError:
+                # a line over the stream limit is skipped, not fatal —
+                # dying here would orphan the session's turns forever
+                logger.warning("acp emitted an overlong line; skipped")
+                continue
+            if not line:
+                break
             try:
                 msg = json.loads(line)
             except ValueError:

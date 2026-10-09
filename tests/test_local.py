@@ -24,6 +24,10 @@ FAKE_ACP = textwrap.dedent(
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"protocolVersion": 1}}), flush=True)
         elif meth == "session/new":
+            import os
+            if os.environ.get("FAKE_JUNK_LINES"):
+                print("X" * 200_000, flush=True)      # under the stream limit
+                print("Y" * 5_000_000, flush=True)    # over it — skipped
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"sessionId": sid, "modes": {
                                   "currentModeId": "accept-edits",
@@ -152,6 +156,18 @@ async def test_send_message_resumes_detached_session(shell_client: LocalClient) 
     # the watcher's persisted cursor must not filter post-restart replies
     state = await shell_client.get_session(session_id, since_event_id=last)
     assert [m.message for m in state.messages] == ["echo: second"]
+
+
+@pytest.mark.asyncio
+async def test_reader_survives_overlong_lines(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a huge chunk from acp used to kill the reader and orphan every turn
+    monkeypatch.setenv("FAKE_JUNK_LINES", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_enum != "expired"
 
 
 @pytest.mark.asyncio
