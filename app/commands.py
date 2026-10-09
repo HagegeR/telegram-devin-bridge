@@ -380,7 +380,7 @@ async def handle_command(
         )
         if not value:
             current = runtime.store.get_settings(conv_key).platform
-            available = await runtime.devin.platforms()
+            available = [*await runtime.devin.platforms(), "local"]
             options_line = (
                 f"\nAvailable: {', '.join(available)}" if available else ""
             )
@@ -400,10 +400,10 @@ async def handle_command(
                 ephemeral=True,
             )
         elif re.fullmatch(r"[\w.-]+", value):
-            available = await runtime.devin.platforms()
+            available = [*await runtime.devin.platforms(), "local"]
             # An empty list means the probe failed, not that the org has
             # no platforms — accept the name and let Devin arbitrate.
-            if available and value not in available:
+            if len(available) > 1 and value not in available:
                 await runtime.send_text(
                     message,
                     f"Unknown platform: {value}\n"
@@ -415,7 +415,7 @@ async def handle_command(
                 await runtime.send_text(
                     message,
                     f"Platform: {value} — applies to the next new session."
-                    + v3_hint,
+                    + ("" if value == "local" else v3_hint),
                     ephemeral=True,
                 )
         else:
@@ -1123,7 +1123,7 @@ _HELP_SECTIONS = (
             "/settings — notifications, drafts, mode, defaults",
             "/mode [name] — Devin mode for new sessions",
             "/repos [a/b,c/d] — restrict sessions to repos",
-            "/platform [name] — run sessions on an outpost pool or VM platform",
+            "/platform [name] — outpost pool, VM platform, or `local` (CLI on this host)",
             "/acu [n] — per-chat ACU limit",
             "/tags [a,b] — extra tags on new sessions",
             "/secrets [KEY,KEY2] — secrets attached to new sessions",

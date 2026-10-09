@@ -39,6 +39,7 @@ from app.formatting import (
     rich_paragraph,
     split_long_text,
 )
+from app.local import LocalClient, is_local
 from app.notify import register_notify_route
 from app.polling import run_polling
 from app.set_webhook import configure_bot
@@ -125,6 +126,11 @@ class Bridge:
         self.settings = settings
         self.store = store
         self.devin = devin
+        self.local = LocalClient(
+            cli_command=settings.devin_local_cli,
+            cwd=settings.devin_local_cwd,
+            api_key=settings.devin_service_user_api_key,
+        )
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.bot_topics_enabled = False
@@ -153,6 +159,9 @@ class Bridge:
         self.rate_warnings: dict[int, float] = {}
         self.shutting_down = False
         self.approved_users: set[int] = set()
+
+    def _session_client(self, session_id: str):
+        return self.local if is_local(session_id) else self.devin
 
     async def startup(self) -> None:
         profile = await self.telegram.get_me()
@@ -324,6 +333,7 @@ class Bridge:
             task.cancel()
         if self.background_tasks:
             await asyncio.gather(*self.background_tasks, return_exceptions=True)
+        await self.local.aclose()
         await self.devin.close()
         await self.telegram.close()
         if self._transcription_client is not None:
@@ -873,8 +883,13 @@ class Bridge:
             text = await self._append_crawled_content(text, enabled_crawls)
         if attachment is not None:
             filename, content, content_type = attachment
-            url = await self.devin.upload_attachment(filename, content, content_type)
-            text = f"{text}\n\nAttached file: {url} ({filename})".strip()
+            if self.store.get_settings(conv_key).platform == "local":
+                # local sessions can't receive files, and uploading to cloud
+                # storage would defeat running locally
+                text = f"{text}\n\nAttached file: {filename} (not sent — local sessions can't receive files)".strip()
+            else:
+                url = await self.devin.upload_attachment(filename, content, content_type)
+                text = f"{text}\n\nAttached file: {url} ({filename})".strip()
         if not text:
             text = "Please inspect the attached file."
         sent_at: float | None = None
@@ -952,7 +967,7 @@ class Bridge:
                     url = await self.devin.upload_attachment(
                         filename, content, content_type
                     )
-                except (httpx.HTTPError, TypeError):
+                except (httpx.HTTPError, TypeError, RuntimeError):
                     continue
                 lines.append(f"Attached file: {url} ({filename})")
             blocks.append("\n".join(lines))
@@ -983,21 +998,33 @@ class Bridge:
         if extra:
             prompt = f"{extra}\n\n{prompt}"
         conv_settings = self.store.get_settings(conv_key)
-        session_id, session_url = await self.devin.create_session(
-            prompt,
-            title,
-            playbook_id,
-            devin_mode=conv_settings.devin_mode,
-            repos=conv_settings.repo_list,
-            platform=conv_settings.platform,
-            acu_limit=conv_settings.acu_limit,
-            tags=conv_settings.tag_list,
-            secret_ids=conv_settings.secret_id_list,
-            knowledge_ids=conv_settings.knowledge_id_list,
-            snapshot_id=conv_settings.snapshot_id,
-            unlisted=conv_settings.unlisted,
-            idempotent=conv_settings.idempotent,
-        )
+        if conv_settings.platform == "local":
+            # local CLI sessions don't take the cloud session options
+            if playbook_id is not None:
+                await self.send_text(
+                    message,
+                    "⚠ playbooks aren't supported on local sessions — starting without it",
+                    silent=True,
+                )
+            session_id, session_url = await self.local.create_session(
+                prompt, title
+            )
+        else:
+            session_id, session_url = await self.devin.create_session(
+                prompt,
+                title,
+                playbook_id,
+                devin_mode=conv_settings.devin_mode,
+                repos=conv_settings.repo_list,
+                platform=conv_settings.platform,
+                acu_limit=conv_settings.acu_limit,
+                tags=conv_settings.tag_list,
+                secret_ids=conv_settings.secret_id_list,
+                knowledge_ids=conv_settings.knowledge_id_list,
+                snapshot_id=conv_settings.snapshot_id,
+                unlisted=conv_settings.unlisted,
+                idempotent=conv_settings.idempotent,
+            )
         self.store.delete_setting(f"pending_title:{conv_key}")
         stored_title = (
             title
@@ -1111,7 +1138,7 @@ class Bridge:
         watcher = SessionWatcher(
             conversation,
             self.store,
-            self.devin,
+            self._session_client(conversation.session_id),
             self.telegram,
             self.settings,
             poll_seconds=poll_seconds,
@@ -1248,7 +1275,7 @@ class Bridge:
                     last_user_text=option,
                     last_user_message_id=None,
                 )
-                await self.devin.send_message(session_id, option)
+                await self._session_client(session_id).send_message(session_id, option)
                 updated = f"✅ {option}"
             if callback_message_id:
                 try:
@@ -1403,7 +1430,7 @@ class Bridge:
                 last_user_message_id=message_id,
             )
             sent_at = time.time()
-            await self.devin.send_message(
+            await self._session_client(conversation.session_id).send_message(
                 conversation.session_id,
                 f"Correction to my previous message: {text}",
             )
@@ -1436,7 +1463,7 @@ class Bridge:
         )
         try:
             sent_at = time.time()
-            await self.devin.send_message(
+            await self._session_client(conversation.session_id).send_message(
                 conversation.session_id,
                 conversation.last_user_text,
             )
@@ -1469,7 +1496,7 @@ class Bridge:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         try:
-            await self.devin.terminate(conversation.session_id)
+            await self._session_client(conversation.session_id).terminate(conversation.session_id)
         except Exception:
             current = self.store.get_conversation(conversation.conv_key) or conversation
             await self.start_watcher(current)
@@ -1728,11 +1755,11 @@ class Bridge:
 
     async def get_session_status(self, session_id: str) -> str:
         return (
-            await self.devin.get_session(session_id, fetch_messages=False)
+            await self._session_client(session_id).get_session(session_id, fetch_messages=False)
         ).status_enum
 
     async def send_session_message(self, session_id: str, text: str) -> None:
-        await self.devin.send_message(session_id, text)
+        await self._session_client(session_id).send_message(session_id, text)
 
     async def _react(
         self, chat_id: int, message_id: int | None, emoji: str | None
@@ -1750,7 +1777,7 @@ class Bridge:
             logger.warning("Failed to set Telegram reaction %s", emoji, exc_info=True)
 
     async def get_state(self, session_id: str) -> SessionState:
-        return await self.devin.get_session(session_id)
+        return await self._session_client(session_id).get_session(session_id)
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int:
         return await self.telegram.create_forum_topic(chat_id, name)
@@ -2099,14 +2126,15 @@ class Bridge:
                     "text": "org default",
                     "callback_data": "cfg:platform:default",
                 }]]
-                for name in await self.devin.platforms():
+                for name in [*await self.devin.platforms(), "local"]:
                     callback = f"cfg:platform:{name}"
                     # Telegram caps callback_data at 64 bytes; oversized
                     # pool names stay settable via /platform <name>.
                     if len(callback.encode()) > 64:
                         continue
+                    label = "local (this host)" if name == "local" else name
                     rows.append([{
-                        "text": f"{'✓ ' if name == current else ''}{name}",
+                        "text": f"{'✓ ' if name == current else ''}{label}",
                         "callback_data": callback,
                     }])
                 await self.telegram.edit_message_reply_markup(
@@ -2390,7 +2418,7 @@ class Bridge:
         # "finished" (idle, awaiting input) and suspended sessions resume when
         # messaged, keeping the conversation's context; only expired ones don't.
         return (
-            await self.devin.get_session(session_id, fetch_messages=False)
+            await self._session_client(session_id).get_session(session_id, fetch_messages=False)
         ).status_enum == "expired"
 
     @asynccontextmanager

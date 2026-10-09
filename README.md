@@ -102,7 +102,7 @@ deployment check list.
 | `/playbook [n] [text]` | List or start a Devin playbook |
 | `/settings` | Notification, draft, status-timer, playbook, mode, repo, and pre-crawl settings |
 | `/repos [a/b,c/d]` | Show, set, or clear the repos list for new sessions (`/repos all` resets) |
-| `/platform [name]` | Show, set, or clear the platform/outpost pool for new sessions (`/platform default` resets) |
+| `/platform [name]` | Show, set, or clear the platform/outpost pool for new sessions (`/platform default` resets; `/platform local` runs sessions on the bridge host via `devin acp`) |
 | `/mode [name]` | Show, set, or clear the Devin mode for new sessions (`/mode default` resets) |
 | `/acu [n]` | Per-chat ACU limit for new sessions (`/acu default` resets) |
 | `/tags [a,b]` | Extra session tags (`/tags clear` resets) |

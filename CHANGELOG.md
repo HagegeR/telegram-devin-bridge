@@ -25,6 +25,14 @@ and deployment update channels.
   and outpost pool the org accepts (parsed from the create-session 400
   body, same probe as `devin_modes()`), and `/platform` with no args
   prints the same list.
+- `/platform local` — prototype local-CLI backend: new sessions spawn a
+  `devin acp` subprocess on the bridge host itself (fully local execution,
+  the CLI's own model set, no cloud session URL). Shown as
+  `local (this host)` in the 🖥 Platform submenu. Cloud session options
+  (mode/repos/acu/secrets/…) don't apply, file attachments can't be
+  delivered, and sessions are in-memory — a bridge restart kills them.
+  Requires the Devin CLI on the host (`DEVIN_LOCAL_CLI`,
+  `DEVIN_LOCAL_CWD`); the service-user key is reused for `/login`.
 - `/mode [name]` — per-chat Devin mode for new sessions, validated
   against the org's mode list (`/mode` no-args prints it,
   `/mode default` resets). Mirrors the /settings 🤖 Devin mode submenu;

@@ -28,6 +28,8 @@ required.
 | `DEVIN_ORG_ID` | no | unset | Required for the v3 API surface (`/usage`, `devin_mode`, `repos`, `platform`). |
 | `DEVIN_API_BASE_URL` | no | `https://api.devin.ai` | |
 | `DEVIN_MAX_ACU_LIMIT` | no | `3` | ACU cap passed to new sessions. |
+| `DEVIN_LOCAL_CLI` | no | `devin` | CLI binary for `/platform local` sessions (`devin acp`). |
+| `DEVIN_LOCAL_CWD` | no | unset | Working directory passed to local CLI sessions. |
 | `DEVIN_SESSION_INSTRUCTIONS` | no | empty | Prepended verbatim to the prompt of every session the bridge starts — use it for org-specific guidance such as which injected secret grants Devin v3 API access for editing automations. |
 | `DEVIN_POLL_FAST_SECONDS` | no | `1.0` | Watcher interval while Devin is actively replying. |
 | `DEVIN_POLL_SECONDS` | no | `5` | Watcher interval otherwise. |

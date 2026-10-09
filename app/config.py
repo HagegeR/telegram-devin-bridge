@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     devin_settle_seconds: float = 30
     devin_status_after_seconds: float = 8
     devin_session_instructions: str = ""
+    devin_local_cli: str = "devin"
+    devin_local_cwd: str | None = None
     telegram_debounce_seconds: float = 1.5
     telegram_queue_while_busy: bool = True
     telegram_long_reply_chars: int = 3500

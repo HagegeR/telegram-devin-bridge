@@ -98,6 +98,16 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 - `/retry` – resend the last user text stored on the conversation (add column `last_user_text`).
 - `/repos [a/b,c/d]` – per-chat repo restriction for new sessions (`/repos all` resets). Names are validated against `DevinClient.repos()` — the org's connected repos from `GET /v3beta1/organizations/{org}/repositories`, cached 5 min; an empty fetch means "couldn't verify" and is accepted. The `/settings` 📂 Repos submenu toggles repos from that same list (✓ marks selected, "all repos" resets; names whose callback would exceed Telegram's 64-byte `callback_data` cap are skipped).
 - `/platform [name]` – per-chat session placement for new sessions: an outpost pool name or a hosted platform label, passed as `platform` to the v3 create-session call (`/platform default` resets to the org default; v1 deployments warn-and-ignore). Also surfaced as the 🖥 Platform row in `/settings`, whose submenu lists every platform label + outpost pool the org accepts — enumerated by `DevinClient.platforms()` by parsing the create-session 400 body once (same trick as `devin_modes()`'s 422 probe).
+  - `/platform local` (prototype) routes new sessions to a **local-CLI
+    backend** (`app/local.py`): each session is a `devin acp` subprocess on
+    the bridge host speaking ACP JSON-RPC over stdio (`initialize` +
+    `session/new`, prompts via `session/prompt`, replies collected from
+    `agent_message_chunk` updates into one message per turn). Sessions are
+    in-memory (bridge restart kills them), have no cloud URL, can't receive
+    file attachments, and ignore the cloud session options — the CLI's own
+    mode/model config applies instead. The service-user key is sent as a
+    `/login` command on session start when set. Requires the Devin CLI
+    (`DEVIN_LOCAL_CLI`/`DEVIN_LOCAL_CWD`).
 - `/mode [name]` – per-chat Devin mode for new sessions (`/mode default` resets). No-arg prints the current mode plus `Available: …` from `DevinClient.devin_modes()`; a name not in that list is rejected with `Unknown mode` (empty probe = accepted, Devin arbitrates). Same option list as the /settings 🤖 Devin mode submenu.
 - `/acu [n]` – per-chat `max_acu_limit` for new sessions (`/acu default` resets). `/settings` ⚡ ACU limit submenu offers preset values.
 - `/tags [a,b]` – extra tags merged into `tags` on create (`telegram-bridge` is always included; `/tags clear` resets).
