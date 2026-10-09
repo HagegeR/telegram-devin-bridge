@@ -40,7 +40,8 @@ and deployment update channels.
   delivered, and sessions resume across bridge restarts via ACP
   `session/load` (the CLI keeps them in its own DB). Overlong ACP output
   lines no longer kill the session reader (a >64KB chunk used to silently
-  orphan every turn).
+  orphan every turn), and reply text streams into the topic every ~20s
+  while a turn runs instead of appearing only at stopReason.
   Requires the Devin CLI on the host (`DEVIN_LOCAL_CLI`,
   `DEVIN_LOCAL_CWD`); the service-user key is reused for `/login`.
 - `/mode [name]` — per-chat Devin mode for new sessions, validated

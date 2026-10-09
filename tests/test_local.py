@@ -10,7 +10,7 @@ from app.local import LocalClient, is_local
 
 FAKE_ACP = textwrap.dedent(
     """
-    import json, os, sys
+    import json, os, sys, time
     sid = "fake-sid"
     for line in sys.stdin:
         try:
@@ -45,10 +45,14 @@ FAKE_ACP = textwrap.dedent(
         elif meth == "session/prompt":
             text = m["params"]["prompt"][0]["text"]
             chunks = ["echo: ", text]
+            if os.environ.get("FAKE_SLOW"):
+                chunks = ["echo: \\n", text]
             if os.environ.get("FAKE_JUNK_LINES"):
                 # a valid JSON-RPC line larger than the old 64KB limit
                 chunks.append("big:" + "Z" * 200_000)
             for chunk in chunks:
+                if os.environ.get("FAKE_SLOW"):
+                    time.sleep(0.4)
                 print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
                                   "params": {"sessionId": sid, "update": {
                                       "sessionUpdate": "agent_message_chunk",
@@ -172,6 +176,26 @@ async def test_reader_survives_overlong_lines(
     state = await shell_client.get_session(session_id)
     assert state.status_enum != "expired"
     assert any("big:" + "Z" * 100 in m.message for m in state.messages)
+
+
+@pytest.mark.asyncio
+async def test_partial_replies_stream_mid_turn(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # long turns used to stay silent until stopReason — the flusher emits
+    # buffered chunks periodically while the turn is still running
+    monkeypatch.setattr("app.local._FLUSH_INTERVAL", 0.05)
+    monkeypatch.setenv("FAKE_SLOW", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    state = None
+    for _ in range(100):
+        state = await shell_client.get_session(session_id)
+        if state.messages:
+            break
+        await asyncio.sleep(0.05)
+    assert state is not None and state.messages
+    assert state.messages[0].message.strip() == "echo:"
+    await _wait_for(shell_client, session_id, "hello")
 
 
 @pytest.mark.asyncio

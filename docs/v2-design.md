@@ -102,9 +102,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     backend** (`app/local.py`): each session is a `devin acp` subprocess on
     the bridge host speaking ACP JSON-RPC over stdio (`initialize` +
     `session/new`, prompts via `session/prompt`, replies collected from
-    `agent_message_chunk` updates into one message per turn; acp stdout is
-    read in chunks and split on newlines manually, so replies of any size
-    survive — no line-length limit). Sessions
+    `agent_message_chunk` updates; buffered chunks are flushed into the
+    topic every ~20s mid-turn (complete lines only — the trailing partial
+    line stays buffered, and a flush inside an unclosed code fence is
+    deferred — so markers/fences are never split), with the remainder
+    emitted at stopReason; acp stdout is read in chunks and split on
+    newlines manually, so replies of any size survive — no line-length
+    limit). Sessions
     persist in the CLI's own DB and are reloaded via `session/load` after a
     bridge restart (the in-memory map is only the live-process index; `/stop`
     still deletes the record), have no cloud URL, can't receive
@@ -146,7 +150,7 @@ Existing deploy has `TELEGRAM_ALLOWED_CHAT_IDS` unset; keep supporting it.
 - Make watcher poll interval injectable (0 in tests).
 
 ### Non-goals (explicitly skipped)
-Network IP failover, stickers/vision, TTS, /model, /memory, /goal, kanban, streaming edits of partial text (Devin API has no partial-message stream).
+Network IP failover, stickers/vision, TTS, /model, /memory, /goal, kanban, streaming edits of partial cloud text (the cloud Devin API has no partial-message stream; local sessions do stream interim lines — see below).
 
 ### Bot API 10.3 behavior
 Rich Markdown is the primary Devin response path when `TELEGRAM_RICH_MESSAGES`

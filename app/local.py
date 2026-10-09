@@ -40,6 +40,7 @@ class _AcpSession:
     event_base: int = field(default_factory=lambda: int(time.time() * 1000))
     turns: int = 0
     tail: asyncio.Task | None = None
+    flusher: asyncio.Task | None = None
     dead: bool = False
     suppress_turn: bool = False
 
@@ -58,6 +59,9 @@ _CONTROL_TIMEOUT = 30
 # on newlines manually because the default 64KB StreamReader limit used
 # to crash the reader and orphan every turn on that session
 _STREAM_CHUNK = 65536
+# stream interim reply text during a turn — waiting for stopReason alone
+# leaves the topic silent for many minutes on long tasks
+_FLUSH_INTERVAL = 20
 
 
 class LocalClient:
@@ -242,6 +246,31 @@ class LocalClient:
 
         sess.tail = asyncio.create_task(_turn())
         sess.tail.add_done_callback(lambda f: self._turn_done(sess, f))
+        if sess.flusher is None:
+            sess.flusher = asyncio.create_task(self._flusher(sess))
+
+    async def _flusher(self, sess: _AcpSession) -> None:
+        try:
+            while not sess.dead:
+                await asyncio.sleep(_FLUSH_INTERVAL)
+                if not sess.turns or sess.suppress_turn:
+                    continue
+                raw = "".join(sess.buffer)
+                # only complete lines: markers/fences are line-scoped, and
+                # keeping the trailing partial line preserves boundary
+                # whitespace + never splits a marker mid-token
+                head, sep, tail = raw.rpartition("\n")
+                if not sep or not head.strip():
+                    continue
+                if head.count("```") % 2:
+                    # inside an unclosed fence — a fragment would reach
+                    # Telegram with broken MarkdownV2
+                    continue
+                sess.buffer.clear()
+                sess.buffer.append(tail)
+                self._emit(sess, head)
+        except asyncio.CancelledError:
+            pass
 
     def _turn_done(self, sess: _AcpSession, fut: asyncio.Future) -> None:
         sess.turns -= 1
@@ -329,6 +358,9 @@ class LocalClient:
 
     async def _reap(self, sess: _AcpSession) -> None:
         """Stop the acp process without deleting the persisted session."""
+        sess.dead = True
+        if sess.flusher is not None:
+            sess.flusher.cancel()
         sess.proc.terminate()
         try:
             await asyncio.wait_for(sess.proc.wait(), 5)
