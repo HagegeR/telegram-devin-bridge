@@ -30,7 +30,13 @@ FAKE_ACP = textwrap.dedent(
                                   "availableModes": [
                                       {"id": "accept-edits"},
                                       {"id": "smart"},
-                                  ]}}}), flush=True)
+                                  ]}, "configOptions": [{
+                                  "id": "model",
+                                  "currentValue": "swe-2-high",
+                                  "options": [
+                                      {"value": "swe-2-high"},
+                                      {"value": "swe-2-low"},
+                                  ]}]}}), flush=True)
         elif meth in ("session/set_mode", "session/set_config_option"):
             print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
         elif meth == "session/prompt":
@@ -56,10 +62,6 @@ async def shell_client(tmp_path: Path):
     shim = tmp_path / "devin"
     shim.write_text(
         "#!/bin/sh\n"
-        'if [ "$1" = "models" ]; then\n'
-        '  printf "Available models (1 family)\\n\\nSWE (swe)\\n'
-        '  swe-2-high   SWE-2 High  [x]\\n  swe-2-low   SWE-2 Low  [x]\\n"\n'
-        "  exit 0\nfi\n"
         f"exec {sys.executable} {fake} \"$@\"\n"
     )
     shim.chmod(0o755)
