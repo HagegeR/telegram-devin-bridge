@@ -35,9 +35,12 @@ and deployment update channels.
   paragraphs rather than mid-sentence fragments.
 - Delivery gaps are no longer silent or permanent: watchers log their exit
   reason (watch cap, non-active close), a local turn whose buffered output
-  is discarded by `suppress_turn` warns, and a janitor sweep restarts
-  delivery when a live local session has emitted events the conversation
-  never received.
+  is discarded by `suppress_turn` warns, a live local session emitting an
+  event with no watcher alive restarts delivery immediately, and a
+  janitor sweep remains as the backstop for cursors that still fall behind.
+- The "⏳ Working…" status message re-posts after each delivered reply so
+  live progress stays the last message in the thread instead of scrolling
+  out of view.
 
 - `/settings`, `/repos`, `/platform` (and the other toggles) now persist
   at the chat level: a setting made in one forum topic applies to every

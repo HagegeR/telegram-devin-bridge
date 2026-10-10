@@ -132,6 +132,7 @@ class Bridge:
             api_key=settings.devin_service_user_api_key,
             pr_fetcher=self.devin.fetch_github_pr,
         )
+        self.local.on_emit = self._on_local_emit
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.bot_topics_enabled = False
@@ -797,6 +798,26 @@ class Bridge:
                 await self._redeliver_backlog()
             except Exception:
                 logger.exception("Janitor sweep failed")
+
+    def _on_local_emit(self, session_id: str) -> None:
+        # a live local turn keeps emitting after its watcher exits — restart
+        # delivery on the next event instead of waiting for the janitor
+        if self.shutting_down:
+            return
+        sess = self.local.sessions.get(session_id)
+        if sess is None or sess.dead or sess.replaying or sess.suppress_turn:
+            return
+        watcher = self.watchers.get(session_id)
+        if watcher is not None and not watcher.done():
+            return
+        conv = self.store.get_conversation_for_session(session_id)
+        if conv is None:
+            return
+        task = asyncio.create_task(
+            self.start_watcher(conv, resume_from=conv.created_at)
+        )
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
 
     async def _redeliver_backlog(self) -> None:
         # a live local session can keep accumulating emitted events with

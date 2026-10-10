@@ -66,12 +66,14 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   last; a failed push retries on the next message. Group chats keep the
   shared group menu; a chat-scoped menu there would leak one member's
   settings to everyone.
-- Delivery watchdog: the janitor sweep (every 10 min) rechecks live local
-  sessions whose emitted events outnumber the conversation's persisted
-  `last_event_id` with no watcher alive — a watcher that exits mid-turn
-  (settle close, restart) would otherwise strand undelivered output until
-  the user's next message. Watchers also log their exit reason (watch cap,
-  non-active close) and a `suppress_turn` discard warns, so delivery gaps
+- Delivery watchdog: every local event emission fires `on_emit`, which
+  restarts the watcher immediately when none is alive — a watcher that
+  exits mid-turn (settle close, restart) no longer strands output until
+  the next poll. The janitor sweep (every 10 min) stays as the backstop:
+  it rechecks live local sessions whose emitted events outnumber the
+  conversation's persisted `last_event_id`. Watchers also log their exit
+  reason (watch cap, non-active close) and a `suppress_turn` discard
+  warns, so delivery gaps
   are diagnosable instead of silent.
 
 ### Inbound flow (webhook)
@@ -128,7 +130,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     emitted at stopReason; `agent_thought_chunk` and `tool_call` updates
     set the session's activity, shown live as a `→ …` line in the edited
     ⏳ Working status message (cloud sessions get the same line from any
-    non-enum `status_detail`); acp stdout is read in chunks and split on
+    non-enum `status_detail`); the status message re-posts after each
+    delivered reply so it stays the last message in the thread; acp
+    stdout is read in chunks and split on
     newlines manually, so replies of any size survive — no line-length
     limit). Sessions
     persist in the CLI's own DB and are reloaded via `session/load` after a
