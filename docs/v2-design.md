@@ -71,7 +71,14 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   exits mid-turn (settle close, restart) no longer strands output until
   the next poll. The janitor sweep (every 10 min) stays as the backstop:
   it rechecks live local sessions whose emitted events outnumber the
-  conversation's persisted `last_event_id`. Watchers also log their exit
+  conversation's persisted `last_event_id`, and probes every cloud
+  conversation with no live watcher via `get_session(since_event_id)` —
+  a post-cursor `devin_message` means the remote history moved past the
+  cursor (a lone post-cursor `user_message` is ignored, since the
+  watcher can't advance the cursor on it and would restart every sweep;
+  the cursor filters client-side, so each probe re-reads history until
+  the marker — one request per conversation per sweep).
+  Watchers also log their exit
   reason (watch cap, non-active close) and a `suppress_turn` discard
   warns, so delivery gaps
   are diagnosable instead of silent. Recovery watchers thread their

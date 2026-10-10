@@ -37,7 +37,9 @@ and deployment update channels.
   reason (watch cap, non-active close), a local turn whose buffered output
   is discarded by `suppress_turn` warns, a live local session emitting an
   event with no watcher alive restarts delivery immediately, and a
-  janitor sweep remains as the backstop for cursors that still fall behind.
+  janitor sweep remains as the backstop for cursors that still fall
+  behind — now covering cloud conversations too, via a
+  `get_session(since_event_id)` probe on sessions with no live watcher.
 - The "⏳ Working…" status message re-posts after each delivered reply so
   live progress stays the last message in the thread instead of scrolling
   out of view (10s cooldown so bursts can't churn it).
