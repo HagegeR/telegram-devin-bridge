@@ -140,9 +140,11 @@ restart_after() {
     # serialize concurrent detached restarts on the update lock: two
     # stop+start pairs racing (e.g. /update + cron) can leave a start
     # outliving the other's stop and spawn duplicate supervise-daemons.
-    # The parent releases the lock on exit; -w bounds the wait so a stuck
-    # holder can't leave the service down.
-    nohup sh -c "sleep 2; exec 9>'$LOCK'; flock -w 300 9 || true; $1" >/dev/null 2>&1 9>&- &
+    # flock with no -w is safe here: the lock releases when the holder's
+    # fd closes, even on death — a live-but-hung updater should block the
+    # restart rather than race it. The lock path travels as $0 so an
+    # apostrophe in SELF_UPDATE_LOCK can't break the inner shell.
+    nohup sh -c "sleep 2; exec 9>\"\$0\"; flock 9; $1" "$LOCK" >/dev/null 2>&1 9>&- &
   else
     nohup sh -c "sleep 2; $1" >/dev/null 2>&1 9>&- &
   fi
