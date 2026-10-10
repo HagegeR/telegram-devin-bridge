@@ -814,7 +814,11 @@ class Bridge:
         if conv is None:
             return
         task = asyncio.create_task(
-            self.start_watcher(conv, resume_from=conv.created_at)
+            self.start_watcher(
+                conv,
+                resume_from=conv.created_at,
+                trigger_message_id=conv.last_user_message_id,
+            )
         )
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
@@ -844,7 +848,11 @@ class Bridge:
                 "undelivered local events on %s — restarting watcher",
                 conv.conv_key,
             )
-            await self.start_watcher(conv, resume_from=conv.created_at)
+            await self.start_watcher(
+                conv,
+                resume_from=conv.created_at,
+                trigger_message_id=conv.last_user_message_id,
+            )
 
     def rate_limited(self, user_id: int) -> bool:
         return self._rate_limited(user_id)

@@ -8628,6 +8628,7 @@ async def test_local_emit_hook_restarts_delivery(
         session_id="local:y",
         session_url="",
         title="t",
+        last_user_message_id=42,
     )
     sess = SimpleNamespace(  # type: ignore[assignment]
         dead=False,
@@ -8656,7 +8657,10 @@ async def test_local_emit_hook_restarts_delivery(
         if any("mid-turn reply" in str(s.get("text")) for s in telegram.sent):
             break
         await asyncio.sleep(0.05)
-    assert any("mid-turn reply" in str(s.get("text")) for s in telegram.sent)
+    delivered = [
+        s for s in telegram.sent if "mid-turn reply" in str(s.get("text"))
+    ]
+    assert delivered and delivered[0].get("reply_to_message_id") == 42
     await runtime.shutdown()
 
 
@@ -8678,6 +8682,7 @@ async def test_status_message_repins_after_deliveries(
     conversation = store.get_conversation("222")
     assert conversation is not None
     telegram = _FakeTelegram()
+    now = [0.0]
     watcher = SessionWatcher(
         conversation,
         store,
@@ -8686,6 +8691,7 @@ async def test_status_message_repins_after_deliveries(
         settings(tmp_path),
         drafts_enabled=False,
         status_after_seconds=0,
+        clock=lambda: now[0],
     )
     state = SessionState("working", "t", None, [])
     await watcher._refresh_progress(0.0, state)
@@ -8696,12 +8702,20 @@ async def test_status_message_repins_after_deliveries(
     await watcher._refresh_progress(0.0, state)
     assert (222, first_id) in telegram.deleted
     assert watcher.status_message_id is not None
-    assert watcher.status_message_id != first_id
+    second_id = watcher.status_message_id
+    assert second_id != first_id
 
-    # nothing new delivered since the repin — the status stays put
-    deleted = len(telegram.deleted)
+    # another delivery inside the repin cooldown leaves the status in place
+    watcher.delivered_count = 3
     await watcher._refresh_progress(0.0, state)
-    assert len(telegram.deleted) == deleted
+    assert (222, second_id) not in telegram.deleted
+    assert watcher.status_message_id == second_id
+
+    # after the cooldown it re-posts at the bottom again
+    now[0] += 11
+    await watcher._refresh_progress(0.0, state)
+    assert (222, second_id) in telegram.deleted
+    assert watcher.status_message_id != second_id
 
 
 @pytest.mark.asyncio

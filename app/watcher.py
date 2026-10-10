@@ -134,6 +134,7 @@ class SessionWatcher:
         self.last_status_text: str | None = None
         self.status_sent_at: float | None = None
         self.status_pinned_at_count = 0
+        self.last_repin_at: float | None = None
         self.last_chat_action_at: float | None = None
         self.delivered_count = 0
         self.first_status: str | None = None
@@ -464,6 +465,10 @@ class SessionWatcher:
         repin = (
             self.status_message_id is not None
             and self.delivered_count > self.status_pinned_at_count
+            and (
+                self.last_repin_at is None
+                or elapsed - self.last_repin_at >= 10
+            )
         )
         if self.status_message_id is None or repin or (
             self.last_status_text != status_text
@@ -491,6 +496,7 @@ class SessionWatcher:
                         self.status_message_id  # type: ignore[arg-type]
                     )
                 self.status_message_id = None
+                self.last_repin_at = elapsed
             if self.status_message_id is None:
                 result = await self.telegram.send_message(
                     self.conversation.chat_id,
