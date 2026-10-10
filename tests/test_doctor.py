@@ -1178,6 +1178,8 @@ async def test_configure_bot_ephemeral_only_in_group_scope() -> None:
         "platform",
         "mode",
         "model",
+        "think",
+        "commands",
         "acu",
         "tags",
         "secrets",

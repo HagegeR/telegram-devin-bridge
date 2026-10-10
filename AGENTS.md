@@ -5,6 +5,12 @@ stream back to Telegram. Single process; SQLite persistence; deploys by
 self-updating from `main` (a host cron pulls every ~15 min — merging a PR IS
 the deploy).
 
+> **Do not work in the deploy checkout.** `/etc/periodic/15min` runs
+> `deploy/self-update.sh`, which does `git reset --hard` + `git checkout -f`
+> on any local diff — uncommitted work is destroyed every ~15 min. Use a
+> side clone (e.g. `~/dev/telegram-devin-bridge`), commit to a branch, and
+> push early.
+
 ## Ground truth
 
 - `docs/v2-design.md` — the canonical behavior + API reference. If you change

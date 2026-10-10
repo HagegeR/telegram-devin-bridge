@@ -787,6 +787,9 @@ class Bridge:
             except Exception:
                 logger.exception("Janitor sweep failed")
 
+    def rate_limited(self, user_id: int) -> bool:
+        return self._rate_limited(user_id)
+
     def _rate_limited(self, user_id: int) -> bool:
         limit = self.settings.telegram_rate_limit_per_minute
         if limit <= 0 or user_id <= 0:
@@ -1019,6 +1022,7 @@ class Bridge:
                 title,
                 mode=conv_settings.devin_mode,
                 model=conv_settings.local_model,
+                thought_level=conv_settings.thought_level,
             )
         else:
             session_id, session_url = await self.devin.create_session(
@@ -1238,6 +1242,14 @@ class Bridge:
                     conv_key,
                     data,
                     user_id=user_id,
+                )
+                return
+            if data.startswith("cmd:"):
+                await self._handle_commands_callback(
+                    callback_id,
+                    callback_message,
+                    conv_key,
+                    data,
                 )
                 return
             if data.startswith("more:"):
@@ -2033,11 +2045,16 @@ class Bridge:
                 [{"text": f"🔁 Idempotent: {idempotent}", "callback_data": "cfg:idempotent:menu"}],
             ] if self.devin.v3_enabled else []) + [
                 [{"text": f"🖥 Platform: {current.platform or 'default'}", "callback_data": "cfg:platform:menu"}],
+            ] + ([
                 [{
                     "text": f"🧠 Model: {current.local_model or 'cli default'}",
                     "callback_data": "cfg:model:menu",
-                }] if current.platform == "local" else [],
-            ]
+                }],
+                [{
+                    "text": f"💭 Thinking: {current.thought_level or 'cli default'}",
+                    "callback_data": "cfg:think:menu",
+                }],
+            ] if current.platform == "local" else [])
         crawl = ",".join(sorted(self.crawl_sites())) or "off"
         rows += [
             [{"text": f"🔎 Pre-crawl: {crawl}", "callback_data": "cfg:crawl:menu"}],
@@ -2052,6 +2069,163 @@ class Bridge:
             )
         else:
             await self.send_markup(message, "Conversation settings", markup)
+
+    _COMMAND_PAGE_SIZE = 20
+
+    async def commands_menu(
+        self,
+        message: Mapping[str, object],
+        *,
+        edit_message_id: int | None = None,
+    ) -> None:
+        commands = await self.local.commands()
+        markup = {"inline_keyboard": self._commands_root_rows(commands)}
+        text = (
+            "Local CLI commands — tap to run, or send /<name> to the session "
+            "directly (it understands /fast, /compact, skills, …)."
+            if commands
+            else "No CLI commands known — the `devin acp` probe failed or "
+            "returned none."
+        )
+        if edit_message_id is not None:
+            await self.telegram.edit_message_reply_markup(
+                _int(_mapping(message.get("chat")).get("id")),
+                edit_message_id,
+                markup,
+            )
+        else:
+            await self.send_markup(message, text, markup)
+
+    @staticmethod
+    def _commands_by_category(commands: list[dict]) -> dict[str, list[dict]]:
+        grouped: dict[str, list[dict]] = {}
+        for command in commands:
+            grouped.setdefault(str(command["category"] or "Other"), []).append(
+                command
+            )
+        return grouped
+
+    def _commands_root_rows(
+        self, commands: list[dict]
+    ) -> list[list[dict[str, str]]]:
+        grouped = self._commands_by_category(commands)
+        order = ["Session", "Skills", "System", "Account"]
+        categories = [c for c in order if c in grouped] + sorted(
+            c for c in grouped if c not in order
+        )
+        rows = [
+            [{
+                "text": f"{category} ({len(grouped[category])})",
+                "callback_data": f"cmd:c:{category}",
+            }]
+            for category in categories
+            if len(f"cmd:c:{category}".encode()) <= 64
+        ]
+        rows.append([{"text": "Close", "callback_data": "cmd:x"}])
+        return rows
+
+    def _command_category_rows(
+        self, commands: list[dict], category: str, page: int
+    ) -> list[list[dict[str, str]]]:
+        items = []
+        for command in self._commands_by_category(commands).get(category, []):
+            label = f"/{command['name']}"
+            if command["hint"]:
+                label += f" {command['hint']}"
+            if command["description"]:
+                label += f" — {command['description']}"
+            callback = f"cmd:r:{command['name']}"
+            if len(callback.encode()) <= 64:
+                items.append((label[:60], callback))
+        start = page * self._COMMAND_PAGE_SIZE
+        rows = [
+            [{"text": text, "callback_data": callback}]
+            for text, callback in items[start:start + self._COMMAND_PAGE_SIZE]
+        ]
+        nav = []
+        if start:
+            nav.append({
+                "text": "‹ prev",
+                "callback_data": f"cmd:p:{category}:{page - 1}",
+            })
+        if start + self._COMMAND_PAGE_SIZE < len(items):
+            nav.append({
+                "text": f"next › ({len(items) - start - self._COMMAND_PAGE_SIZE} more)",
+                "callback_data": f"cmd:p:{category}:{page + 1}",
+            })
+        if nav:
+            rows.append(nav)
+        rows.append([{"text": "‹ categories", "callback_data": "cmd:b"}])
+        return rows
+
+    async def _handle_commands_callback(
+        self,
+        callback_id: str,
+        callback_message: Mapping[str, object],
+        conv_key: str,
+        data: str,
+    ) -> None:
+        chat_id = _int(_mapping(callback_message.get("chat")).get("id"))
+        message_id = _int(callback_message.get("message_id"))
+        if data in {"cmd:b", "cmd:x"}:
+            if data == "cmd:x":
+                await self.telegram.edit_message_reply_markup(
+                    chat_id, message_id
+                )
+            else:
+                commands = await self.local.commands()
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": self._commands_root_rows(commands)},
+                )
+            await self.telegram.answer_callback_query(callback_id)
+            return
+        pieces = data.split(":", 2)
+        if len(pieces) != 3:
+            await self.telegram.answer_callback_query(callback_id)
+            return
+        kind, rest = pieces[1], pieces[2]
+        if kind == "r":
+            conversation = self.store.get_conversation(conv_key)
+            if conversation is None or not is_local(conversation.session_id):
+                await self.telegram.answer_callback_query(
+                    callback_id, "Needs a running local session"
+                )
+                return
+            try:
+                await self.send_session_message(
+                    conversation.session_id, f"/{rest}"
+                )
+            except RuntimeError:
+                await self.telegram.answer_callback_query(
+                    callback_id, "Session is gone"
+                )
+                return
+            await self.telegram.answer_callback_query(
+                callback_id, f"Sent /{rest}"
+            )
+            await self.start_watcher(conversation)
+            return
+        if kind == "c":
+            category, page = rest, 0
+        elif kind == "p":
+            category, _, page_text = rest.rpartition(":")
+            page = int(page_text) if page_text.isdigit() else 0
+        else:
+            await self.telegram.answer_callback_query(callback_id)
+            return
+        commands = await self.local.commands()
+        await self.telegram.edit_message_reply_markup(
+            chat_id,
+            message_id,
+            {
+                "inline_keyboard": self._command_category_rows(
+                    commands, category, page
+                )
+            },
+        )
+        await self.telegram.answer_callback_query(callback_id)
 
     _OPTION_PAGE_SIZE = 30
 
@@ -2142,16 +2316,32 @@ class Bridge:
                     {"inline_keyboard": rows},
                 )
             elif field == "mode":
+                local = self.store.get_settings(conv_key).platform == "local"
                 modes = (
                     await self.local.modes()
-                    if self.store.get_settings(conv_key).platform == "local"
+                    if local
                     else await self.devin.devin_modes()
                 )
+                details = await self.local.mode_details() if local else []
+                labels = {}
+                for detail in details:
+                    label = (
+                        f"{detail['name']} ({detail['id']})"
+                        if detail.get("name") and detail["name"] != detail["id"]
+                        else detail["id"]
+                    )
+                    if detail["description"]:
+                        label += f" — {detail['description']}"
+                    labels[detail["id"]] = label
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
                     {"inline_keyboard": [[{
-                        "text": "org default" if mode == "default" else mode,
+                        "text": (
+                            ("cli default" if local else "org default")
+                            if mode == "default"
+                            else labels.get(mode, mode)
+                        ),
                         "callback_data": f"cfg:mode:{mode}",
                     }] for mode in ("default", *modes)]},
                 )
@@ -2169,6 +2359,21 @@ class Bridge:
                     "text": "cli default",
                     "callback_data": "cfg:model:default",
                 }]] + self._page_rows(items, "model", page)
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": rows},
+                )
+            elif field == "think":
+                levels = await self.local.think_levels()
+                current_level = self.store.get_settings(conv_key).thought_level
+                rows = [[{
+                    "text": "cli default",
+                    "callback_data": "cfg:think:default",
+                }]] + [[{
+                    "text": f"{'✓ ' if level == current_level else ''}{level}",
+                    "callback_data": f"cfg:think:{level}",
+                }] for level in levels]
                 await self.telegram.edit_message_reply_markup(
                     chat_id,
                     message_id,
@@ -2289,6 +2494,24 @@ class Bridge:
                             await self.local.set_model_default(conversation.session_id)
                         else:
                             await self.local.set_model(conversation.session_id, value)
+                    except (KeyError, RuntimeError):
+                        pass
+            elif field == "think":
+                self.store.update_chat_settings(
+                    conv_key,
+                    thought_level=None if value == "default" else value,
+                )
+                conversation = self.store.get_conversation(conv_key)
+                if conversation and is_local(conversation.session_id):
+                    try:
+                        if value == "default":
+                            await self.local.set_thought_default(
+                                conversation.session_id
+                            )
+                        else:
+                            await self.local.set_thought_level(
+                                conversation.session_id, value
+                            )
                     except (KeyError, RuntimeError):
                         pass
             elif field == "repos":

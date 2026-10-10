@@ -122,10 +122,24 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
   - On `platform=local` chats, `/mode` + the 🤖 Devin mode submenu
     enumerate the local ACP modes (accept-edits/smart/ask/plan/bypass,
     probed via a throwaway `devin acp` and cached 5 min) and apply live via
-    `session/set_mode` (reset maps to the CLI default `accept-edits`).
+    `session/set_mode` (reset maps to the CLI default `accept-edits`);
+    the submenu and `/mode` listing show the CLI's display names and
+    descriptions (`mode` configOption options, e.g. `Smart — auto-approves
+    safe actions`).
     `/model` + a 🧠 Model settings row enumerate the values the ACP `model` config option accepts (`session/new` configOptions), paged 30 per screen (like every long option submenu) — `devin models list` advertises families the account may not be able to select
     and apply via `session/set_config_option configId=model`, persisted in
     `conversation_settings.local_model` and sent at session create.
+    `/think` + a 💭 Thinking settings row do the same for the
+    `thought_level` configOption (`conversation_settings.thought_level`).
+    `/commands` browses the CLI's `available_commands_update` slash-command
+    list as a category → paged-command inline keyboard (`cmd:` callback
+    namespace; `cmd:r:<name>` sends `/<name>` to the active local session);
+    any `/foo` message that isn't a bridge command is forwarded to a local
+    session as a prompt, so every CLI command and skill (`/fast`, `/compact`,
+    `/loop`, `/<plugin>:<skill>`) works from Telegram. `/status` shows the
+    session's live mode/model/thinking (`config_option_update` +
+    `current_mode_update` tracked per session, rendered as
+    `local: mode X · model Y · thought_level Z`).
 - `/mode [name]` – per-chat Devin mode for new sessions (`/mode default` resets). No-arg prints the current mode plus `Available: …` from `DevinClient.devin_modes()`; a name not in that list is rejected with `Unknown mode` (empty probe = accepted, Devin arbitrates). Same option list as the /settings 🤖 Devin mode submenu.
 - `/acu [n]` – per-chat `max_acu_limit` for new sessions (`/acu default` resets). `/settings` ⚡ ACU limit submenu offers preset values.
 - `/tags [a,b]` – extra tags merged into `tags` on create (`telegram-bridge` is always included; `/tags clear` resets).
@@ -136,7 +150,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 - `/crawl` – show which site crawlers are active (read-only). The active set is bridge-wide: `CRAWL_SITES` env is the default, and the `/settings` 🔎 Pre-crawl submenu overrides it live via the `settings` table key `crawl_sites` (a csv; empty = off; deleting the key reverts to env; toggles are admin-only — `TELEGRAM_ADMIN_USER_IDS`, falling back to all allowed users when unset). When enabled, URLs in a user message matching an enabled crawler (`app/crawlers.py`: `instagram` via the oEmbed API — caption + cover image; `article` — generic HTML title/description/body, preferring `<article>`/`<main>`) are fetched in the bridge before the turn reaches Devin: extracted text is appended to the prompt as `[Crawled <site>: <url>]` blocks and media is uploaded as session attachments. Up to 3 crawler-owned URLs per message; fetches stream with a body cap, validate the host on every redirect hop, and reject loopback/private IP literals; failures are skipped silently.
 - `/whoami` – user id, chat id, thread id, allowed yes/no, is-home yes/no.
 - `/sethome` – store chat/thread as home (allowed users only). Reply confirms.
-- Unknown `/cmd` – "Unknown command; /help".
+- `/commands` – category → command browser for local CLI slash commands (tap-to-run needs an active local session; browsing works on any chat).
+- `/think [level]` – per-chat `thought_level` for local sessions (`/think default` resets; applied to the running session via `session/set_config_option`).
+- Unknown `/cmd` – forwarded to the active local session as a CLI slash command when the conversation is local (👀 ack + watcher), else "Unknown command; /help".
 
 ### `/notify` (notify.py)
 `POST /notify` with `Authorization: Bearer <NOTIFY_SECRET>` (403 otherwise; if `NOTIFY_SECRET` unset, route returns 404). JSON `{text: str, chat_id?: int, thread_id?: int, silent?: bool, markdown?: bool=true, html?: str, html_name?: str="report.html"}`. `html` is stored as a report and linked with an `Open` URL button when `PUBLIC_BASE_URL` is set, otherwise sent as a document. Target = provided chat or `settings.home_*` or `TELEGRAM_HOME_CHANNEL` env; 400 if none. Chunk + format like normal messages. Returns `{sent: N}`.

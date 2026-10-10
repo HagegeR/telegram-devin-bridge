@@ -8,6 +8,21 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- Local CLI capability surfacing (`/platform local` chats): `/commands`
+  opens a category → command browser built from the CLI's
+  `available_commands_update` (Session/Skills/System/…), with tap-to-run
+  buttons that send `/<name>` to the active session; any `/foo` message
+  that isn't a bridge command is forwarded to the local session too, so
+  `/fast`, `/compact`, `/loop`, and skills like `/ponytail:ponytail` work
+  straight from Telegram. `/think [level]` sets the `thought_level`
+  config option (medium/high/max) per chat, applies to the running
+  session, and joins 🧠 Model as the 💭 Thinking row in `/settings`.
+  `/mode` and its submenu now show the CLI's display names and
+  descriptions (`Smart — auto-approves safe actions`), and `/status`
+  reports the running session's live mode/model/thinking.
+
 ### Fixed
 
 - `/settings`, `/repos`, `/platform` (and the other toggles) now persist

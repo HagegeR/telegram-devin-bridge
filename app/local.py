@@ -43,6 +43,10 @@ class _AcpSession:
     flusher: asyncio.Task | None = None
     dead: bool = False
     suppress_turn: bool = False
+    # live config the CLI reports (mode/model/thought_level -> current value)
+    config: dict[str, str] = field(default_factory=dict)
+    # available_commands_update arrives after session/new; None until then
+    commands: list[dict] | None = None
     # session/load replays the persisted history as session/update
     # notifications — ignore them until a real turn starts, or the old
     # reply would be re-emitted as if it were new
@@ -108,6 +112,10 @@ class LocalClient:
         self._next_id = 0
         self._last_event_base = 0
         self._modes_cache: tuple[float, list[str]] | None = None
+        self._mode_details: list[dict] = []
+        self._think_options: list[str] | None = None
+        self._default_thought: str | None = None
+        self._commands: list[dict] = []
 
     async def modes(self) -> list[str]:
         """ACP session modes (accept-edits/smart/ask/plan/bypass), probed
@@ -147,17 +155,44 @@ class LocalClient:
                 if isinstance(m, dict) and m.get("id")
             ]
             for opt in created.get("configOptions", []):
-                if isinstance(opt, dict) and opt.get("id") == "model":
-                    current = opt.get("currentValue")
+                if not isinstance(opt, dict):
+                    continue
+                values = [
+                    str(o["value"])
+                    for o in opt.get("options", [])
+                    if isinstance(o, dict) and o.get("value")
+                ]
+                current = opt.get("currentValue")
+                if opt.get("id") == "model":
                     if current:
                         self._default_model = str(current)
-                    values = [
-                        str(o["value"])
+                    if values:
+                        self._model_options = values
+                elif opt.get("id") == "mode":
+                    details = [
+                        {
+                            "id": str(o["value"]),
+                            "name": str(o.get("name") or o["value"]),
+                            "description": str(o.get("description") or ""),
+                        }
                         for o in opt.get("options", [])
                         if isinstance(o, dict) and o.get("value")
                     ]
+                    if details:
+                        self._mode_details = details
+                elif opt.get("id") == "thought_level":
+                    if current:
+                        self._default_thought = str(current)
                     if values:
-                        self._model_options = values
+                        self._think_options = values
+            # available_commands_update is pushed asynchronously; give the
+            # CLI a moment — long enough for first discovery, short once a
+            # list is cached so /mode and /model don't pay for it
+            deadline = time.monotonic() + (6 if not self._commands else 1.5)
+            while sess.commands is None and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+            if sess.commands:
+                self._commands = sess.commands
         except (RuntimeError, TimeoutError, KeyError):
             modes = []
         proc.terminate()
@@ -174,6 +209,24 @@ class LocalClient:
         await self.modes()  # the probe populates _model_options
         return self._model_options or []
 
+    async def mode_details(self) -> list[dict]:
+        """[{id, name, description}] from the `mode` config option —
+        richer than bare ids (Smart auto-approves, Plan refuses edits)."""
+        await self.modes()
+        return self._mode_details
+
+    async def think_levels(self) -> list[str]:
+        """Values the `thought_level` config option accepts."""
+        await self.modes()
+        return self._think_options or []
+
+    async def commands(self) -> list[dict]:
+        """Slash commands the CLI advertises via available_commands_update,
+        normalized to {name, description, category, hint}. Empty on probe
+        failure."""
+        await self.modes()
+        return self._commands
+
     async def set_model_default(self, session_id: str) -> None:
         if self._default_model:
             await self.set_model(session_id, self._default_model)
@@ -188,14 +241,32 @@ class LocalClient:
         })
 
     async def set_model(self, session_id: str, model: str) -> None:
+        await self._set_config(session_id, "model", model)
+
+    async def set_thought_level(self, session_id: str, level: str) -> None:
+        await self._set_config(session_id, "thought_level", level)
+
+    async def set_thought_default(self, session_id: str) -> None:
+        await self.modes()  # populate _default_thought on a fresh process
+        if self._default_thought:
+            await self.set_thought_level(session_id, self._default_thought)
+
+    async def _set_config(
+        self, session_id: str, config_id: str, value: str
+    ) -> None:
         sess = await self._get_or_resume(session_id)
         if sess is None:
             raise RuntimeError(f"local session {session_id} is gone")
-        await self._request(sess, "session/set_config_option", {
+        result = await self._request(sess, "session/set_config_option", {
             "sessionId": sess.acp_id,
-            "configId": "model",
-            "value": model,
+            "configId": config_id,
+            "value": value,
         })
+        # the CLI only emits config_option_update once at session/new —
+        # apply the change from the response, which echoes currentValue
+        for opt in result.get("configOptions", []):
+            if isinstance(opt, dict) and opt.get("currentValue") is not None:
+                sess.config[str(opt["id"])] = str(opt["currentValue"])
 
     async def create_session(
         self,
@@ -204,6 +275,7 @@ class LocalClient:
         *,
         mode: str | None = None,
         model: str | None = None,
+        thought_level: str | None = None,
         **_: object,
     ) -> tuple[str, str]:
         cwd = self._cwd()
@@ -221,11 +293,19 @@ class LocalClient:
         session_id = f"{LOCAL_PREFIX}{sess.acp_id}"
         await self._evict()
         self.sessions[session_id] = sess
+        for opt in created.get("configOptions", []):
+            if isinstance(opt, dict) and opt.get("currentValue") is not None:
+                sess.config[str(opt["id"])] = str(opt["currentValue"])
         if model is not None:
             try:
                 await self.set_model(session_id, model)
             except RuntimeError as exc:
                 self._emit(sess, f"⚠ model {model} rejected: {exc}")
+        if thought_level is not None:
+            try:
+                await self.set_thought_level(session_id, thought_level)
+            except RuntimeError as exc:
+                self._emit(sess, f"⚠ thought_level {thought_level} rejected: {exc}")
         if mode is not None:
             try:
                 await self.set_mode(session_id, mode)
@@ -346,12 +426,18 @@ class LocalClient:
                 m for m in messages if int(m.event_id or 0) > int(since_event_id)
             ]
         status = "expired" if sess.dead else ("working" if sess.running else "blocked")
+        config_bits = [
+            f"{key} {value}"
+            for key in ("mode", "model", "thought_level")
+            if (value := sess.config.get(key))
+        ]
         return SessionState(
             status_enum=status,
             title=sess.title,
             pr_url=None,
             messages=messages if fetch_messages else [],
             status_detail=sess.activity or None,
+            local_info=" · ".join(config_bits) or None,
         )
 
     async def aclose(self) -> None:
@@ -469,7 +555,7 @@ class LocalClient:
         acp_id = session_id.removeprefix(LOCAL_PREFIX)
         sess = await self._spawn()
         try:
-            await self._request(sess, "session/load", {
+            loaded = await self._request(sess, "session/load", {
                 "sessionId": acp_id,
                 "cwd": self._cwd(),
                 "mcpServers": [],
@@ -480,6 +566,9 @@ class LocalClient:
                 f"local session {acp_id} couldn't resume: {exc}"
             ) from exc
         sess.acp_id = acp_id
+        for opt in loaded.get("configOptions", []):
+            if isinstance(opt, dict) and opt.get("currentValue") is not None:
+                sess.config[str(opt["id"])] = str(opt["currentValue"])
         sess.replaying = True
         sess.title = await self._session_title(sess, acp_id)
         await self._evict()
@@ -622,6 +711,34 @@ class LocalClient:
         if sess.replaying:
             return
         kind = update.get("sessionUpdate")
+        if kind == "available_commands_update":
+            commands = update.get("availableCommands")
+            if isinstance(commands, list):
+                sess.commands = [
+                    {
+                        "name": str(cmd.get("name") or ""),
+                        "description": str(cmd.get("description") or ""),
+                        "category": str(
+                            cmd.get("_meta", {}).get("cognition.ai/category") or ""
+                        ),
+                        "hint": str(cmd.get("input", {}).get("hint") or "")
+                        if isinstance(cmd.get("input"), dict)
+                        else "",
+                    }
+                    for cmd in commands
+                    if isinstance(cmd, dict) and cmd.get("name")
+                ]
+            return
+        if kind == "config_option_update":
+            for opt in update.get("configOptions") or []:
+                if isinstance(opt, dict) and opt.get("currentValue") is not None:
+                    sess.config[str(opt["id"])] = str(opt["currentValue"])
+            return
+        if kind == "current_mode_update":
+            mode = update.get("currentModeId")
+            if mode:
+                sess.config["mode"] = str(mode)
+            return
         if kind == "agent_message_chunk":
             text = update.get("content", {}).get("text", "")
             if text:
