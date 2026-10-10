@@ -585,6 +585,16 @@ class Store:
             ).fetchone()
         return self._conversation(row)
 
+    def get_conversation_for_session(
+        self, session_id: str
+    ) -> Conversation | None:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM conversations WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return self._conversation(row) if row is not None else None
+
     def list_recent_conversations(self, since: float) -> list[Conversation]:
         with self.lock:
             rows = self.connection.execute(

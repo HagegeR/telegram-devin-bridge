@@ -794,8 +794,36 @@ class Bridge:
                 self.store.cleanup_message_index()
                 self.store.cleanup_long_texts()
                 self.store.cleanup_reports()
+                await self._redeliver_backlog()
             except Exception:
                 logger.exception("Janitor sweep failed")
+
+    async def _redeliver_backlog(self) -> None:
+        # a live local session can keep accumulating emitted events with
+        # no watcher alive to deliver them (watchers close on settle and
+        # never restart themselves) — restart delivery when the
+        # conversation's persisted cursor fell behind the session's
+        # events. Driven by live sessions, not conversation recency, so a
+        # day-old conversation isn't skipped; resume_from conv.created_at
+        # keeps pre-trigger events deliverable (and digested, not flooded)
+        for session_id, sess in self.local.sessions.items():
+            if not sess.events:
+                continue
+            conv = self.store.get_conversation_for_session(session_id)
+            if conv is None:
+                continue
+            latest = sess.events[-1].event_id or ""
+            last = conv.last_event_id or "0"
+            if not latest.isdigit() or not last.isdigit() or int(latest) <= int(last):
+                continue
+            watcher = self.watchers.get(session_id)
+            if watcher is not None and not watcher.done():
+                continue
+            logger.warning(
+                "undelivered local events on %s — restarting watcher",
+                conv.conv_key,
+            )
+            await self.start_watcher(conv, resume_from=conv.created_at)
 
     def rate_limited(self, user_id: int) -> bool:
         return self._rate_limited(user_id)

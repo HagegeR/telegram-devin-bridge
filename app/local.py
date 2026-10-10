@@ -402,6 +402,11 @@ class LocalClient:
         sess.turns -= 1
         if sess.suppress_turn:
             sess.suppress_turn = False
+            if "".join(sess.buffer).strip():
+                logger.warning(
+                    "local turn output discarded by suppress_turn for %s",
+                    sess.acp_id,
+                )
             sess.buffer.clear()
             return
         try:

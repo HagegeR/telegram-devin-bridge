@@ -203,6 +203,10 @@ class SessionWatcher:
                         )
                     if self.generation != gen:
                         continue
+                    logger.info(
+                        "watcher %s exiting at watch cap (status=%s delivered=%s)",
+                        self.conversation.conv_key, previous_status, self.delivered,
+                    )
                     return
                 state = await self.devin.get_session(
                     self.conversation.session_id,
@@ -354,6 +358,10 @@ class SessionWatcher:
                         if self.generation != gen:
                             await self.sleep(interval)
                             continue
+                        logger.info(
+                            "watcher %s closing on %s (delivered=%s)",
+                            self.conversation.conv_key, state.status_enum, self.delivered,
+                        )
                         return
                 else:
                     await self._refresh_progress(self.started_at, state)

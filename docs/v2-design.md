@@ -66,6 +66,13 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   last; a failed push retries on the next message. Group chats keep the
   shared group menu; a chat-scoped menu there would leak one member's
   settings to everyone.
+- Delivery watchdog: the janitor sweep (every 10 min) rechecks live local
+  sessions whose emitted events outnumber the conversation's persisted
+  `last_event_id` with no watcher alive — a watcher that exits mid-turn
+  (settle close, restart) would otherwise strand undelivered output until
+  the user's next message. Watchers also log their exit reason (watch cap,
+  non-active close) and a `suppress_turn` discard warns, so delivery gaps
+  are diagnosable instead of silent.
 
 ### Inbound flow (webhook)
 1. Verify secret header (403 otherwise). Parse `update_id`; if already in `processed_updates` return `{accepted:true}`; else insert.

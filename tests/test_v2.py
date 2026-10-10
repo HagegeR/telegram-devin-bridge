@@ -8513,3 +8513,96 @@ async def test_admin_chat_menu_includes_admin_commands(
     names = {c["command"] for c in chat_scoped[0][0]}
     assert {"update", "users", "revoke", "sethome"} <= names
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_redeliver_backlog_recovers_undelivered_events(
+    tmp_path: Path,
+) -> None:
+    # a local session can hold emitted events no watcher ever delivered
+    # (watcher exited mid-turn); the janitor sweep restarts delivery
+    from types import SimpleNamespace
+
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="",
+        title="t",
+        last_event_id="100",
+    )
+    runtime.local.sessions["local:x"] = SimpleNamespace(  # type: ignore[assignment]
+        dead=False,
+        running=False,
+        title="",
+        activity="",
+        config={},
+        events=[DevinMessage("devin_message", "200", "missed reply", None)],
+        flusher=None,
+        tail=None,
+        turns=0,
+        suppress_turn=False,
+        replaying=False,
+        acp_id="x",
+        proc=SimpleNamespace(
+            terminate=lambda: None,
+            wait=lambda: asyncio.sleep(0),
+            kill=lambda: None,
+        ),
+    )
+    await runtime._redeliver_backlog()
+    for _ in range(50):
+        if any("missed reply" in str(s.get("text")) for s in telegram.sent):
+            break
+        await asyncio.sleep(0.05)
+    assert any("missed reply" in str(s.get("text")) for s in telegram.sent)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_redeliver_backlog_recovers_before_first_reply(
+    tmp_path: Path,
+) -> None:
+    # last_event_id is NULL until the first delivered reply — a watcher
+    # that exits before it must not strand that reply forever
+    from types import SimpleNamespace
+
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:y",
+        session_url="",
+        title="t",
+    )
+    runtime.local.sessions["local:y"] = SimpleNamespace(  # type: ignore[assignment]
+        dead=False,
+        running=False,
+        title="",
+        activity="",
+        config={},
+        events=[DevinMessage("devin_message", "200", "first reply", None)],
+        flusher=None,
+        tail=None,
+        turns=0,
+        suppress_turn=False,
+        replaying=False,
+        acp_id="y",
+        proc=SimpleNamespace(
+            terminate=lambda: None,
+            wait=lambda: asyncio.sleep(0),
+            kill=lambda: None,
+        ),
+    )
+    await runtime._redeliver_backlog()
+    for _ in range(50):
+        if any("first reply" in str(s.get("text")) for s in telegram.sent):
+            break
+        await asyncio.sleep(0.05)
+    assert any("first reply" in str(s.get("text")) for s in telegram.sent)
+    await runtime.shutdown()
