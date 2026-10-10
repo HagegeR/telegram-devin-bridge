@@ -856,11 +856,11 @@ class Bridge:
                 trigger_message_id=conv.last_user_message_id,
                 trigger_at=conv.updated_at,
             )
-        # cloud conversations can't be checked in memory — probe recent
-        # ones whose watcher died; since_event_id filters server-side so
-        # any returned message means the persisted cursor fell behind
-        since = time.time() - self.settings.devin_active_watch_timeout_seconds
-        for conv in self.store.list_recent_conversations(since):
+        # cloud conversations can't be checked in memory — probe every
+        # conversation with no live watcher (recency can't tell whether a
+        # remote session kept running); since_event_id filters client-side
+        # so any post-cursor devin_message means the cursor fell behind
+        for conv in self.store.list_recent_conversations(0):
             sid = conv.session_id or ""
             if not sid or is_local(sid):
                 continue
@@ -871,10 +871,15 @@ class Bridge:
                 state = await self.devin.get_session(
                     sid, since_event_id=conv.last_event_id
                 )
-            except (RuntimeError, httpx.HTTPError) as exc:
+            except (RuntimeError, httpx.HTTPError, TypeError, ValueError) as exc:
                 logger.debug("cloud backlog probe failed for %s: %s", sid, exc)
                 continue
-            if not state.messages:
+            # a post-cursor user_message alone must not restart delivery —
+            # the watcher can't advance the cursor on it, so the probe
+            # would fire again every sweep
+            if not any(
+                m.message_type == "devin_message" for m in state.messages
+            ):
                 continue
             logger.warning(
                 "undelivered cloud events on %s — restarting watcher",
