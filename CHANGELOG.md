@@ -22,8 +22,17 @@ and deployment update channels.
   `/mode` and its submenu now show the CLI's display names and
   descriptions (`Smart — auto-approves safe actions`), and `/status`
   reports the running session's live mode/model/thinking.
+- Per-user command menus in private chats: the bot pushes a chat-scoped
+  `setMyCommands` on first contact and whenever `/platform` changes, so
+  local-only commands (`/model`, `/think`, `/commands`) only autocomplete
+  for `platform=local` chats and admin commands (`/update`, `/users`,
+  `/revoke`, `/sethome`) only for admins. Groups keep the shared menu.
 
 ### Fixed
+
+- Local-session replies are now delivered at paragraph boundaries instead
+  of arbitrary timed chunks, so interim Telegram messages are coherent
+  paragraphs rather than mid-sentence fragments.
 
 - `/settings`, `/repos`, `/platform` (and the other toggles) now persist
   at the chat level: a setting made in one forum topic applies to every

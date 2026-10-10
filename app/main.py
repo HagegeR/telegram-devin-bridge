@@ -42,7 +42,7 @@ from app.formatting import (
 from app.local import LocalClient, is_local
 from app.notify import register_notify_route
 from app.polling import run_polling
-from app.set_webhook import configure_bot
+from app.set_webhook import chat_commands, configure_bot
 from app.store import (
     PLACEHOLDER_TITLE_PREFIX,
     Conversation,
@@ -151,6 +151,8 @@ class Bridge:
         self._crawl_client: httpx.AsyncClient | None = None
         self._run_command = _run_command
         self.access_prompted: dict[int, float] = {}
+        self._menu_pushed: set[int] = set()
+        self._menu_lock = asyncio.Lock()
         self.transient_messages: dict[str, list[int]] = {}
         self.pending_turns: dict[str, list[TurnFragment]] = {}
         self.debounce_tasks: dict[str, asyncio.Task[None]] = {}
@@ -454,6 +456,14 @@ class Bridge:
             logger.warning("Rejected Telegram message user=%s chat=%s", user_id, chat_id)
             return
         self.store.bump_user_stats(user_id, messages=1)
+        # mark pushed only on success — a failed push retries on the
+        # next message instead of leaving the stale shared menu
+        if (
+            chat.get("type") == "private"
+            and chat_id not in self._menu_pushed
+            and await self.push_chat_menu(chat_id)
+        ):
+            self._menu_pushed.add(chat_id)
         if not should_respond_in_group(
             message,
             self.bot_username,
@@ -789,6 +799,30 @@ class Bridge:
 
     def rate_limited(self, user_id: int) -> bool:
         return self._rate_limited(user_id)
+
+    async def push_chat_menu(self, chat_id: int) -> bool:
+        # private chats get a per-chat autocomplete menu tuned to their
+        # settings: local commands appear once /platform local is set,
+        # admin commands only for admins; groups keep the shared menu (a
+        # chat scope would hand one member's menu to everyone). Pushes are
+        # serialized and re-read settings inside the lock, so a /platform
+        # change racing a first-contact push always lands last.
+        if chat_id <= 0:
+            return False
+        async with self._menu_lock:
+            chat_settings = self.store.get_settings(str(chat_id))
+            try:
+                await self.telegram.set_my_commands(
+                    chat_commands(
+                        local=chat_settings.platform == "local",
+                        admin=chat_id in self.settings.admin_user_ids,
+                    ),
+                    {"type": "chat", "chat_id": chat_id},
+                )
+            except (RuntimeError, httpx.HTTPError) as exc:
+                logger.warning("Could not set chat command menu: %s", exc)
+                return False
+            return True
 
     def _rate_limited(self, user_id: int) -> bool:
         limit = self.settings.telegram_rate_limit_per_minute
@@ -2531,6 +2565,7 @@ class Bridge:
                     conv_key,
                     platform=None if value == "default" else value,
                 )
+                await self.push_chat_menu(chat_id)
             elif field == "acu":
                 self.store.update_chat_settings(
                     conv_key,
