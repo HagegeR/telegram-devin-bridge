@@ -33,9 +33,11 @@ and deployment update channels.
 - Local-session replies are now delivered at paragraph boundaries instead
   of arbitrary timed chunks, so interim Telegram messages are coherent
   paragraphs rather than mid-sentence fragments.
-- Delivery gaps are no longer silent: watchers log their exit reason
-  (watch cap, non-active close), and a local turn whose buffered output is
-  discarded by `suppress_turn` now logs a warning.
+- Delivery gaps are no longer silent or permanent: watchers log their exit
+  reason (watch cap, non-active close), a local turn whose buffered output
+  is discarded by `suppress_turn` warns, and a janitor sweep restarts
+  delivery when a live local session has emitted events the conversation
+  never received.
 
 - `/settings`, `/repos`, `/platform` (and the other toggles) now persist
   at the chat level: a setting made in one forum topic applies to every
