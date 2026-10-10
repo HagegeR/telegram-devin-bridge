@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -186,6 +188,11 @@ class Store:
                 );
                 CREATE TABLE IF NOT EXISTS processed_updates (
                     update_id INTEGER PRIMARY KEY,
+                    seen_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS pending_updates (
+                    update_id INTEGER PRIMARY KEY,
+                    payload TEXT NOT NULL,
                     seen_at REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS pending_choices (
@@ -958,7 +965,7 @@ class Store:
             for row in rows
         ]
 
-    def mark_update_seen(self, update_id: int) -> bool:
+    def mark_update_seen(self, update_id: int, payload: str | None = None) -> bool:
         now = time.time()
         with self.lock, self.connection:
             if now - self._last_processed_prune >= 3600:
@@ -972,6 +979,14 @@ class Store:
                     "INSERT INTO processed_updates(update_id, seen_at) VALUES (?, ?)",
                     (update_id, now),
                 )
+                if payload is not None:
+                    # same transaction as the dedupe marker: a restart
+                    # between mark and enqueue can't strand the update
+                    self.connection.execute(
+                        "INSERT INTO pending_updates(update_id, payload, seen_at)"
+                        " VALUES (?, ?, ?)",
+                        (update_id, payload, now),
+                    )
             except sqlite3.IntegrityError:
                 return False
         return True
@@ -982,6 +997,39 @@ class Store:
                 "DELETE FROM processed_updates WHERE update_id = ?",
                 (update_id,),
             )
+            self.connection.execute(
+                "DELETE FROM pending_updates WHERE update_id = ?",
+                (update_id,),
+            )
+
+    def delete_pending_update(self, update_id: int) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM pending_updates WHERE update_id = ?",
+                (update_id,),
+            )
+
+    def list_pending_updates(self) -> list[Mapping[str, object]]:
+        now = time.time()
+        with self.lock, self.connection:
+            # stale pending rows are dropped, not replayed — a day-old
+            # update dispatching out of context is worse than losing it
+            self.connection.execute(
+                "DELETE FROM pending_updates WHERE seen_at < ?",
+                (now - 86400,),
+            )
+            rows = self.connection.execute(
+                "SELECT payload FROM pending_updates ORDER BY update_id",
+            ).fetchall()
+        updates: list[Mapping[str, object]] = []
+        for row in rows:
+            try:
+                value = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict):
+                updates.append(value)
+        return updates
 
     def add_choice(
         self,

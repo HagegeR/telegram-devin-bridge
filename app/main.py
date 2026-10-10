@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import os
 import re
@@ -215,6 +216,11 @@ class Bridge:
                 asyncio.create_task(self._update_worker())
                 for _ in range(_UPDATE_CONCURRENCY)
             ]
+        # updates persisted but never dispatched before the last shutdown
+        # go back on the queue — the dedupe marker already covers Telegram
+        # redelivering them
+        for pending in self.store.list_pending_updates():
+            await self._update_queue.put(pending)
         await self._resume_watchers()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
@@ -349,7 +355,14 @@ class Bridge:
 
     async def handle_update(self, update: Mapping[str, object]) -> None:
         update_id = update.get("update_id")
-        if not isinstance(update_id, int) or not self.store.mark_update_seen(update_id):
+        if not isinstance(update_id, int):
+            return
+        # dedupe marker + durable payload in one transaction — a restart
+        # between here and dispatch replays the row at startup instead of
+        # losing an update Telegram already thinks was accepted
+        if not self.store.mark_update_seen(
+            update_id, json.dumps(update, default=str)
+        ):
             return
         if not self._worker_tasks and not self.shutting_down:
             self._worker_tasks = [
@@ -375,6 +388,9 @@ class Bridge:
             except Exception:
                 logger.exception("Telegram update worker dispatch failed")
             finally:
+                update_id = update.get("update_id")
+                if isinstance(update_id, int):
+                    self.store.delete_pending_update(update_id)
                 self._update_queue.task_done()
 
     async def _dispatch_update(self, update: Mapping[str, object]) -> None:

@@ -40,6 +40,10 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   - `conversations(conv_key TEXT PK, chat_id INT, thread_id INT NULL, session_id TEXT, session_url TEXT, title TEXT, last_event_id TEXT, created_at REAL)` – **active** session per conversation.
   - `session_history(id INTEGER PK, conv_key, session_id, session_url, title, created_at)` – for `/sessions` + `/resume`.
   - `processed_updates(update_id INTEGER PK, seen_at REAL)` – dedupe; prune > 24h.
+  - `pending_updates(update_id INTEGER PK, payload TEXT, seen_at REAL)` – the
+    accepted-but-undispatched queue; written in the same transaction as the
+    dedupe marker, deleted after dispatch, replayed at startup (stale >24h
+    rows are dropped rather than replayed).
   - `pending_choices(choice_id TEXT PK, conv_key, session_id, option_text, created_at)` – inline-keyboard callbacks (`callback_data` <= 64 bytes, so store a short random id).
   - `settings(key TEXT PK, value TEXT)` – `home_chat_id`, `home_thread_id` set by `/sethome`, `crawl_sites` set by the `/settings` pre-crawl submenu.
   - conv_key = `f"{chat_id}"` for DMs/plain groups, `f"{chat_id}:{message_thread_id}"` for forum topics (only when `chat.is_forum` and `message_thread_id` present).
@@ -90,7 +94,7 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   (10s cooldown) so progress stays last in the thread.
 
 ### Inbound flow (webhook)
-1. Verify secret header (403 otherwise). Parse `update_id`; if already in `processed_updates` return `{accepted:true}`; else insert.
+1. Verify secret header (403 otherwise). Parse `update_id`; if already in `processed_updates` return `{accepted:true}`; else insert the marker + the full payload into `pending_updates` atomically, so a restart before dispatch replays it at startup instead of losing an accepted update.
 2. Route: `callback_query` -> `handle_callback`; `message` or `channel_post` with `text`/`caption`/`photo`/`document` -> `handle_message`; anything else ignored.
 3. Access (`access.py`):
    - if `TELEGRAM_ALLOW_ALL_USERS` false: `from.id` must be in `TELEGRAM_ALLOWED_USERS` (if that list is non-empty) AND, if `TELEGRAM_ALLOWED_CHAT_IDS` non-empty, `chat.id` must be in it. Empty both lists + allow_all false => deny everything with a one-time reply "This bot is private. Your user id is N." (so onboarding is easy). Log `Rejected ... user=%s chat=%s`.

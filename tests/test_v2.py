@@ -8710,6 +8710,43 @@ async def test_redeliver_backlog_probes_cloud_conversations(
 
 
 @pytest.mark.asyncio
+async def test_pending_updates_replayed_after_restart(tmp_path: Path) -> None:
+    # an update persisted but not yet dispatched at shutdown is re-queued
+    # on startup — the in-memory queue no longer drops accepted updates
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await runtime.handle_update({"update_id": 7, "message": message("live")})
+    assert [u.get("update_id") for u in store.list_pending_updates()] == [7]
+    for _ in range(50):
+        if not store.list_pending_updates():
+            break
+        await asyncio.sleep(0.05)
+    # dispatched updates drop their pending row — no double delivery
+    assert not store.list_pending_updates()
+
+    # crash between persist and dispatch: the row survives for startup
+    update = {"update_id": 8, "message": message("survived restart", chat_id=333)}
+    store.mark_update_seen(8, json.dumps(update))
+    await runtime.shutdown()
+
+    runtime2 = Bridge(
+        settings(tmp_path),
+        Store(str(tmp_path / "bridge.sqlite3")),
+        devin,
+        telegram,  # type: ignore[arg-type]
+    )
+    await runtime2.startup()
+    for _ in range(50):
+        if any("survived restart" in p for p in devin.created):
+            break
+        await asyncio.sleep(0.05)
+    assert any("survived restart" in p for p in devin.created)
+    assert not runtime2.store.list_pending_updates()
+    await runtime2.shutdown()
+
+@pytest.mark.asyncio
 async def test_status_message_repins_after_deliveries(
     tmp_path: Path,
 ) -> None:
