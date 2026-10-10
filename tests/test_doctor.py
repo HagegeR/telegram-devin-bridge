@@ -1197,10 +1197,12 @@ def test_every_handled_command_is_in_the_bot_menu() -> None:
     # /commands slipped out of the menu).
     from app.set_webhook import COMMANDS, EPHEMERAL_COMMANDS, GROUP_COMMANDS
 
-    source = Path("app/commands.py").read_text(encoding="utf-8")
-    handled = set(re.findall(r'command == "([a-z_-]+)"', source))
+    source = (
+        Path(__file__).resolve().parent.parent / "app" / "commands.py"
+    ).read_text(encoding="utf-8")
+    handled = set(re.findall(r'command == "([a-z0-9_-]+)"', source))
     for group in re.findall(r"command in \{([^}]*)\}", source):
-        handled.update(re.findall(r'"([a-z_-]+)"', group))
+        handled.update(re.findall(r'"([a-z0-9_-]+)"', group))
     registered = {name for name, _ in COMMANDS}
     missing = handled - registered
     assert not missing, (
