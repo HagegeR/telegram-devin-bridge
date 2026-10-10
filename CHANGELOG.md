@@ -40,7 +40,10 @@ and deployment update channels.
   janitor sweep remains as the backstop for cursors that still fall behind.
 - The "⏳ Working…" status message re-posts after each delivered reply so
   live progress stays the last message in the thread instead of scrolling
-  out of view.
+  out of view (10s cooldown so bursts can't churn it).
+- Recovered replies and restart digests now thread under the user message
+  that prompted the turn, and a turn boundary keeps late output from a
+  previous turn from claiming the newer message.
 
 - `/settings`, `/repos`, `/platform` (and the other toggles) now persist
   at the chat level: a setting made in one forum topic applies to every

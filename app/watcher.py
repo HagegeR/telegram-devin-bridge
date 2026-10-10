@@ -134,6 +134,7 @@ class SessionWatcher:
         self.last_status_text: str | None = None
         self.status_sent_at: float | None = None
         self.status_pinned_at_count = 0
+        self.last_repin_at: float | None = None
         self.last_chat_action_at: float | None = None
         self.delivered_count = 0
         self.first_status: str | None = None
@@ -262,7 +263,9 @@ class SessionWatcher:
                 )
                 covered: set[int] = set()
                 if backlog_digest:
-                    covered = await self._deliver_digest(new_messages, state)
+                    covered = await self._deliver_digest(
+                        new_messages, state, reply_to_message_id=turn_trigger
+                    )
                 delivery_delivered = turn_delivered
                 for index, message in enumerate(new_messages):
                     stale = self._pre_trigger(message)
@@ -464,6 +467,10 @@ class SessionWatcher:
         repin = (
             self.status_message_id is not None
             and self.delivered_count > self.status_pinned_at_count
+            and (
+                self.last_repin_at is None
+                or elapsed - self.last_repin_at >= 10
+            )
         )
         if self.status_message_id is None or repin or (
             self.last_status_text != status_text
@@ -491,6 +498,7 @@ class SessionWatcher:
                         self.status_message_id  # type: ignore[arg-type]
                     )
                 self.status_message_id = None
+                self.last_repin_at = elapsed
             if self.status_message_id is None:
                 result = await self.telegram.send_message(
                     self.conversation.chat_id,
@@ -897,7 +905,10 @@ class SessionWatcher:
                 )
 
     async def _deliver_digest(
-        self, messages: list[DevinMessage], state: SessionState
+        self,
+        messages: list[DevinMessage],
+        state: SessionState,
+        reply_to_message_id: int | None = None,
     ) -> set[int]:
         parts: list[str] = []
         covered: set[int] = set()
@@ -942,6 +953,7 @@ class SessionWatcher:
             self.conversation.chat_id,
             body,
             thread_id=self.conversation.thread_id,
+            reply_to_message_id=reply_to_message_id,
             disable_notification=notify_disabled,
         )
         self._index_outbound_many(results)

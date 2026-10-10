@@ -74,7 +74,13 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   conversation's persisted `last_event_id`. Watchers also log their exit
   reason (watch cap, non-active close) and a `suppress_turn` discard
   warns, so delivery gaps
-  are diagnosable instead of silent.
+  are diagnosable instead of silent. Recovery watchers thread their
+  first reply (and the restart digest) onto `last_user_message_id` —
+  persisted whenever a watcher gets a user trigger — and use
+  `trigger_at=updated_at` as the turn boundary so late output from a
+  previous turn delivers un-attributed rather than claiming the newer
+  message. The "⏳ Working…" status re-posts after delivered replies
+  (10s cooldown) so progress stays last in the thread.
 
 ### Inbound flow (webhook)
 1. Verify secret header (403 otherwise). Parse `update_id`; if already in `processed_updates` return `{accepted:true}`; else insert.
