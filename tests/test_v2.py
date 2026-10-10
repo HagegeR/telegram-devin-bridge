@@ -7,7 +7,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Self, cast
 
@@ -4083,8 +4083,8 @@ async def test_github_pr_fetch_rejects_non_github_url() -> None:
 
 @pytest.mark.asyncio
 async def test_devin_session_consumption_uses_unix_time_params() -> None:
-    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    end = datetime(2025, 1, 2, tzinfo=timezone.utc)
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    end = datetime(2025, 1, 2, tzinfo=UTC)
     seen: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4670,7 +4670,7 @@ async def test_startup_resumes_watcher_without_cursor_delivers_downtime_reply(
     tmp_path: Path,
 ) -> None:
     downtime_reply_at = datetime.fromtimestamp(
-        time.time() - 30, timezone.utc
+        time.time() - 30, UTC
     ).isoformat()
 
     class BlockedDevin(_FakeDevin):
@@ -4922,7 +4922,7 @@ def test_watcher_set_trigger_resets_delivery(tmp_path: Path) -> None:
 
 def _iso(seconds_ago: float) -> str:
     return datetime.fromtimestamp(
-        time.time() - seconds_ago, tz=timezone.utc
+        time.time() - seconds_ago, tz=UTC
     ).isoformat()
 
 

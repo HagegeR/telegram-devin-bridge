@@ -13,7 +13,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -356,7 +356,7 @@ def register_admin_route(
                         "ok": False,
                         "error": "database is not file-backed; nothing to copy",
                     }
-                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
                 dest = database_path.with_name(
                     f"{database_path.stem}-backup-{stamp}.sqlite3"
                 )

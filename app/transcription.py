@@ -82,7 +82,7 @@ async def transcribe_local(
             asyncio.to_thread(_transcribe, model, content, filename, language)
         )
         text = await asyncio.wait_for(asyncio.shield(job), _TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("Local transcription timed out")
         return None
     except Exception:
@@ -100,7 +100,7 @@ async def transcribe_local(
 async def _acquire_slot() -> bool:
     try:
         await asyncio.wait_for(_slots.acquire(), _TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("Transcription rejected: all slots busy")
         return False
     return True
@@ -186,7 +186,7 @@ async def _run_whispercpp_command(
         return None
     try:
         stdout, stderr = await asyncio.wait_for(_communicate(process), _TIMEOUT)
-    except (asyncio.TimeoutError, ValueError) as exc:
+    except (TimeoutError, ValueError) as exc:
         logger.warning("command transcription aborted (%s): %s", exc, args[0])
         await _reap(process)
         return None

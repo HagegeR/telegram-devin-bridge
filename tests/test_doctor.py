@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -1188,3 +1189,25 @@ async def test_configure_bot_ephemeral_only_in_group_scope() -> None:
         "crawl",
         "lang",
     }
+
+
+def test_every_handled_command_is_in_the_bot_menu() -> None:
+    # Autocomplete comes from set_webhook.COMMANDS; a handle_command branch
+    # that forgets to register is invisible to users (this is how /think and
+    # /commands slipped out of the menu).
+    from app.set_webhook import COMMANDS, EPHEMERAL_COMMANDS, GROUP_COMMANDS
+
+    source = (
+        Path(__file__).resolve().parent.parent / "app" / "commands.py"
+    ).read_text(encoding="utf-8")
+    handled = set(re.findall(r'command == "([a-z0-9_-]+)"', source))
+    for group in re.findall(r"command in \{([^}]*)\}", source):
+        handled.update(re.findall(r'"([a-z0-9_-]+)"', group))
+    registered = {name for name, _ in COMMANDS}
+    missing = handled - registered
+    assert not missing, (
+        f"handle_command branches missing from the bot menu: {sorted(missing)}"
+    )
+    # scope sets must not name commands that were never registered
+    assert EPHEMERAL_COMMANDS <= GROUP_COMMANDS
+    assert GROUP_COMMANDS <= registered

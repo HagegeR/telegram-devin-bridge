@@ -1004,7 +1004,7 @@ class SessionWatcher:
             return None
         try:
             stamp = datetime.datetime.fromisoformat(
-                updated_at.replace("Z", "+00:00")
+                updated_at
             ).timestamp()
         except ValueError:
             return None
@@ -1069,7 +1069,7 @@ class SessionWatcher:
             pass
         try:
             return datetime.datetime.fromisoformat(
-                timestamp.replace("Z", "+00:00")
+                timestamp
             ).timestamp()
         except ValueError:
             return None

@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TypeVar, cast
 from urllib.parse import unquote, urljoin, urlparse
 
@@ -139,7 +139,7 @@ _V3_MESSAGE_TYPES = {"devin": "devin_message", "user": "user_message"}
 def _iso_epoch(value: object) -> str | None:
     if not isinstance(value, (int, float)):
         return None
-    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(value, tz=UTC).isoformat()
 
 
 def _modes_from_422(response: httpx.Response) -> list[str] | None:
@@ -831,8 +831,8 @@ class DevinClient:
         response = await self.client.get(
             f"/v3/organizations/{org_id}/consumption/daily/sessions/{session_id}",
             params={
-                "time_after": int(start.astimezone(timezone.utc).timestamp()),
-                "time_before": int(end.astimezone(timezone.utc).timestamp()),
+                "time_after": int(start.astimezone(UTC).timestamp()),
+                "time_before": int(end.astimezone(UTC).timestamp()),
             },
             headers=(
                 {"Authorization": f"Bearer {self.service_user_api_key}"}
