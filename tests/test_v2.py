@@ -8606,3 +8606,96 @@ async def test_redeliver_backlog_recovers_before_first_reply(
         await asyncio.sleep(0.05)
     assert any("first reply" in str(s.get("text")) for s in telegram.sent)
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_local_emit_hook_restarts_delivery(
+    tmp_path: Path,
+) -> None:
+    # a live local turn keeps emitting after its watcher exits — the emit
+    # hook restarts delivery on the next event, not the janitor's schedule
+    from types import SimpleNamespace
+
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:y",
+        session_url="",
+        title="t",
+    )
+    sess = SimpleNamespace(  # type: ignore[assignment]
+        dead=False,
+        running=False,
+        title="",
+        activity="",
+        config={},
+        events=[],
+        next_event=0,
+        event_base=0,
+        flusher=None,
+        tail=None,
+        turns=0,
+        suppress_turn=False,
+        replaying=False,
+        acp_id="y",
+        proc=SimpleNamespace(
+            terminate=lambda: None,
+            wait=lambda: asyncio.sleep(0),
+            kill=lambda: None,
+        ),
+    )
+    runtime.local.sessions["local:y"] = sess
+    runtime.local._emit(sess, "mid-turn reply")
+    for _ in range(50):
+        if any("mid-turn reply" in str(s.get("text")) for s in telegram.sent):
+            break
+        await asyncio.sleep(0.05)
+    assert any("mid-turn reply" in str(s.get("text")) for s in telegram.sent)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_status_message_repins_after_deliveries(
+    tmp_path: Path,
+) -> None:
+    # "⏳ Working…" re-posts after delivered replies so progress stays the
+    # last message instead of scrolling out of view
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="t",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        _FakeDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        drafts_enabled=False,
+        status_after_seconds=0,
+    )
+    state = SessionState("working", "t", None, [])
+    await watcher._refresh_progress(0.0, state)
+    first_id = watcher.status_message_id
+    assert first_id is not None
+
+    watcher.delivered_count = 2
+    await watcher._refresh_progress(0.0, state)
+    assert (222, first_id) in telegram.deleted
+    assert watcher.status_message_id is not None
+    assert watcher.status_message_id != first_id
+
+    # nothing new delivered since the repin — the status stays put
+    deleted = len(telegram.deleted)
+    await watcher._refresh_progress(0.0, state)
+    assert len(telegram.deleted) == deleted

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.clients import DevinMessage, SessionState
@@ -110,6 +111,10 @@ class LocalClient:
         self._model_options: list[str] | None = None
         self._cli_authed: bool | None = None
         self.sessions: dict[str, _AcpSession] = {}
+        # the bridge hooks this to restart delivery when a turn outlives
+        # its watcher — local turns emit events with no cloud counterpart
+        # polling for them, so an emit is the earliest recovery signal
+        self.on_emit: Callable[[str], None] | None = None
         self._terminated: set[str] = set()
         self._resuming: dict[str, asyncio.Task] = {}
         self._next_id = 0
@@ -432,6 +437,8 @@ class LocalClient:
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             )
         )
+        if self.on_emit is not None:
+            self.on_emit(f"{LOCAL_PREFIX}{sess.acp_id}")
 
     async def get_session(
         self,

@@ -133,6 +133,7 @@ class SessionWatcher:
         self.status_message_id: int | None = None
         self.last_status_text: str | None = None
         self.status_sent_at: float | None = None
+        self.status_pinned_at_count = 0
         self.last_chat_action_at: float | None = None
         self.delivered_count = 0
         self.first_status: str | None = None
@@ -458,16 +459,33 @@ class SessionWatcher:
                 self.last_status_text = status_text
                 self.status_sent_at = elapsed
             return
-        if (
-            self.status_message_id is None
-            or (
-                self.last_status_text != status_text
-                and (
-                    self.status_sent_at is None
-                    or elapsed - self.status_sent_at >= 10
-                )
+        # a delivered reply lands below the status message — re-post it so
+        # "⏳ Working…" stays the last message and progress stays visible
+        repin = (
+            self.status_message_id is not None
+            and self.delivered_count > self.status_pinned_at_count
+        )
+        if self.status_message_id is None or repin or (
+            self.last_status_text != status_text
+            and (
+                self.status_sent_at is None
+                or elapsed - self.status_sent_at >= 10
             )
         ):
+            if repin:
+                try:
+                    await self.telegram.delete_message(
+                        self.conversation.chat_id,
+                        self.status_message_id,  # type: ignore[arg-type]
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to delete status message chat=%s message=%s",
+                        self.conversation.chat_id,
+                        self.status_message_id,
+                        exc_info=True,
+                    )
+                self.status_message_id = None
             if self.status_message_id is None:
                 result = await self.telegram.send_message(
                     self.conversation.chat_id,
@@ -487,6 +505,7 @@ class SessionWatcher:
                 )
             self.last_status_text = status_text
             self.status_sent_at = elapsed
+            self.status_pinned_at_count = self.delivered_count
 
     async def _send_draft(self, text: str) -> None:
         try:
