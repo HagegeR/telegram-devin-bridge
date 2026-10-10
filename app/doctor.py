@@ -11,7 +11,7 @@ import shutil
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -156,7 +156,7 @@ async def check_dns(
         for _ in range(attempts):
             try:
                 await _resolve(host)
-            except (OSError, asyncio.TimeoutError):
+            except (TimeoutError, OSError):
                 misses += 1
         if misses:
             failed[host] = misses
@@ -389,7 +389,7 @@ async def check_webhook(
             error_date = payload.get("last_error_date")
             if error_date:
                 stamp = datetime.fromtimestamp(
-                    int(error_date), tz=timezone.utc
+                    int(error_date), tz=UTC
                 ).isoformat()
                 detail_parts.append(f"at {stamp}")
         return CheckResult(

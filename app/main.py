@@ -12,7 +12,7 @@ import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -1822,12 +1822,12 @@ class Bridge:
         if conversation is None:
             await self.send_text(message, "No Devin session is active in this conversation.")
             return
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         start = max(
             end - timedelta(days=30),
             datetime.fromtimestamp(
                 conversation.created_at,
-                timezone.utc,
+                UTC,
             ),
         )
         try:
