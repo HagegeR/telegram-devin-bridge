@@ -136,7 +136,16 @@ echo "$REMOTE" > "$MARKER"
 write_pending() { printf '%s\n%s\n%s\n' "$LOCAL" "$REMOTE" "${SELF_UPDATE_NOTIFY:-}" > .self-update-pending; }
 restart_after() {
   write_pending
-  nohup sh -c "sleep 2; $1" >/dev/null 2>&1 9>&- &
+  if command -v flock >/dev/null 2>&1; then
+    # serialize concurrent detached restarts on the update lock: two
+    # stop+start pairs racing (e.g. /update + cron) can leave a start
+    # outliving the other's stop and spawn duplicate supervise-daemons.
+    # The parent releases the lock on exit; -w bounds the wait so a stuck
+    # holder can't leave the service down.
+    nohup sh -c "sleep 2; exec 9>'$LOCK'; flock -w 300 9 || true; $1" >/dev/null 2>&1 9>&- &
+  else
+    nohup sh -c "sleep 2; $1" >/dev/null 2>&1 9>&- &
+  fi
   echo "restarting $SERVICE${2:+ ($2)}"
 }
 # the bridge exports BRIDGE_PID to the commands it runs; a Windows-native
