@@ -263,7 +263,9 @@ class SessionWatcher:
                 )
                 covered: set[int] = set()
                 if backlog_digest:
-                    covered = await self._deliver_digest(new_messages, state)
+                    covered = await self._deliver_digest(
+                        new_messages, state, reply_to_message_id=turn_trigger
+                    )
                 delivery_delivered = turn_delivered
                 for index, message in enumerate(new_messages):
                     stale = self._pre_trigger(message)
@@ -903,7 +905,10 @@ class SessionWatcher:
                 )
 
     async def _deliver_digest(
-        self, messages: list[DevinMessage], state: SessionState
+        self,
+        messages: list[DevinMessage],
+        state: SessionState,
+        reply_to_message_id: int | None = None,
     ) -> set[int]:
         parts: list[str] = []
         covered: set[int] = set()
@@ -948,6 +953,7 @@ class SessionWatcher:
             self.conversation.chat_id,
             body,
             thread_id=self.conversation.thread_id,
+            reply_to_message_id=reply_to_message_id,
             disable_notification=notify_disabled,
         )
         self._index_outbound_many(results)
