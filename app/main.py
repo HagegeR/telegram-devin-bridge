@@ -856,6 +856,36 @@ class Bridge:
                 trigger_message_id=conv.last_user_message_id,
                 trigger_at=conv.updated_at,
             )
+        # cloud conversations can't be checked in memory — probe recent
+        # ones whose watcher died; since_event_id filters server-side so
+        # any returned message means the persisted cursor fell behind
+        since = time.time() - self.settings.devin_active_watch_timeout_seconds
+        for conv in self.store.list_recent_conversations(since):
+            sid = conv.session_id or ""
+            if not sid or is_local(sid):
+                continue
+            watcher = self.watchers.get(sid)
+            if watcher is not None and not watcher.done():
+                continue
+            try:
+                state = await self.devin.get_session(
+                    sid, since_event_id=conv.last_event_id
+                )
+            except (RuntimeError, httpx.HTTPError) as exc:
+                logger.debug("cloud backlog probe failed for %s: %s", sid, exc)
+                continue
+            if not state.messages:
+                continue
+            logger.warning(
+                "undelivered cloud events on %s — restarting watcher",
+                conv.conv_key,
+            )
+            await self.start_watcher(
+                conv,
+                resume_from=conv.created_at,
+                trigger_message_id=conv.last_user_message_id,
+                trigger_at=conv.updated_at,
+            )
 
     def rate_limited(self, user_id: int) -> bool:
         return self._rate_limited(user_id)

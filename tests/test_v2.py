@@ -8665,6 +8665,51 @@ async def test_local_emit_hook_restarts_delivery(
 
 
 @pytest.mark.asyncio
+async def test_redeliver_backlog_probes_cloud_conversations(
+    tmp_path: Path,
+) -> None:
+    # cloud conversations have no in-memory event list — the sweep probes
+    # get_session(since_event_id) and restarts delivery when the remote
+    # history has moved past the persisted cursor
+    class _DevinWithBacklog(_FakeDevin):
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            if since_event_id != "e2":
+                return SessionState(
+                    "finished",
+                    "t",
+                    None,
+                    [DevinMessage("devin_message", "e2", "cloud backlog", None)],
+                )
+            return SessionState("finished", "t", None, [])
+
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path), Store(":memory:"), _DevinWithBacklog(), telegram  # type: ignore[arg-type]
+    )
+    runtime.store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s9",
+        session_url="https://devin.test/s9",
+        title="t",
+        last_event_id="e1",
+    )
+    await runtime._redeliver_backlog()
+    for _ in range(50):
+        if any("cloud backlog" in str(s.get("text")) for s in telegram.sent):
+            break
+        await asyncio.sleep(0.05)
+    assert any("cloud backlog" in str(s.get("text")) for s in telegram.sent)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_status_message_repins_after_deliveries(
     tmp_path: Path,
 ) -> None:
