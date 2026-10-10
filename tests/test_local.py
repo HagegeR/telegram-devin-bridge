@@ -87,7 +87,9 @@ FAKE_ACP = textwrap.dedent(
             text = m["params"]["prompt"][0]["text"]
             chunks = ["echo: ", text]
             if os.environ.get("FAKE_SLOW"):
-                chunks = ["echo: \\n", text]
+                chunks = ["echo: first para\\n\\n", "second", " para tail"]
+            if os.environ.get("FAKE_FENCE"):
+                chunks = ["intro para\\n\\n", "```python\\ncode ", "line\\n```\\ndone"]
             if os.environ.get("FAKE_JUNK_LINES"):
                 # a valid JSON-RPC line larger than the old 64KB limit
                 chunks.append("big:" + "Z" * 200_000)
@@ -106,7 +108,7 @@ FAKE_ACP = textwrap.dedent(
                                   "sessionUpdate": "tool_call",
                                   "title": "Running pytest"}}}), flush=True)
             for chunk in chunks:
-                if os.environ.get("FAKE_SLOW"):
+                if os.environ.get("FAKE_SLOW") or os.environ.get("FAKE_FENCE"):
                     time.sleep(0.4)
                 print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
                                   "params": {"sessionId": sid, "update": {
@@ -298,7 +300,8 @@ async def test_partial_replies_stream_mid_turn(
     shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # long turns used to stay silent until stopReason — the flusher emits
-    # buffered chunks periodically while the turn is still running
+    # buffered chunks periodically, but only at paragraph boundaries so a
+    # mid-paragraph cut never fragments the reply into separate messages
     monkeypatch.setattr("app.local._FLUSH_INTERVAL", 0.05)
     monkeypatch.setenv("FAKE_SLOW", "1")
     session_id, _ = await shell_client.create_session("hello")
@@ -309,8 +312,25 @@ async def test_partial_replies_stream_mid_turn(
             break
         await asyncio.sleep(0.05)
     assert state is not None and state.messages
-    assert state.messages[0].message.strip() == "echo:"
-    await _wait_for(shell_client, session_id, "hello")
+    assert state.messages[0].message.strip() == "echo: first para"
+    await _wait_for(shell_client, session_id, "second para tail")
+
+
+@pytest.mark.asyncio
+async def test_partial_replies_defer_unclosed_fences(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # an unclosed ``` fence mid-turn must not stream to Telegram — a
+    # fragment would render broken MarkdownV2; the fence arrives whole
+    monkeypatch.setattr("app.local._FLUSH_INTERVAL", 0.05)
+    monkeypatch.setenv("FAKE_FENCE", "1")
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "done")
+    state = await shell_client.get_session(session_id)
+    messages = [m.message.strip() for m in state.messages]
+    assert messages[0] == "intro para"
+    assert len(messages) == 2
+    assert "```python" in messages[1] and "done" in messages[1]
 
 
 @pytest.mark.asyncio

@@ -79,6 +79,9 @@ _STREAM_CHUNK = 65536
 # stream interim reply text during a turn — waiting for stopReason alone
 # leaves the topic silent for many minutes on long tasks
 _FLUSH_INTERVAL = 20
+# but never let a single paragraph-less blob accumulate unbounded — emit
+# it anyway rather than holding the turn's whole output back
+_STREAM_MAX_BUFFER = 3072
 
 
 class LocalClient:
@@ -359,19 +362,39 @@ class LocalClient:
                 if not sess.turns or sess.suppress_turn:
                     continue
                 raw = "".join(sess.buffer)
-                # only complete lines: markers/fences are line-scoped, and
-                # keeping the trailing partial line preserves boundary
-                # whitespace + never splits a marker mid-token
-                head, sep, tail = raw.rpartition("\n")
-                if not sep or not head.strip():
-                    continue
-                if head.count("```") % 2:
-                    # inside an unclosed fence — a fragment would reach
-                    # Telegram with broken MarkdownV2
-                    continue
+                # emit whole paragraphs, not arbitrary line batches — every
+                # emitted event becomes its own Telegram message, so a
+                # mid-paragraph cut fragments the reply into fragments
+                boundary = raw.rfind("\n\n")
+                if boundary != -1:
+                    emit = raw[:boundary]
+                    if emit.count("```") % 2:
+                        # last ``` opens an unclosed fence — emit only the
+                        # paragraphs before it, else defer (a fragment
+                        # would reach Telegram with broken MarkdownV2)
+                        cut = emit.rfind("\n\n", 0, emit.rfind("```"))
+                        if cut == -1:
+                            continue
+                        emit = emit[:cut]
+                    keep = raw[len(emit) + 2 :]
+                else:
+                    # no paragraph boundary: fall back to complete lines
+                    # once the buffer is over the cap so memory stays
+                    # bounded (a single never-ending line bounds on raw)
+                    if "\n" in raw:
+                        emit, _, keep = raw.rpartition("\n")
+                    else:
+                        emit, keep = raw, ""
+                    if (
+                        not emit.strip()
+                        or emit.count("```") % 2
+                        or len(emit) < _STREAM_MAX_BUFFER
+                    ):
+                        continue
                 sess.buffer.clear()
-                sess.buffer.append(tail)
-                self._emit(sess, head)
+                sess.buffer.append(keep)
+                if emit.strip():
+                    self._emit(sess, emit)
         except asyncio.CancelledError:
             pass
 
