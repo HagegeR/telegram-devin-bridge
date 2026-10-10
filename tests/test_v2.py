@@ -2083,8 +2083,8 @@ async def test_gone_session_starts_new_one_keeping_queue(
     devin = RejectingDevin()
     runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, _FakeTelegram())  # type: ignore[arg-type]
     await runtime.handle_user_turn(message("first", message_id=1), "first")
-    runtime.queued_turns["222"] = [(message("third", message_id=3), "third", None)]
-    runtime.pending_turns["222"] = [(message("fourth", message_id=4), "fourth", None)]
+    runtime.queued_turns["222"] = [(message("third", message_id=3), "third", None, [])]
+    runtime.pending_turns["222"] = [(message("fourth", message_id=4), "fourth", None, [])]
     if status_code == 500:
         with pytest.raises(httpx.HTTPStatusError):
             await runtime.handle_user_turn(message("second", message_id=2), "second")
@@ -4285,7 +4285,7 @@ async def test_blocked_status_does_not_drain_until_watcher_finishes(
     conversation = store.get_conversation("222")
     assert conversation is not None
     runtime.queued_turns["222"] = [
-        (message("queued", message_id=8), "queued", None),
+        (message("queued", message_id=8), "queued", None, []),
     ]
     drained = asyncio.Event()
     original_handle = runtime.handle_user_turn
@@ -5325,7 +5325,7 @@ async def test_queue_drains_when_watcher_status_becomes_blocked(
     )  # type: ignore[arg-type]
     conversation = store.get_conversation("222")
     assert conversation is not None
-    runtime.queued_turns["222"] = [(message("queued", message_id=8), "queued", None)]
+    runtime.queued_turns["222"] = [(message("queued", message_id=8), "queued", None, [])]
     await runtime.start_watcher(conversation)
     watcher_task = runtime.watchers["s1"]
     await watcher_task
@@ -5394,8 +5394,8 @@ async def test_shutdown_delivers_pending_turn_for_busy_conversation(
     watcher.last_status = "working"
     runtime.active_watchers["s1"] = watcher
     runtime.watchers["s1"] = asyncio.create_task(asyncio.sleep(10))
-    runtime.pending_turns["222"] = [(message("pending"), "pending", None)]
-    runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
+    runtime.pending_turns["222"] = [(message("pending"), "pending", None, [])]
+    runtime.queued_turns["222"] = [(message("queued"), "queued", None, [])]
     await runtime.shutdown()
     assert devin.sent[-1:] == [("s1", "queued\n\npending")]
     assert not runtime.queued_turns
@@ -5481,9 +5481,9 @@ async def test_queue_drain_coalesces_turns_into_one_send(tmp_path: Path) -> None
         _FakeTelegram(),
     )  # type: ignore[arg-type]
     runtime.queued_turns["222"] = [
-        (message("one", message_id=1), "one", None),
-        (message("two", message_id=2), "two", None),
-        (message("three", message_id=3), "three", None),
+        (message("one", message_id=1), "one", None, []),
+        (message("two", message_id=2), "two", None, []),
+        (message("three", message_id=3), "three", None, []),
     ]
     await runtime._drain_queue("222")
     assert devin.sent == [("s1", "one\n\ntwo\n\nthree")]
@@ -5511,11 +5511,11 @@ async def test_queue_drain_splits_attachment_turns(tmp_path: Path) -> None:
         _FakeTelegram(),
     )  # type: ignore[arg-type]
     runtime.queued_turns["222"] = [
-        (message("one", message_id=1), "one", ("a.txt", b"a", "text/plain")),
+        (message("one", message_id=1), "one", ("a.txt", b"a", "text/plain"), []),
     ]
     await runtime._flush_fragments(
         "222",
-        [(message("two", message_id=2), "two", ("b.txt", b"b", "text/plain"))],
+        [(message("two", message_id=2), "two", ("b.txt", b"b", "text/plain"), [])],
     )
     assert len(devin.sent) == 2
     assert devin.sent[0][0] == "s1" and "a.txt" in devin.sent[0][1]
@@ -5623,8 +5623,8 @@ async def test_clear_queued_turns_stops_batch_loop(tmp_path: Path) -> None:
     devin = _FakeDevin()
     runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
     runtime.queued_turns["222"] = [
-        (message("one", message_id=1), "one", ("a.txt", b"a", "text/plain")),
-        (message("two", message_id=2), "two", ("b.txt", b"b", "text/plain")),
+        (message("one", message_id=1), "one", ("a.txt", b"a", "text/plain"), []),
+        (message("two", message_id=2), "two", ("b.txt", b"b", "text/plain"), []),
     ]
 
     original = runtime.handle_user_turn
@@ -5641,7 +5641,7 @@ async def test_clear_queued_turns_stops_batch_loop(tmp_path: Path) -> None:
     runtime.handle_user_turn = send_then_clear  # type: ignore[method-assign]
     await runtime._flush_fragments(
         "222",
-        [(message("three", message_id=3), "three", None)],
+        [(message("three", message_id=3), "three", None, [])],
     )
     assert len(devin.sent) == 1
     assert "a.txt" in devin.sent[0][1]
@@ -6747,8 +6747,8 @@ async def test_concurrent_queue_drains_serialize(tmp_path: Path) -> None:
     )
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), _FakeTelegram())  # type: ignore[arg-type]
     runtime.queued_turns["222"] = [
-        (message("one", message_id=1), "one", None),
-        (message("two", message_id=2), "two", None),
+        (message("one", message_id=1), "one", None, []),
+        (message("two", message_id=2), "two", None, []),
     ]
     started = asyncio.Event()
     release = asyncio.Event()
@@ -6779,7 +6779,7 @@ async def test_queue_drain_failure_keeps_turn_for_retry(tmp_path: Path) -> None:
         _FakeDevin(),
         _FakeTelegram(),
     )  # type: ignore[arg-type]
-    turn = (message("queued", message_id=8), "queued", None)
+    turn = (message("queued", message_id=8), "queued", None, [])
     runtime.queued_turns["222"] = [turn]
 
     async def fail(
@@ -6953,7 +6953,7 @@ async def test_stop_cancel_keeps_queued_turns(tmp_path: Path) -> None:
     )
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
-    runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
+    runtime.queued_turns["222"] = [(message("queued"), "queued", None, [])]
     await handle_command(runtime, message("/stop"), "/stop")
     choices = store.list_choices("222", 1)
     cancel_id = next(choice_id for choice_id, option in choices if option == "__cmd:cancel")
@@ -6975,7 +6975,7 @@ async def test_confirmed_stop_clears_queued_turns(tmp_path: Path) -> None:
     )
     devin = _FakeDevin()
     runtime = Bridge(settings(tmp_path), store, devin, _FakeTelegram())  # type: ignore[arg-type]
-    runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
+    runtime.queued_turns["222"] = [(message("queued"), "queued", None, [])]
     await handle_command(runtime, message("/stop"), "/stop")
     terminate_id = next(
         choice_id
@@ -7023,8 +7023,8 @@ async def test_stop_terminate_failure_preserves_local_state(tmp_path: Path) -> N
     task = asyncio.create_task(asyncio.sleep(10))
     runtime.watchers["s1"] = task
     runtime.active_watchers["s1"] = watcher
-    runtime.queued_turns["222"] = [(message("queued"), "queued", None)]
-    runtime.pending_turns["222"] = [(message("pending"), "pending", None)]
+    runtime.queued_turns["222"] = [(message("queued"), "queued", None, [])]
+    runtime.pending_turns["222"] = [(message("pending"), "pending", None, [])]
     with pytest.raises(RuntimeError, match="terminate failed"):
         await runtime.stop_conversation(conversation)
     assert runtime.queued_turns["222"]
@@ -8745,6 +8745,52 @@ async def test_pending_updates_replayed_after_restart(tmp_path: Path) -> None:
     assert any("survived restart" in p for p in devin.created)
     assert not runtime2.store.list_pending_updates()
     await runtime2.shutdown()
+
+@pytest.mark.asyncio
+async def test_pending_update_survives_debounce_staging(tmp_path: Path) -> None:
+    # a dispatched update still staged in pending_turns keeps its durable
+    # row — deleting it at dispatch loses it if the process restarts
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=60),
+        store,
+        devin,
+        telegram,  # type: ignore[arg-type]
+    )
+    await runtime.handle_update(
+        {"update_id": 9, "message": message("staged", chat_id=444)}
+    )
+    for _ in range(50):
+        if runtime.pending_turns:
+            break
+        await asyncio.sleep(0.05)
+    assert runtime.pending_turns
+    # dispatched but not yet delivered: the row survives for replay
+    assert [u.get("update_id") for u in store.list_pending_updates()] == [9]
+
+    # abandon the process without a graceful shutdown (no flush)
+    for task in runtime.debounce_tasks.values():
+        task.cancel()
+    for task in runtime._worker_tasks:
+        task.cancel()
+
+    runtime2 = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=0),
+        Store(str(tmp_path / "bridge.sqlite3")),
+        devin,
+        telegram,  # type: ignore[arg-type]
+    )
+    await runtime2.startup()
+    for _ in range(50):
+        if any("staged" in p for p in devin.created):
+            break
+        await asyncio.sleep(0.05)
+    assert any("staged" in p for p in devin.created)
+    assert not runtime2.store.list_pending_updates()
+    await runtime2.shutdown()
+
 
 @pytest.mark.asyncio
 async def test_status_message_repins_after_deliveries(

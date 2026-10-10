@@ -112,8 +112,10 @@ def _valid_channel(token: str) -> bool:
 
 
 Attachment = tuple[str, bytes, str]
-TurnFragment = tuple[Mapping[str, object], str, Attachment | None]
-QueuedTurn = tuple[Mapping[str, object], str, Attachment | None]
+# fragments and queued turns carry their Telegram update_ids so the durable
+# pending_updates row survives until the turn actually reaches Devin
+TurnFragment = tuple[Mapping[str, object], str, Attachment | None, list[int]]
+QueuedTurn = tuple[Mapping[str, object], str, Attachment | None, list[int]]
 
 
 class Bridge:
@@ -159,6 +161,10 @@ class Bridge:
         self.pending_turns: dict[str, list[TurnFragment]] = {}
         self.debounce_tasks: dict[str, asyncio.Task[None]] = {}
         self.queued_turns: dict[str, list[QueuedTurn]] = {}
+        # update_id -> conv_key for updates still staged in pending_turns or
+        # queued_turns: their durable pending_updates row must survive until
+        # the turn actually reaches Devin
+        self._update_conv: dict[int, str] = {}
         self.draining: set[str] = set()
         self.rate_windows: dict[int, deque[float]] = {}
         self.rate_warnings: dict[int, float] = {}
@@ -312,7 +318,7 @@ class Bridge:
         for conv_key in conv_keys:
             queued = self.queued_turns.pop(conv_key, [])
             pending = self.pending_turns.pop(conv_key, [])
-            for message, text, attachment in self._coalesce_turns(
+            for message, text, attachment, uids in self._coalesce_turns(
                 [*queued, *pending]
             ):
                 try:
@@ -321,6 +327,7 @@ class Bridge:
                         text,
                         attachment=attachment,
                     )
+                    self._consume_pending_turns(uids)
                 except Exception as exc:
                     logger.exception(
                         "Failed to deliver queued Telegram turn for %s",
@@ -389,7 +396,9 @@ class Bridge:
                 logger.exception("Telegram update worker dispatch failed")
             finally:
                 update_id = update.get("update_id")
-                if isinstance(update_id, int):
+                # rows still staged for delivery keep their durable entry so
+                # a restart replays them; cleared by _consume_pending_turns
+                if isinstance(update_id, int) and update_id not in self._update_conv:
                     self.store.delete_pending_update(update_id)
                 self._update_queue.task_done()
 
@@ -411,12 +420,21 @@ class Bridge:
                 update.get("channel_post")
             )
             if message:
-                await self.handle_message(message)
+                update_id = update.get("update_id")
+                await self.handle_message(
+                    message,
+                    update_id=update_id if isinstance(update_id, int) else None,
+                )
         except Exception as exc:
             logger.exception("Failed to process Telegram update")
             await self._report_processing_failure(update, exc)
 
-    async def handle_message(self, message: Mapping[str, object]) -> None:
+    async def handle_message(
+        self,
+        message: Mapping[str, object],
+        *,
+        update_id: int | None = None,
+    ) -> None:
         sender = _mapping(message.get("from"))
         chat = _mapping(message.get("chat"))
         user_id = _int(sender.get("id"))
@@ -558,19 +576,24 @@ class Bridge:
                 thread_id=_thread_id(message),
             )
             return
-        await self._queue_turn(message, text, attachment)
+        await self._queue_turn(message, text, attachment, update_id=update_id)
 
     async def _queue_turn(
         self,
         message: Mapping[str, object],
         text: str,
         attachment: Attachment | None,
+        *,
+        update_id: int | None = None,
     ) -> None:
         conv_key = self._conversation_key(message)
+        uids = [update_id] if update_id is not None else []
+        if update_id is not None:
+            self._update_conv[update_id] = conv_key
         pending = self.pending_turns.setdefault(conv_key, [])
         if attachment is not None and any(
             fragment_attachment is not None
-            for _, _, fragment_attachment in pending
+            for _, _, fragment_attachment, _ in pending
         ):
             await self._flush_pending(conv_key)
             pending = self.pending_turns.setdefault(conv_key, [])
@@ -578,11 +601,11 @@ class Bridge:
             # Install the new list with this fragment first so a concurrent
             # fragment cannot overtake it while the overflow batch flushes.
             overflow = pending
-            self.pending_turns[conv_key] = [(message, text, attachment)]
+            self.pending_turns[conv_key] = [(message, text, attachment, uids)]
             pending = self.pending_turns[conv_key]
             await self._flush_fragments(conv_key, overflow)
         else:
-            pending.append((message, text, attachment))
+            pending.append((message, text, attachment, uids))
         if self.settings.telegram_debounce_seconds <= 0:
             await self._flush_pending(conv_key)
             return
@@ -613,19 +636,24 @@ class Bridge:
     ) -> None:
         if not fragments:
             return
-        for fragment_message, _, _ in fragments:
+        for fragment_message, *_ in fragments:
             chat_id = _int(_mapping(fragment_message.get("chat")).get("id"))
             message_id = _int(fragment_message.get("message_id"))
             if message_id:
                 self.store.index_message(chat_id, message_id, conv_key)
         message = fragments[-1][0]
         try:
-            text = "\n\n".join(value for _, value, _ in fragments if value)
+            text = "\n\n".join(value for _, value, *_ in fragments if value)
             attachment = next(
-                (value for _, _, value in fragments if value is not None),
+                (value for _, _, value, _ in fragments if value is not None),
                 None,
             )
-            turn = (message, text, attachment)
+            turn = (
+                message,
+                text,
+                attachment,
+                [uid for *_, uid_list in fragments for uid in uid_list],
+            )
             if (
                 self.settings.telegram_queue_while_busy
                 and not self.shutting_down
@@ -651,13 +679,14 @@ class Bridge:
                     self.queued_turns[conv_key] = batches
                 else:
                     self.queued_turns.pop(conv_key, None)
-                batch_message, batch_text, batch_attachment = batch
+                batch_message, batch_text, batch_attachment, batch_uids = batch
                 try:
                     await self.handle_user_turn(
                         batch_message,
                         batch_text,
                         attachment=batch_attachment,
                     )
+                    self._consume_pending_turns(batch_uids)
                 except Exception as exc:
                     self.queued_turns[conv_key] = [
                         batch,
@@ -698,6 +727,13 @@ class Bridge:
             )
         )
 
+    def _consume_pending_turns(self, uids: list[int]) -> None:
+        # the turn reached Devin — drop its durable rows so a restart does
+        # not replay updates that were already delivered
+        for uid in uids:
+            self.store.delete_pending_update(uid)
+            self._update_conv.pop(uid, None)
+
     def _coalesce_turns(self, turns: list[QueuedTurn]) -> list[QueuedTurn]:
         groups: list[list[QueuedTurn]] = []
         for turn in turns:
@@ -711,7 +747,7 @@ class Bridge:
             group.append(turn)
         batches: list[QueuedTurn] = []
         for group in groups:
-            for merged_message, _, _ in group[:-1]:
+            for merged_message, *_ in group[:-1]:
                 merged_chat_id = _int(
                     _mapping(merged_message.get("chat")).get("id")
                 )
@@ -724,8 +760,12 @@ class Bridge:
                     )
             batches.append((
                 group[-1][0],
-                "\n\n".join(text for _, text, _ in group if text),
-                next((value for _, _, value in group if value is not None), None),
+                "\n\n".join(text for _, text, *_ in group if text),
+                next(
+                    (value for _, _, value, _ in group if value is not None),
+                    None,
+                ),
+                [uid for *_, uid_list in group for uid in uid_list],
             ))
         return batches
 
@@ -746,7 +786,7 @@ class Bridge:
                     self.queued_turns[conv_key] = batches
                 else:
                     self.queued_turns.pop(conv_key, None)
-                message, text, attachment = batch
+                message, text, attachment, uids = batch
                 if self._conversation_busy(conv_key):
                     self.queued_turns[conv_key] = [
                         batch,
@@ -755,6 +795,7 @@ class Bridge:
                     return
                 try:
                     await self.handle_user_turn(message, text, attachment=attachment)
+                    self._consume_pending_turns(uids)
                 except Exception as exc:
                     self.queued_turns[conv_key] = [
                         batch,
@@ -775,8 +816,16 @@ class Bridge:
             self.draining.discard(conv_key)
 
     def clear_queued_turns(self, conv_key: str) -> None:
-        self.queued_turns.pop(conv_key, None)
-        self.pending_turns.pop(conv_key, None)
+        dropped = [
+            uid
+            for *_, uid_list in (
+                *self.queued_turns.pop(conv_key, []),
+                *self.pending_turns.pop(conv_key, []),
+            )
+            for uid in uid_list
+        ]
+        if dropped:
+            self._consume_pending_turns(dropped)
         task = self.debounce_tasks.pop(conv_key, None)
         if task is not None and not task.done():
             task.cancel()
@@ -1572,13 +1621,14 @@ class Bridge:
         if text.startswith("/"):
             return
         pending = self.pending_turns.get(conv_key, [])
-        for index, (pending_message, _, attachment) in enumerate(pending):
+        for index, (pending_message, _, attachment, uids) in enumerate(pending):
             if _int(pending_message.get("message_id")) != message_id:
                 continue
             pending[index] = (
                 message,
                 self._contextualize_message(message, text),
                 attachment,
+                uids,
             )
             await self._react(
                 _int(_mapping(message.get("chat")).get("id")),

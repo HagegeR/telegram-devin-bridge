@@ -41,9 +41,11 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   - `session_history(id INTEGER PK, conv_key, session_id, session_url, title, created_at)` – for `/sessions` + `/resume`.
   - `processed_updates(update_id INTEGER PK, seen_at REAL)` – dedupe; prune > 24h.
   - `pending_updates(update_id INTEGER PK, payload TEXT, seen_at REAL)` – the
-    accepted-but-undispatched queue; written in the same transaction as the
-    dedupe marker, deleted after dispatch, replayed at startup (stale >24h
-    rows are dropped rather than replayed).
+    accepted-but-undelivered queue; written in the same transaction as the
+    dedupe marker, kept while the update sits in `pending_turns`/`queued_turns`
+    (debounce or busy-queue staging), deleted only when its turn reaches
+    `handle_user_turn` (or is deliberately cleared), replayed at startup
+    (stale >24h rows are dropped rather than replayed).
   - `pending_choices(choice_id TEXT PK, conv_key, session_id, option_text, created_at)` – inline-keyboard callbacks (`callback_data` <= 64 bytes, so store a short random id).
   - `settings(key TEXT PK, value TEXT)` – `home_chat_id`, `home_thread_id` set by `/sethome`, `crawl_sites` set by the `/settings` pre-crawl submenu.
   - conv_key = `f"{chat_id}"` for DMs/plain groups, `f"{chat_id}:{message_thread_id}"` for forum topics (only when `chat.is_forum` and `message_thread_id` present).
