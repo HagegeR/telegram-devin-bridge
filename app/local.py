@@ -438,7 +438,12 @@ class LocalClient:
             )
         )
         if self.on_emit is not None:
-            self.on_emit(f"{LOCAL_PREFIX}{sess.acp_id}")
+            try:
+                self.on_emit(f"{LOCAL_PREFIX}{sess.acp_id}")
+            except Exception:
+                # a store/scheduling error must not escape into the ACP
+                # reader — that would end the session's output for good
+                logger.exception("on_emit hook failed for %s", sess.acp_id)
 
     async def get_session(
         self,

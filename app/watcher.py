@@ -485,6 +485,11 @@ class SessionWatcher:
                         self.status_message_id,
                         exc_info=True,
                     )
+                    # keep the id so turn cleanup retries the delete —
+                    # otherwise a stale "Working…" survives in the thread
+                    self.transient_message_ids.append(
+                        self.status_message_id  # type: ignore[arg-type]
+                    )
                 self.status_message_id = None
             if self.status_message_id is None:
                 result = await self.telegram.send_message(
