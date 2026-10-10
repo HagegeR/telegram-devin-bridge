@@ -88,7 +88,13 @@ Tailscale SSH as fallback. Command and path keys can never be set via the API.
 resolves the configured **update channel** to a revision, checks it out,
 reinstalls requirements when `requirements.txt` changed, and restarts the
 OpenRC/systemd service detached (or exits for a launchd/Windows supervisor
-to respawn). It uses `flock` when present and a `mkdir` lock otherwise. `--check` reports without touching anything.
+to respawn). It uses `flock` when present and a `mkdir` lock otherwise.
+The detached restart re-acquires the same lock before running, so
+concurrent updates (e.g. `/update` racing the cron pull) can't overlap
+stop+start pairs and spawn duplicate `supervise-daemon` processes; the
+wait is unbounded — a dead holder's fd releases the lock anyway, while
+a live holder should be waited on rather than raced.
+`--check` reports without touching anything.
 The host checkout is deploy-only: local changes are discarded on purpose.
 VM installs keep the source git checkout under `BRIDGE_HOME` so `/update`
 works; unprivileged services exit and let supervise-daemon or systemd respawn
