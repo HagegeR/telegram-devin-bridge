@@ -55,7 +55,17 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
 - `set_webhook.py` – also calls `set_my_commands` per scope: the full list for
   default + `all_private_chats`, the `GROUP_COMMANDS` subset for
   `all_group_chats`; `is_ephemeral` is set on the group scope only (clients
-  hide ephemeral commands from the private-chat command menu).
+  hide ephemeral commands from the private-chat command menu). Private chats
+  additionally get a `chat`-scoped menu (`chat_commands`) pushed on the first
+  message and on every `/platform` change: local-only commands (`/model`,
+  `/think`, `/commands`) appear only for `platform=local` chats and the
+  admin commands (`/update`, `/users`, `/revoke`, `/sethome`) only for
+  `TELEGRAM_ADMIN_USER_IDS` — a `chat` scope outranks `all_private_chats` in
+  clients. Pushes are serialized under a lock and re-read settings inside
+  it, so a `/platform` change racing the first-contact push always lands
+  last; a failed push retries on the next message. Group chats keep the
+  shared group menu; a chat-scoped menu there would leak one member's
+  settings to everyone.
 
 ### Inbound flow (webhook)
 1. Verify secret header (403 otherwise). Parse `update_id`; if already in `processed_updates` return `{accepted:true}`; else insert.
@@ -103,9 +113,11 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     the bridge host speaking ACP JSON-RPC over stdio (`initialize` +
     `session/new`, prompts via `session/prompt`, replies collected from
     `agent_message_chunk` updates; buffered chunks are flushed into the
-    topic every ~20s mid-turn (complete lines only — the trailing partial
-    line stays buffered, and a flush inside an unclosed code fence is
-    deferred — so markers/fences are never split), with the remainder
+    topic every ~20s mid-turn (paragraph-complete chunks only — emission
+    waits for a blank line or the buffered text to exceed 3072 chars, the
+    trailing partial paragraph stays buffered, and a flush inside an
+    unclosed code fence is deferred — so each interim event is a coherent
+    message and markers/fences are never split), with the remainder
     emitted at stopReason; `agent_thought_chunk` and `tool_call` updates
     set the session's activity, shown live as a `→ …` line in the edited
     ⏳ Working status message (cloud sessions get the same line from any

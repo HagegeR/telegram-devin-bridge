@@ -47,6 +47,25 @@ COMMANDS = [
     ("update", "Pull latest code and restart"),
 ]
 
+# commands that only make sense for a local-platform chat — they stay out
+# of that chat's autocomplete until /platform local flips it on
+LOCAL_COMMANDS = {"model", "think", "commands"}
+
+# admin-only commands — they only autocomplete in an admin's private chat
+ADMIN_COMMANDS = {"update", "users", "revoke", "sethome"}
+
+
+def chat_commands(*, local: bool, admin: bool) -> list[dict[str, str]]:
+    hidden = (set() if admin else ADMIN_COMMANDS) | (
+        set() if local else LOCAL_COMMANDS
+    )
+    return [
+        {"command": command, "description": description}
+        for command, description in COMMANDS
+        if command not in hidden
+    ]
+
+
 GROUP_COMMANDS = {
     "new",
     "status",

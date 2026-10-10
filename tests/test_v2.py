@@ -1751,6 +1751,15 @@ class _FakeTelegram:
         self.polls: list[dict[str, object]] = []
         self.reaction_targets: list[int] = []
         self.edit_kwargs: list[dict[str, object]] = []
+        self.command_sets: list[tuple[list[dict], dict | None]] = []
+        self.command_error: Exception | None = None
+
+    async def set_my_commands(
+        self, commands: list[dict], scope: dict | None = None
+    ) -> None:
+        if self.command_error is not None:
+            raise self.command_error
+        self.command_sets.append((list(commands), scope))
 
     async def send_message(
         self,
@@ -8410,4 +8419,97 @@ async def test_passthrough_respects_rate_limit(tmp_path: Path) -> None:
     await handle_command(runtime, message("/context"), "/context")
     assert sent == [("local:s1", "/compact")]
     assert "Slow down" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_private_chat_menu_hides_local_and_admin_commands(
+    tmp_path: Path,
+) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await runtime.handle_message(message("hi"))
+    chat_scoped = [
+        (cmds, scope)
+        for cmds, scope in telegram.command_sets
+        if scope and scope.get("type") == "chat"
+    ]
+    assert len(chat_scoped) == 1
+    names = {c["command"] for c in chat_scoped[0][0]}
+    assert {"model", "think", "commands"}.isdisjoint(names)
+    assert {"update", "users", "revoke", "sethome"}.isdisjoint(names)
+    assert "status" in names
+    # pushed once per chat per process
+    await runtime.handle_message(message("hi again"))
+    assert len(chat_scoped) == 1
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_platform_local_adds_local_commands_to_chat_menu(
+    tmp_path: Path,
+) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.devin.platforms = lambda: _async(["azure"])  # type: ignore[method-assign]
+    await handle_command(runtime, message("/platform local"), "/platform local")
+    chat_scoped = [
+        cmds
+        for cmds, scope in telegram.command_sets
+        if scope and scope.get("type") == "chat"
+    ]
+    names = {c["command"] for c in chat_scoped[-1]}
+    assert {"model", "think", "commands"} <= names
+    await handle_command(
+        runtime, message("/platform default"), "/platform default"
+    )
+    chat_scoped = [
+        cmds
+        for cmds, scope in telegram.command_sets
+        if scope and scope.get("type") == "chat"
+    ]
+    names = {c["command"] for c in chat_scoped[-1]}
+    assert {"model", "think", "commands"}.isdisjoint(names)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_menu_push_retries_on_next_message(
+    tmp_path: Path,
+) -> None:
+    telegram = _FakeTelegram()
+    telegram.command_error = RuntimeError("telegram 429")
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await runtime.handle_message(message("hi"))
+    assert not telegram.command_sets
+    telegram.command_error = None
+    await runtime.handle_message(message("hi again"))
+    chat_scoped = [
+        scope
+        for _, scope in telegram.command_sets
+        if scope and scope.get("type") == "chat"
+    ]
+    assert len(chat_scoped) == 1
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_admin_chat_menu_includes_admin_commands(
+    tmp_path: Path,
+) -> None:
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_admin_user_ids="222"),
+        Store(":memory:"),
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    await runtime.handle_message(message("hi"))
+    chat_scoped = [
+        (cmds, scope)
+        for cmds, scope in telegram.command_sets
+        if scope and scope.get("type") == "chat"
+    ]
+    names = {c["command"] for c in chat_scoped[0][0]}
+    assert {"update", "users", "revoke", "sethome"} <= names
     await runtime.shutdown()

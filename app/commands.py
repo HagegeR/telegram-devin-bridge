@@ -168,6 +168,8 @@ class CommandRuntime(Protocol):
 
     def rate_limited(self, user_id: int) -> bool: ...
 
+    async def push_chat_menu(self, chat_id: int) -> bool: ...
+
     async def list_playbooks(self) -> list[Playbook]: ...
 
     async def settings_menu(
@@ -405,6 +407,7 @@ async def handle_command(
             )
         elif value.casefold() in {"default", "cloud", "off", "reset"}:
             runtime.store.update_chat_settings(conv_key, platform=None)
+            await runtime.push_chat_menu(chat_id)
             await runtime.send_text(
                 message,
                 "Platform reset — new sessions use the org default." + v3_hint,
@@ -423,6 +426,7 @@ async def handle_command(
                 )
             else:
                 runtime.store.update_chat_settings(conv_key, platform=value)
+                await runtime.push_chat_menu(chat_id)
                 await runtime.send_text(
                     message,
                     f"Platform: {value} — applies to the next new session."
