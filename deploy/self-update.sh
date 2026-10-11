@@ -158,7 +158,14 @@ case "$(uname -s)" in
   *) KILL="kill -TERM $BRIDGE_PID" ;;
 esac
 if [ "$(id -u)" -eq 0 ] && command -v rc-service >/dev/null 2>&1; then
-  restart_after "rc-service $SERVICE restart"
+  # rc-service only stops the pidfile-tracked supervise-daemon — orphans
+  # from earlier races keep their child holding the port, so the new
+  # process dies on EADDRINUSE forever (the "stuck update" loop). Sweep
+  # every supervise-daemon for this service before starting.
+  # d[a]emon: pkill -f matches against every cmdline, including this
+  # restart shell's own (the pattern text lives in its arguments). The
+  # bracket keeps the regex from matching its literal self.
+  restart_after "rc-service $SERVICE stop; pkill -f 'supervise-d[a]emon $SERVICE --start' 2>/dev/null; sleep 1; rc-service $SERVICE start"
 elif [ "$(id -u)" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
   restart_after "systemctl restart $SERVICE"
 elif [ -n "${RC_SVCNAME:-}" ] || [ -n "${BRIDGE_SUPERVISED:-}" ]; then

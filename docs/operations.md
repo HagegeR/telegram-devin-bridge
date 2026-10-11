@@ -134,6 +134,35 @@ cp deploy/openrc/telegram-devin-bridge-update /etc/periodic/15min/
 chmod +x /etc/periodic/15min/telegram-devin-bridge-update
 ```
 
+### Stuck update on OpenRC (duplicate supervise-daemons)
+
+Symptoms: the checkout moved to the new revision, `rc-service ... status`
+says `started`, but the bot never comes back — the log repeats
+`error while attempting to bind on address ('127.0.0.1', 8000): address
+in use` after every `bridge ready` line.
+
+Cause: each `rc-service` start spawns a fresh `supervise-daemon` writing
+the shared pidfile, but only the pidfile-tracked one is managed. Daemons
+orphaned by earlier races keep their child `uvicorn` holding the port,
+so every respawned process binds, fails, and exits forever.
+
+The OpenRC restart in `self-update.sh` now sweeps orphan supervise-daemons
+between stop and start, so new updates can't wedge this way. To recover a
+host already stuck:
+
+```sh
+# expect exactly one supervisor; more means orphans
+pgrep -af 'supervise-daemon telegram-devin-bridge'
+# the pidfile names the tracked (keeper) supervisor
+cat /run/supervise-telegram-devin-bridge.pid
+# kill every other supervise-daemon pid, then the stale uvicorn
+# holding :8000 (find it via: pgrep -af 'uvicorn app.main')
+kill <orphan-supervisor-pids> <stale-uvicorn-pid>
+```
+
+The tracked supervisor respawns a process that binds cleanly and the
+pending update lands.
+
 ## VM service management
 
 From a checked-out repository, install or upgrade the bridge with:
