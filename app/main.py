@@ -1608,13 +1608,6 @@ class Bridge:
                 )
                 return
             choices = self.store.list_choices(conv_key, callback_message_id)
-            # only this keyboard's rows — an unrelated prompt (another
-            # permission request, a confirm) still maps to a live
-            # decision that must stay answerable
-            if callback_message_id is not None:
-                self.store.delete_choices_for_message(conv_key, callback_message_id)
-            else:
-                self.store.delete_choices(conv_key)
             plain_option = not option.startswith("__cmd:")
             if option.startswith("__cmd:terminate:"):
                 await self.stop_conversation(active)
@@ -1657,6 +1650,14 @@ class Bridge:
                 )
                 await self._session_client(session_id).send_message(session_id, option)
                 updated = f"✅ {option}"
+            # only this keyboard's rows, and only now — an unrelated
+            # prompt (another permission request, a confirm) stays
+            # answerable, and deleting above the admin gate would let a
+            # non-admin tap expire the prompt for the admins
+            if callback_message_id is not None:
+                self.store.delete_choices_for_message(conv_key, callback_message_id)
+            else:
+                self.store.delete_choices(conv_key)
             if callback_message_id:
                 try:
                     if plain_option:

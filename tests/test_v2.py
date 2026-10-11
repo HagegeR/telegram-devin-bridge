@@ -9182,3 +9182,73 @@ def test_delete_choices_preserves_perm_prompts(tmp_path: Path) -> None:
     store.delete_choices_for_message("222", 51)
     assert store.get_choice("a2") is None
     assert store.get_choice("b1") is not None
+
+
+@pytest.mark.asyncio
+async def test_permission_prompt_non_admin_tap_preserves_buttons(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_admin_user_ids="900",
+            telegram_allowed_users="111,900",
+        ),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    answered: list[tuple[str, int, str | None]] = []
+    runtime.local.answer_permission = (  # type: ignore[method-assign]
+        lambda s, r, o: answered.append((s, r, o)) or "Reject"
+    )
+    runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+    msg = {
+        "id": 5,
+        "params": {
+            "toolCall": {"title": "Run rm -rf"},
+            "options": [
+                {"optionId": "allow", "name": "Allow"},
+                {"optionId": "reject", "name": "Reject"},
+            ],
+        },
+    }
+    await runtime._send_permission_prompt("local:s1", msg)
+    sent = telegram.sent[-1]
+    reject = next(
+        b["callback_data"]
+        for row in sent["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+        for b in row
+        if b["text"] == "Reject"
+    )
+
+    # a non-admin tap must not consume the keyboard: the request stays
+    # answerable for an admin
+    await runtime.handle_callback({
+        "id": "cb-non-admin",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "group"}},
+        "data": reject,
+    })
+    assert not answered
+    assert "Admins only" in telegram.answers[-1]
+    assert store.get_choice(str(reject)) is not None
+
+    await runtime.handle_callback({
+        "id": "cb-admin",
+        "from": {"id": 900, "is_bot": False},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "group"}},
+        "data": reject,
+    })
+    assert answered == [("local:s1", 5, "reject")]
+    await runtime.shutdown()

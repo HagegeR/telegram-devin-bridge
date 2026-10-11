@@ -156,6 +156,7 @@ class LocalClient:
         asyncio.create_task(self._reader(sess))
         # fresh probe: stale model choices must not survive a failed refresh
         self._model_options = None
+        probe_id: str | None = None
         try:
             await self._request(sess, "initialize", {
                 "protocolVersion": 1,
@@ -166,6 +167,7 @@ class LocalClient:
                 "cwd": self._cwd(),
                 "mcpServers": [],
             })
+            probe_id = str(created.get("sessionId") or "") or None
             modes = [
                 str(m["id"])
                 for m in created.get("modes", {}).get("availableModes", [])
@@ -212,8 +214,27 @@ class LocalClient:
                 self._commands = sess.commands
         except (RuntimeError, TimeoutError, KeyError):
             modes = []
-        proc.terminate()
-        await proc.wait()
+        finally:
+            # the probe's session/new lands in the CLI's session DB like
+            # any real session — delete it or every /settings and /model
+            # leaves a phantom entry in `devin list`. finally/finally so a
+            # cancelled probe still deletes and still reaps the process
+            try:
+                if probe_id is not None:
+                    try:
+                        await self._request(sess, "session/delete", {
+                            "sessionId": probe_id,
+                        })
+                    except (RuntimeError, TimeoutError) as exc:
+                        logger.warning(
+                            "probe session %s not deleted: %s", probe_id, exc
+                        )
+            finally:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), 5)
+                except TimeoutError:
+                    proc.kill()
         if modes:
             self._modes_cache = (time.monotonic(), modes)
         return modes
