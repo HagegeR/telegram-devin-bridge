@@ -8793,6 +8793,124 @@ async def test_pending_update_survives_debounce_staging(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_edit_to_staged_turn_survives_restart(tmp_path: Path) -> None:
+    # an edit applied to a debounce-staged fragment keeps its durable row:
+    # replay dispatches original then edit, so Devin gets corrected text
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=60),
+        store,
+        devin,
+        telegram,  # type: ignore[arg-type]
+    )
+    original = message("alpha-msg", chat_id=444, message_id=5)
+    await runtime.handle_update({"update_id": 10, "message": original})
+    for _ in range(50):
+        if runtime.pending_turns.get("444"):
+            break
+        await asyncio.sleep(0.05)
+    edited = {**original, "text": "omega-msg"}
+    await runtime.handle_update({"update_id": 11, "edited_message": edited})
+    for _ in range(50):
+        pending = runtime.pending_turns.get("444", [])
+        if pending and pending[0][1] == "omega-msg":
+            break
+        await asyncio.sleep(0.05)
+    # the edit's row rides with the fragment it rewrote
+    assert [u.get("update_id") for u in store.list_pending_updates()] == [10, 11]
+    for task in (*runtime.debounce_tasks.values(), *runtime._worker_tasks):
+        task.cancel()
+
+    runtime2 = Bridge(
+        settings(tmp_path, telegram_debounce_seconds=0),
+        Store(str(tmp_path / "bridge.sqlite3")),
+        devin,
+        telegram,  # type: ignore[arg-type]
+    )
+    await runtime2.startup()
+    # replayed turns hold in pending_turns until every row is dispatched,
+    # so the edit lands before the original flushes — one corrected turn,
+    # no stale original + follow-up correction
+    assert any("omega-msg" in p for p in devin.created)
+    assert not any("alpha-msg" in p for p in devin.created)
+    assert not runtime2.store.list_pending_updates()
+    await runtime2.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_replay_drops_already_delivered_turn(tmp_path: Path) -> None:
+    # a pending row that outlives its delivery is dropped on replay via
+    # the sent_turn marker instead of re-sending the prompt to Devin
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await runtime.handle_update(
+        {"update_id": 20, "message": message("first", chat_id=444, message_id=5)}
+    )
+    for _ in range(50):
+        if devin.created:
+            break
+        await asyncio.sleep(0.05)
+    assert len(devin.created) == 1
+    assert not store.list_pending_updates()
+    for task in runtime._worker_tasks:
+        task.cancel()
+
+    # same message redelivered under a new update_id (or a row that
+    # survived past delivery): replay must not send it again
+    update = {
+        "update_id": 21,
+        "message": message("first", chat_id=444, message_id=5),
+    }
+    store.mark_update_seen(21, json.dumps(update))
+    runtime2 = Bridge(
+        settings(tmp_path),
+        Store(str(tmp_path / "bridge.sqlite3")),
+        devin,
+        telegram,  # type: ignore[arg-type]
+    )
+    await runtime2.startup()
+    assert not runtime2.store.list_pending_updates()
+    assert len(devin.created) == 1
+    await runtime2.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_update_below_sent_marker_still_delivers(
+    tmp_path: Path,
+) -> None:
+    # concurrent workers can hold an older update until a newer turn has
+    # already delivered — the sent_turn marker must not drop live updates
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await runtime.handle_update(
+        {"update_id": 30, "message": message("newer", chat_id=444, message_id=9)}
+    )
+    for _ in range(50):
+        if devin.created:
+            break
+        await asyncio.sleep(0.05)
+    assert store.get_setting("sent_turn:444") == "9"
+
+    # delayed older update arriving after the marker advanced still sends
+    await runtime.handle_update(
+        {"update_id": 31, "message": message("older", chat_id=444, message_id=8)}
+    )
+    for _ in range(50):
+        if any(text == "older" for _, text in devin.sent):
+            break
+        await asyncio.sleep(0.05)
+    assert any(text == "older" for _, text in devin.sent)
+    assert not store.list_pending_updates()
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_status_message_repins_after_deliveries(
     tmp_path: Path,
 ) -> None:

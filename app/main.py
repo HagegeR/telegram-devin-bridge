@@ -223,10 +223,20 @@ class Bridge:
                 for _ in range(_UPDATE_CONCURRENCY)
             ]
         # updates persisted but never dispatched before the last shutdown
-        # go back on the queue — the dedupe marker already covers Telegram
-        # redelivering them
+        # are dispatched in update_id order — the dedupe marker already
+        # covers Telegram redelivering them. Concurrent dispatch through
+        # the workers could interleave a message→edit pair or scramble
+        # turn order inside one conversation.
         for pending in self.store.list_pending_updates():
-            await self._update_queue.put(pending)
+            await self._dispatch_update(pending, replayed=True)
+            update_id = pending.get("update_id")
+            if isinstance(update_id, int) and update_id not in self._update_conv:
+                self.store.delete_pending_update(update_id)
+        # replayed turns stage in pending_turns rather than flushing
+        # inline, so a following edit update still lands on the staged
+        # fragment before anything reaches Devin
+        for conv_key in list(self.pending_turns):
+            await self._flush_pending(conv_key)
         await self._resume_watchers()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
@@ -402,7 +412,9 @@ class Bridge:
                     self.store.delete_pending_update(update_id)
                 self._update_queue.task_done()
 
-    async def _dispatch_update(self, update: Mapping[str, object]) -> None:
+    async def _dispatch_update(
+        self, update: Mapping[str, object], *, replayed: bool = False
+    ) -> None:
         try:
             callback = _mapping(update.get("callback_query"))
             if callback:
@@ -414,7 +426,11 @@ class Bridge:
                 return
             edited = _mapping(update.get("edited_message"))
             if edited:
-                await self.handle_edited_message(edited)
+                update_id = update.get("update_id")
+                await self.handle_edited_message(
+                    edited,
+                    update_id=update_id if isinstance(update_id, int) else None,
+                )
                 return
             message = _mapping(update.get("message")) or _mapping(
                 update.get("channel_post")
@@ -424,6 +440,7 @@ class Bridge:
                 await self.handle_message(
                     message,
                     update_id=update_id if isinstance(update_id, int) else None,
+                    replayed=replayed,
                 )
         except Exception as exc:
             logger.exception("Failed to process Telegram update")
@@ -434,6 +451,7 @@ class Bridge:
         message: Mapping[str, object],
         *,
         update_id: int | None = None,
+        replayed: bool = False,
     ) -> None:
         sender = _mapping(message.get("from"))
         chat = _mapping(message.get("chat"))
@@ -576,7 +594,9 @@ class Bridge:
                 thread_id=_thread_id(message),
             )
             return
-        await self._queue_turn(message, text, attachment, update_id=update_id)
+        await self._queue_turn(
+            message, text, attachment, update_id=update_id, replayed=replayed
+        )
 
     async def _queue_turn(
         self,
@@ -585,11 +605,23 @@ class Bridge:
         attachment: Attachment | None,
         *,
         update_id: int | None = None,
+        replayed: bool = False,
     ) -> None:
         conv_key = self._conversation_key(message)
         uids = [update_id] if update_id is not None else []
         if update_id is not None:
             self._update_conv[update_id] = conv_key
+        # replayed update for a turn Devin already received — message_ids
+        # are monotone per chat so anything at or below the marker was
+        # already delivered. Only safe during replay: live dispatch runs
+        # on concurrent workers, so a slow message can legitimately arrive
+        # at the queue behind a newer one
+        message_id = _int(message.get("message_id"))
+        raw_marker = self.store.get_setting(f"sent_turn:{conv_key}")
+        sent_marker = int(raw_marker) if raw_marker and raw_marker.isdigit() else 0
+        if replayed and message_id and sent_marker and message_id <= sent_marker:
+            self._consume_pending_turns(uids)
+            return
         pending = self.pending_turns.setdefault(conv_key, [])
         if attachment is not None and any(
             fragment_attachment is not None
@@ -606,6 +638,10 @@ class Bridge:
             await self._flush_fragments(conv_key, overflow)
         else:
             pending.append((message, text, attachment, uids))
+        # replayed turns wait for the startup flush so a following edit
+        # update still lands on the staged fragment before anything sends
+        if replayed:
+            return
         if self.settings.telegram_debounce_seconds <= 0:
             await self._flush_pending(conv_key)
             return
@@ -925,7 +961,7 @@ class Bridge:
         # conversation with no live watcher (recency can't tell whether a
         # remote session kept running); since_event_id filters client-side
         # so any post-cursor devin_message means the cursor fell behind
-        for conv in self.store.list_recent_conversations(0):
+        for conv in self.store.list_conversations():
             sid = conv.session_id or ""
             if not sid or is_local(sid):
                 continue
@@ -1148,6 +1184,11 @@ class Bridge:
                     )
                 finally:
                     self.implicit_topics.pop((chat_id, thread_id), None)
+        # the turn reached Devin (send or session create) — record the
+        # highest delivered message_id so a replayed update can be dropped
+        # instead of sent twice
+        if message_id:
+            self.store.set_setting(f"sent_turn:{conv_key}", str(message_id))
         await self.start_watcher(
             conversation, trigger_message_id=message_id, trigger_at=sent_at
         )
@@ -1600,7 +1641,12 @@ class Bridge:
                     silent=True,
                 )
 
-    async def handle_edited_message(self, message: Mapping[str, object]) -> None:
+    async def handle_edited_message(
+        self,
+        message: Mapping[str, object],
+        *,
+        update_id: int | None = None,
+    ) -> None:
         if not is_allowed(message, self.settings, self.approved_users):
             return
         if not should_respond_in_group(
@@ -1624,6 +1670,12 @@ class Bridge:
         for index, (pending_message, _, attachment, uids) in enumerate(pending):
             if _int(pending_message.get("message_id")) != message_id:
                 continue
+            # keep the edit's durable row alive with the fragment it rewrote:
+            # a restart replays the original then the edit, so the corrected
+            # text is what Devin receives
+            if update_id is not None:
+                uids = [*uids, update_id]
+                self._update_conv[update_id] = conv_key
             pending[index] = (
                 message,
                 self._contextualize_message(message, text),

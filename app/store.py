@@ -615,6 +615,11 @@ class Store:
             if (conversation := self._conversation(row)) is not None
         ]
 
+    def list_conversations(self) -> list[Conversation]:
+        # every conversation regardless of age — callers that must not miss
+        # old rows (the cloud backlog sweep) shouldn't fake it with since=0
+        return self.list_recent_conversations(0)
+
     def count_conversations_for_chat(self, chat_id: int) -> int:
         with self.lock:
             row = self.connection.execute(
