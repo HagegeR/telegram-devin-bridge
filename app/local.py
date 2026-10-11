@@ -790,7 +790,18 @@ class LocalClient:
                 sess.thought = (sess.thought + text)[-4096:]
                 lines = sess.thought.strip().splitlines()
                 if lines:
-                    sess.activity = lines[-1][-120:]
+                    line = lines[-1]
+                    if len(line) > 120:
+                        tail = line[-120:]
+                        # drop the first token only when the cut fell
+                        # inside a word: the char before the tail and the
+                        # tail's first char are both non-whitespace
+                        if not (line[-121].isspace() or tail[:1].isspace()):
+                            parts = tail.split(None, 1)
+                            tail = parts[1] if len(parts) > 1 else ""
+                        sess.activity = tail.lstrip()
+                    else:
+                        sess.activity = line
             return
         if kind in {"tool_call", "tool_call_update"}:
             title = update.get("title") or update.get("kind")

@@ -107,6 +107,22 @@ FAKE_ACP = textwrap.dedent(
                               "params": {"sessionId": sid, "update": {
                                   "sessionUpdate": "tool_call",
                                   "title": "Running pytest"}}}), flush=True)
+            variant = os.environ.get("FAKE_LONG_THOUGHT")
+            if variant:
+                long_line = {
+                    "midword": ("Orphaned supervise-daemon and uvicorn "
+                                "processes, allowing the tracked supervisor "
+                                "to restart the correct new instance safely!"),
+                    "tab": "a" * 130 + "\tdone",
+                    "boundary": "prefix " + "alpha " * 19 + "suffix",
+                    "unbroken": "a" * 200,
+                }[variant]
+                print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                                  "params": {"sessionId": sid, "update": {
+                                      "sessionUpdate": "agent_thought_chunk",
+                                      "content": {"type": "text",
+                                                  "text": long_line + "\\n"}}}}),
+                      flush=True)
             for chunk in chunks:
                 if os.environ.get("FAKE_SLOW") or os.environ.get("FAKE_FENCE"):
                     time.sleep(0.4)
@@ -293,6 +309,61 @@ async def test_activity_surfaces_in_status_detail(
     await _wait_for(shell_client, session_id, "echo: hello")
     state = await shell_client.get_session(session_id)
     assert state.status_detail == "Running pytest"
+
+
+@pytest.mark.asyncio
+async def test_long_thought_tail_starts_on_word_boundary(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a >120-char thought line tail-slices for the status line — the cut
+    # must drop the partial first word rather than show "rphaned…"
+    monkeypatch.setenv("FAKE_LONG_THOUGHT", "midword")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_detail is not None
+    assert state.status_detail.startswith("supervise-daemon")
+    assert "rphaned" not in state.status_detail
+
+
+@pytest.mark.asyncio
+async def test_long_thought_tail_tab_boundary(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # tabs count as word boundaries too — a tail of a's then a tab must
+    # drop the truncated token and start at the complete word after it
+    monkeypatch.setenv("FAKE_LONG_THOUGHT", "tab")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_detail == "done"
+
+
+@pytest.mark.asyncio
+async def test_long_thought_boundary_cut_keeps_first_word(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # when the 120-char cut lands right after a space the tail already
+    # starts on a complete word — it must not be discarded
+    monkeypatch.setenv("FAKE_LONG_THOUGHT", "boundary")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_detail is not None
+    assert state.status_detail.startswith("alpha")
+
+
+@pytest.mark.asyncio
+async def test_long_thought_unbroken_tail_shows_nothing(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a tail with no whitespace at all is one truncated token — better
+    # no activity line than a known-mid-word start
+    monkeypatch.setenv("FAKE_LONG_THOUGHT", "unbroken")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_detail is None
 
 
 @pytest.mark.asyncio
