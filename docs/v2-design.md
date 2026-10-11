@@ -193,7 +193,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     (`DEVIN_LOCAL_CLI`/`DEVIN_LOCAL_CWD`).
   - On `platform=local` chats, `/mode` + the 🤖 Devin mode submenu
     enumerate the local ACP modes (accept-edits/smart/ask/plan/bypass,
-    probed via a throwaway `devin acp` and cached 5 min) and apply live via
+    probed via a throwaway `devin acp` and cached 5 min — the probe's
+    `session/new` is deleted via `session/delete` before the process
+    exits, even on cancellation, so probes never accumulate in
+    `devin list`) and apply live via
     `session/set_mode` (reset maps to the CLI default `accept-edits`);
     the submenu and `/mode` listing show the CLI's display names and
     descriptions (`mode` configOption options, e.g. `Smart — auto-approves
