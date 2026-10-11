@@ -9252,3 +9252,31 @@ async def test_permission_prompt_non_admin_tap_preserves_buttons(
     })
     assert answered == [("local:s1", 5, "reject")]
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sessions_merges_cli_session_db(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.add_history(
+        conv_key="222",
+        session_id="local:tracked",
+        session_url="tracked · local CLI (no cloud URL)",
+        title="tracked",
+    )
+    store.update_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.local.list_sessions = lambda: _async(  # type: ignore[method-assign]
+        [
+            {"sessionId": "tracked", "title": "tracked"},
+            {"sessionId": "ghost", "title": "ghost session"},
+        ]
+    )
+    probed: list[str] = []
+    runtime.get_session_status = lambda sid: probed.append(sid) or _async("blocked")  # type: ignore[method-assign]
+    await handle_command(runtime, message("/sessions"), "/sessions")
+    text = str(telegram.sent[-1]["text"])
+    assert "ghost session" in text and "dormant (local)" in text
+    # untracked CLI sessions are listed without waking them
+    assert probed == ["local:tracked"]
+    await runtime.shutdown()

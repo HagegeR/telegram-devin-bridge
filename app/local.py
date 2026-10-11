@@ -265,6 +265,46 @@ class LocalClient:
         await self.modes()
         return self._commands
 
+    async def list_sessions(self) -> list[dict]:
+        """Sessions persisted in the CLI's own DB (`devin list`), via a
+        throwaway acp process — includes dormant sessions the bridge can
+        still resume. Empty on probe failure. session/list is a query, so
+        unlike modes() nothing lands in the session DB to clean up."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._argv,
+                "acp",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                cwd=self._cwd(),
+            )
+        except OSError:
+            return []
+        sess = _AcpSession(proc=proc, acp_id="")
+        asyncio.create_task(self._reader(sess))
+        try:
+            await self._request(sess, "initialize", {
+                "protocolVersion": 1,
+                "clientCapabilities": {},
+                "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
+            })
+            listed = await self._request(sess, "session/list", {
+                "cwd": self._cwd(),
+            })
+            return [
+                entry for entry in listed.get("sessions", [])
+                if isinstance(entry, dict)
+            ]
+        except (RuntimeError, TimeoutError):
+            return []
+        finally:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), 5)
+            except TimeoutError:
+                proc.kill()
+
     async def set_model_default(self, session_id: str) -> None:
         if self._default_model:
             await self.set_model(session_id, self._default_model)
