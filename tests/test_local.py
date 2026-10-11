@@ -605,3 +605,42 @@ async def test_interrupted_turn_notice_on_resume(
         assert len(notices) == 1
     finally:
         await third.aclose()
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_clears_flag_even_when_process_died(
+    tmp_path: Path,
+) -> None:
+    # review edge: prompt resolved but the process died before the done
+    # callback ran — the turn WAS answered, so no interruption notice
+    from app.local import _AcpSession
+    from app.store import Store
+
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    client = LocalClient(cli_command="devin", api_key=None, event_store=store)
+    sess = _AcpSession(proc=object(), acp_id="dead-sid")
+    sid = "local:dead-sid"
+    flag = f"local_running:{sid}"
+    sess.dead = True
+
+    store.set_setting(flag, "1")
+    sess.turns = 1
+    resolved: asyncio.Future = asyncio.Future()
+    resolved.set_result({"stopReason": "end_turn"})
+    client._turn_done(sess, resolved)
+    assert store.get_setting(flag) is None
+
+    store.set_setting(flag, "1")
+    sess.turns = 1
+    killed: asyncio.Future = asyncio.Future()
+    killed.set_exception(RuntimeError("acp process exited"))
+    client._turn_done(sess, killed)
+    assert store.get_setting(flag) == "1"
+
+    # separate session so the _emit rows above can't skew the counts
+    other = "local:count-sid"
+    store.append_local_event(other, "5", "2026-01-01T00:00:00Z", "m")
+    store.append_local_event(other, "9", "2026-01-01T00:00:01Z", "n")
+    assert store.count_local_events_since(other, "5") == 1
+    assert store.count_local_events_since(other, "9") == 0
+    assert store.count_local_events_since(other, "0") == 2

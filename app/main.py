@@ -979,46 +979,53 @@ class Bridge:
             )
 
     async def _redeliver_backlog(self) -> None:
-        # a live local session can keep accumulating emitted events with
-        # no watcher alive to deliver them (watchers close on settle and
+        # a local session can keep accumulating emitted events with no
+        # watcher alive to deliver them (watchers close on settle and
         # never restart themselves) — restart delivery when the
         # conversation's persisted cursor fell behind the session's
-        # events. Driven by live sessions, not conversation recency, so a
-        # day-old conversation isn't skipped; resume_from conv.created_at
-        # keeps pre-trigger events deliverable (and digested, not flooded)
-        for session_id, sess in self.local.sessions.items():
-            if not sess.events:
-                continue
-            conv = self.store.get_conversation_for_session(session_id)
-            if conv is None:
-                continue
-            latest = sess.events[-1].event_id or ""
-            last = conv.last_event_id or "0"
-            if not latest.isdigit() or not last.isdigit() or int(latest) <= int(last):
-                continue
-            watcher = self.watchers.get(session_id)
-            if watcher is not None and not watcher.done():
-                continue
-            logger.warning(
-                "undelivered local events on %s — restarting watcher",
-                conv.conv_key,
-            )
-            await self.start_watcher(
-                conv,
-                resume_from=conv.created_at,
-                trigger_message_id=conv.last_user_message_id,
-                trigger_at=conv.updated_at,
-            )
-        # cloud conversations can't be checked in memory — probe every
-        # conversation with no live watcher (recency can't tell whether a
-        # remote session kept running); since_event_id filters client-side
-        # so any post-cursor devin_message means the cursor fell behind
+        # events. Driven by the persisted event rows too, not only the
+        # live-process map, so a session unloaded since the restart isn't
+        # skipped; resume_from conv.created_at keeps pre-trigger events
+        # deliverable (and digested, not flooded). Cloud conversations
+        # can't be checked in memory — probe every conversation with no
+        # live watcher (recency can't tell whether a remote session kept
+        # running); since_event_id filters client-side so any post-cursor
+        # devin_message means the cursor fell behind.
         for conv in self.store.list_conversations():
             sid = conv.session_id or ""
-            if not sid or is_local(sid):
+            if not sid:
                 continue
             watcher = self.watchers.get(sid)
             if watcher is not None and not watcher.done():
+                continue
+            if is_local(sid):
+                last = conv.last_event_id or "0"
+                if not last.isdigit():
+                    continue
+                live = self.local.sessions.get(sid)
+                latest = (
+                    live.events[-1].event_id
+                    if live is not None and live.events
+                    else None
+                )
+                ahead = bool(
+                    latest and latest.isdigit() and int(latest) > int(last)
+                )
+                if (
+                    not ahead
+                    and self.store.count_local_events_since(sid, last) == 0
+                ):
+                    continue
+                logger.warning(
+                    "undelivered local events on %s — restarting watcher",
+                    conv.conv_key,
+                )
+                await self.start_watcher(
+                    conv,
+                    resume_from=conv.created_at,
+                    trigger_message_id=conv.last_user_message_id,
+                    trigger_at=conv.updated_at,
+                )
                 continue
             try:
                 state = await self.devin.get_session(

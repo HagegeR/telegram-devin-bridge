@@ -388,10 +388,16 @@ class LocalClient:
             if self.event_store is not None:
                 # mark the turn in flight before the prompt goes out — a
                 # bridge restart kills the process mid-prompt and this
-                # flag is what lets the resumed session say so
-                self.event_store.set_setting(
-                    f"local_running:{session_id}", "1"
-                )
+                # flag is what lets the resumed session say so. A store
+                # failure must not drop the prompt itself.
+                try:
+                    self.event_store.set_setting(
+                        f"local_running:{session_id}", "1"
+                    )
+                except Exception:
+                    logger.exception(
+                        "local_running flag write failed for %s", session_id
+                    )
             return await self._request(sess, "session/prompt", {
                 "sessionId": sess.acp_id,
                 "prompt": [{"type": "text", "text": message}],
@@ -447,16 +453,24 @@ class LocalClient:
 
     def _turn_done(self, sess: _AcpSession, fut: asyncio.Future) -> None:
         sess.turns -= 1
+        # the flag clears once the prompt actually resolved — even when
+        # the process died right after answering — and when the session
+        # still lives (a real turn end, not a kill). Only a dead process
+        # with an unanswered prompt keeps it for the resume notice.
+        completed = not fut.cancelled() and fut.exception() is None
         if (
             sess.turns == 0
-            and not sess.dead
             and self.event_store is not None
+            and (completed or not sess.dead)
         ):
-            # normal end of the last queued turn — a dead session keeps
-            # the flag so resume can report the interruption
-            self.event_store.delete_setting(
-                f"local_running:{LOCAL_PREFIX}{sess.acp_id}"
-            )
+            try:
+                self.event_store.delete_setting(
+                    f"local_running:{LOCAL_PREFIX}{sess.acp_id}"
+                )
+            except Exception:
+                logger.exception(
+                    "local_running flag clear failed for %s", sess.acp_id
+                )
         if sess.suppress_turn:
             sess.suppress_turn = False
             if "".join(sess.buffer).strip():
@@ -657,8 +671,13 @@ class LocalClient:
         except (RuntimeError, TimeoutError, asyncio.CancelledError):
             pass
         if self.event_store is not None:
-            self.event_store.delete_local_events(session_id)
-            self.event_store.delete_setting(f"local_running:{session_id}")
+            try:
+                self.event_store.delete_local_events(session_id)
+                self.event_store.delete_setting(f"local_running:{session_id}")
+            except Exception:
+                logger.exception(
+                    "local event store cleanup failed for %s", session_id
+                )
         await self._reap(sess)
 
     async def _reap(self, sess: _AcpSession) -> None:
@@ -771,23 +790,32 @@ class LocalClient:
         if self.event_store is not None:
             # re-offer events a dead incarnation emitted but the watcher
             # never polled — the store's event ids slot straight into the
-            # persisted last_event_id dedup like cloud's server-side log
-            for event_id, ts, text in self.event_store.local_events(session_id):
-                sess.events.append(
-                    DevinMessage(
-                        message_type="devin_message",
-                        event_id=event_id,
-                        message=text,
-                        timestamp=ts,
+            # persisted last_event_id dedup like cloud's server-side log.
+            # A broken store must not block resuming the session at all.
+            try:
+                for event_id, ts, text in self.event_store.local_events(
+                    session_id
+                ):
+                    sess.events.append(
+                        DevinMessage(
+                            message_type="devin_message",
+                            event_id=event_id,
+                            message=text,
+                            timestamp=ts,
+                        )
                     )
-                )
-            flag = f"local_running:{session_id}"
-            if self.event_store.get_setting(flag) is not None:
-                self.event_store.delete_setting(flag)
-                self._emit(
-                    sess,
-                    "⚠ The bridge restarted mid-turn and the in-flight "
-                    "prompt was lost. Resend your message or say continue.",
+                flag = f"local_running:{session_id}"
+                if self.event_store.get_setting(flag) is not None:
+                    self.event_store.delete_setting(flag)
+                    self._emit(
+                        sess,
+                        "⚠ The bridge restarted mid-turn and the in-flight "
+                        "prompt was lost. Resend your message or say "
+                        "continue.",
+                    )
+            except Exception:
+                logger.exception(
+                    "local event store read failed for %s", acp_id
                 )
         logger.info("resumed local session %s", acp_id)
         return sess

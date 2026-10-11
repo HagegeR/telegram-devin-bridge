@@ -1216,6 +1216,17 @@ class Store:
             ).fetchall()
         return [(str(r[0]), r[1], str(r[2])) for r in rows]
 
+    def count_local_events_since(
+        self, session_id: str, last_event_id: str
+    ) -> int:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT COUNT(*) FROM local_events WHERE session_id = ?"
+                " AND CAST(event_id AS INTEGER) > CAST(? AS INTEGER)",
+                (session_id, last_event_id),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def delete_local_events(self, session_id: str) -> None:
         with self.lock, self.connection:
             self.connection.execute(
