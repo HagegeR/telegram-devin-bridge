@@ -25,7 +25,7 @@ SYSTEM_PREAMBLE = (
     "You are chatting with a user over Telegram via a bridge. Keep replies concise. "
     "Telegram renders Markdown. When you need the user to pick between a small set "
     "of options, end your message with one line exactly like `OPTIONS: first option | "
-    "second option | third option` (max 8, each under 60 chars); the bridge turns it "
+    "second option | third option` (max 8, each under 100 chars); the bridge turns it "
     "into buttons. For rich or long results (tables, charts, reports), attach a "
     "self-contained .html file; the bridge serves it and adds an Open button. "
     "To collapse a long section inline, use a Telegram expandable quote: first line "

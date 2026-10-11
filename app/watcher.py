@@ -914,11 +914,16 @@ class SessionWatcher:
         covered: set[int] = set()
         urgent = False
         for index, message in enumerate(messages):
-            body, _ = extract_options(extract_attachments(message.message)[0])
+            body, options = extract_options(
+                extract_attachments(message.message)[0]
+            )
             body, controls = extract_controls(body)
             urgent = urgent or "urgent" in controls
             body = body.strip()
-            if body:
+            # a reply with options needs its keyboard — covering it in
+            # the digest would drop the buttons, so it stays for normal
+            # delivery and isn't counted in the digest text either
+            if body and not options:
                 parts.append(body)
                 covered.add(index)
         if not parts:
