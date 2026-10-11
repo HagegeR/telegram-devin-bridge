@@ -790,7 +790,15 @@ class LocalClient:
                 sess.thought = (sess.thought + text)[-4096:]
                 lines = sess.thought.strip().splitlines()
                 if lines:
-                    sess.activity = lines[-1][-120:]
+                    line = lines[-1]
+                    if len(line) > 120:
+                        # tail-slicing must not leave a partial word in view
+                        tail = line[-120:]
+                        sess.activity = (
+                            tail.split(" ", 1)[-1] if " " in tail else tail
+                        )
+                    else:
+                        sess.activity = line
             return
         if kind in {"tool_call", "tool_call_update"}:
             title = update.get("title") or update.get("kind")
