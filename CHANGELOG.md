@@ -30,6 +30,10 @@ and deployment update channels.
 
 ### Fixed
 
+- The live `→ …` activity line in `⏳ Working` no longer starts mid-word:
+  a thought line over the display cap keeps its tail but drops a partial
+  leading token, so `Orphaned supervise-daemon…` can't render as
+  `rphaned supervise-daemon…`.
 - Local-session replies are now delivered at paragraph boundaries instead
   of arbitrary timed chunks, so interim Telegram messages are coherent
   paragraphs rather than mid-sentence fragments.

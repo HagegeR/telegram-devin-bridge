@@ -792,11 +792,14 @@ class LocalClient:
                 if lines:
                     line = lines[-1]
                     if len(line) > 120:
-                        # tail-slicing must not leave a partial word in view
                         tail = line[-120:]
-                        sess.activity = (
-                            tail.split(" ", 1)[-1] if " " in tail else tail
-                        )
+                        # drop the first token only when the cut fell
+                        # inside a word: the char before the tail and the
+                        # tail's first char are both non-whitespace
+                        if not (line[-121].isspace() or tail[:1].isspace()):
+                            parts = tail.split(None, 1)
+                            tail = parts[1] if len(parts) > 1 else ""
+                        sess.activity = tail.lstrip()
                     else:
                         sess.activity = line
             return
