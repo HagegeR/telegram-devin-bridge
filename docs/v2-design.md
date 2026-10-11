@@ -44,8 +44,16 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
     accepted-but-undelivered queue; written in the same transaction as the
     dedupe marker, kept while the update sits in `pending_turns`/`queued_turns`
     (debounce or busy-queue staging), deleted only when its turn reaches
-    `handle_user_turn` (or is deliberately cleared), replayed at startup
-    (stale >24h rows are dropped rather than replayed).
+    `handle_user_turn` (or is deliberately cleared). An edit that rewrites a
+    staged fragment keeps its own row with that fragment, so a restart
+    replays the original update then the edit and delivers corrected text.
+    Startup replays rows sequentially in update_id order (concurrent
+    dispatch could interleave a message→edit pair), and skips any update
+    whose `message_id` is at or below the `sent_turn:{conv_key}` marker —
+    the highest message_id confirmed delivered to Devin, written right
+    after each `handle_user_turn` reaches Devin — so a row that outlives
+    its delivery is dropped instead of re-sent (stale >24h rows are
+    dropped rather than replayed).
   - `pending_choices(choice_id TEXT PK, conv_key, session_id, option_text, created_at)` – inline-keyboard callbacks (`callback_data` <= 64 bytes, so store a short random id).
   - `settings(key TEXT PK, value TEXT)` – `home_chat_id`, `home_thread_id` set by `/sethome`, `crawl_sites` set by the `/settings` pre-crawl submenu.
   - conv_key = `f"{chat_id}"` for DMs/plain groups, `f"{chat_id}:{message_thread_id}"` for forum topics (only when `chat.is_forum` and `message_thread_id` present).

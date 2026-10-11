@@ -48,8 +48,10 @@ and deployment update channels.
   previous turn from claiming the newer message.
 - A restart no longer drops accepted Telegram updates: the dedupe marker
   and the full payload land in `pending_updates` atomically, undispatched
-  rows are re-queued at startup, and dispatched rows are removed so
-  delivery stays at-least-once without replays.
+  rows are replayed in order at startup, and a `sent_turn` marker drops
+  rows that outlived their delivery so replays can't re-send a prompt
+  Devin already received. Edits applied to debounce-staged messages
+  survive the same restart.
 
 - `/settings`, `/repos`, `/platform` (and the other toggles) now persist
   at the chat level: a setting made in one forum topic applies to every
