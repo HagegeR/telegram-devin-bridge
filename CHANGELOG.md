@@ -8,6 +8,16 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Fixed
+
+- Local CLI turns no longer lose their tail to a bridge restart: emitted
+  reply events are mirrored into a `local_events` table and re-seeded on
+  `session/load`, so a recovery watcher still delivers the turn-end
+  message + "💬 Waiting for your reply" (cloud sessions get this
+  durability server-side). The janitor sweep now also checks persisted
+  rows, so replies stranded on a session outside the live-process map
+  still reach Telegram.
+
 ### Added
 
 - Local CLI capability surfacing (`/platform local` chats): `/commands`

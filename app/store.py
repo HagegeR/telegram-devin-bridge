@@ -197,6 +197,14 @@ class Store:
                     payload TEXT NOT NULL,
                     seen_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS local_events (
+                    session_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    timestamp TEXT,
+                    message TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (session_id, event_id)
+                );
                 CREATE TABLE IF NOT EXISTS pending_choices (
                     choice_id TEXT PRIMARY KEY,
                     conv_key TEXT NOT NULL,
@@ -1203,6 +1211,54 @@ class Store:
         with self.lock, self.connection:
             self.connection.execute(
                 "DELETE FROM long_texts WHERE created_at < ?",
+                (time.time() - max_age_seconds,),
+            )
+
+    def append_local_event(
+        self,
+        session_id: str,
+        event_id: str,
+        timestamp: str | None,
+        message: str,
+    ) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO local_events"
+                " (session_id, event_id, timestamp, message, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (session_id, event_id, timestamp, message, time.time()),
+            )
+
+    def local_events(self, session_id: str) -> list[tuple[str, str | None, str]]:
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT event_id, timestamp, message FROM local_events"
+                " WHERE session_id = ? ORDER BY rowid",
+                (session_id,),
+            ).fetchall()
+        return [(str(r[0]), r[1], str(r[2])) for r in rows]
+
+    def count_local_events_since(
+        self, session_id: str, last_event_id: str
+    ) -> int:
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT COUNT(*) FROM local_events WHERE session_id = ?"
+                " AND CAST(event_id AS INTEGER) > CAST(? AS INTEGER)",
+                (session_id, last_event_id),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def delete_local_events(self, session_id: str) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM local_events WHERE session_id = ?", (session_id,)
+            )
+
+    def cleanup_local_events(self, max_age_seconds: float = 7 * 86400) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM local_events WHERE created_at < ?",
                 (time.time() - max_age_seconds,),
             )
 

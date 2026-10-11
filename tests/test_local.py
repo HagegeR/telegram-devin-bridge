@@ -557,6 +557,7 @@ async def test_modes_probe_deletes_its_session(
 
 
 @pytest.mark.asyncio
+
 async def test_pending_prompt_hook_tracks_turn(shell_client: LocalClient) -> None:
     states: list[tuple[str, str | None]] = []
     shell_client.on_prompt_state = lambda sid, p: states.append((sid, p))
@@ -686,3 +687,48 @@ async def test_resume_applies_config_on_next_prompt_when_conv_late(
         {"mode": "smart", "model": "swe-2-low", "thought_level": "max"}
     ]
     await _wait_for(shell_client, session_id, "echo: second")
+
+@pytest.mark.asyncio
+async def test_local_events_survive_bridge_restart(tmp_path: Path) -> None:
+    # a bridge restart kills the acp process and its in-memory events —
+    # persisted rows let a resumed session re-offer the undelivered tail,
+    # same as cloud events surviving server-side
+    from app.store import Store
+
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    fake = tmp_path / "fake_acp.py"
+    fake.write_text(FAKE_ACP, encoding="utf-8")
+    cmd = _devin_command(tmp_path, fake)
+    first = LocalClient(cli_command=cmd, api_key=None, event_store=store)
+    session_id, _ = await first.create_session("hello")
+    await _wait_for(first, session_id, "echo: hello")
+    first_ids = [
+        m.event_id for m in (await first.get_session(session_id)).messages
+    ]
+    await first.aclose()
+
+    second = LocalClient(cli_command=cmd, api_key=None, event_store=store)
+    try:
+        state = await second.get_session(session_id)
+        assert state.status_enum == "blocked"
+        delivered = [m for m in state.messages if m.message == "echo: hello"]
+        assert delivered and delivered[0].event_id in first_ids
+        # the session/load transcript replay stays suppressed — recovery
+        # relies on the persisted rows, not the ACP replay
+        assert not any("replayed" in m.message for m in state.messages)
+        # the watcher's persisted cursor still filters: only later events
+        tail = await second.get_session(
+            session_id, since_event_id=first_ids[0]
+        )
+        assert all(
+            int(m.event_id or 0) > int(first_ids[0]) for m in tail.messages
+        )
+        # janitor-facing count for sessions absent from the live map
+        assert store.count_local_events_since(session_id, "0") >= 1
+        assert store.count_local_events_since(session_id, first_ids[-1]) == 0
+    finally:
+        await second.aclose()
+
+    store.delete_local_events(session_id)
+    assert store.local_events(session_id) == []
+
