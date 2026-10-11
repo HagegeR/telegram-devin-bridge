@@ -41,7 +41,7 @@ from app.formatting import (
     rich_paragraph,
     split_long_text,
 )
-from app.local import LocalClient, is_local
+from app.local import MODEL_TIER_ICONS, LocalClient, is_local
 from app.notify import register_notify_route
 from app.polling import run_polling
 from app.set_webhook import chat_commands, configure_bot
@@ -2794,12 +2794,18 @@ class Bridge:
                 # the CLI can offer 100+ models — Telegram rejects oversized
                 # keyboards, so long lists page through _page_rows
                 models = await self.local.models()
+                costs = await self.local.model_costs()
                 current_model = self.store.get_settings(conv_key).local_model
-                items = [
-                    (f"{'✓ ' if model == current_model else ''}{model}", callback)
-                    for model in models
-                    if len(callback := f"cfg:model:{model}") <= 64
-                ]
+                items = []
+                for model in models:
+                    callback = f"cfg:model:{model}"
+                    if len(callback) > 64:
+                        continue
+                    icon = MODEL_TIER_ICONS.get(costs.get(model, ""), "")
+                    prefix = ("✓ " if model == current_model else "") + (
+                        f"{icon} " if icon else ""
+                    )
+                    items.append((f"{prefix}{model}", callback))
                 rows = [[{
                     "text": "cli default",
                     "callback_data": "cfg:model:default",

@@ -27,6 +27,10 @@ and deployment update channels.
 
 ### Added
 
+- Local `/model` listings and the 🧠 Model settings submenu now prefix
+  each model with a pricing icon from `devin models list --format json`:
+  🎁 Free, 🏷️ Low cost, 💰 Med cost, 💎 High cost (bare slug when the
+  CLI reports no tier).
 - Local CLI capability surfacing (`/platform local` chats): `/commands`
   opens a category → command browser built from the CLI's
   `available_commands_update` (Session/Skills/System/…), with tap-to-run

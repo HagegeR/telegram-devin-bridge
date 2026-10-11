@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 LOCAL_PREFIX = "local:"
 
+# cost_tier -> list icon, from `devin models list --format json`
+MODEL_TIER_ICONS = {
+    "Free": "🎁",
+    "Low cost": "🏷️",
+    "Med cost": "💰",
+    "High cost": "💎",
+}
+
 
 def is_local(session_id: str) -> bool:
     return session_id.startswith(LOCAL_PREFIX)
@@ -164,6 +172,7 @@ class LocalClient:
         self._next_id = 0
         self._last_event_base = 0
         self._modes_cache: tuple[float, list[str]] | None = None
+        self._costs_cache: tuple[float, dict[str, str]] | None = None
         self._mode_details: list[dict] = []
         self._think_options: list[str] | None = None
         self._default_thought: str | None = None
@@ -281,6 +290,50 @@ class LocalClient:
         so it is not a source of truth.) Empty on probe failure."""
         await self.modes()  # the probe populates _model_options
         return self._model_options or []
+
+    async def model_costs(self) -> dict[str, str]:
+        """{model_uid: cost_tier} from `devin models list --format json`
+        (Free / Low cost / Med cost / High cost). ACP configOptions carry
+        names but not pricing, so this probes the CLI once per 5 min.
+        Empty on probe failure — callers must tolerate missing tiers."""
+        cached = self._costs_cache
+        if cached is not None and time.monotonic() - cached[0] < 300:
+            return cached[1]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._argv,
+                "models",
+                "list",
+                "--format",
+                "json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError:
+            return {}
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), 15)
+            payload = json.loads(out)
+            costs = {
+                str(v["model_uid"]): str(v["cost_tier"])
+                for f in payload.get("families", [])
+                if isinstance(f, dict)
+                for v in f.get("variants", [])
+                if isinstance(v, dict)
+                and v.get("model_uid")
+                and v.get("cost_tier")
+            }
+        except (TimeoutError, ValueError):
+            costs = {}
+        finally:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), 5)
+            except TimeoutError:
+                proc.kill()
+        if costs:
+            self._costs_cache = (time.monotonic(), costs)
+        return costs
 
     async def mode_details(self) -> list[dict]:
         """[{id, name, description}] from the `mode` config option —
