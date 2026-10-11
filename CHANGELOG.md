@@ -220,6 +220,13 @@ and deployment update channels.
 
 ### Fixed
 
+- Local CLI turns no longer lose their tail to a bridge restart: emitted
+  reply events are mirrored into a `local_events` table and re-seeded on
+  `session/load`, so a recovery watcher still delivers the turn-end
+  message + "💬 Waiting for your reply" (cloud sessions get this
+  durability server-side). The janitor sweep now also checks persisted
+  rows, so replies stranded on a session outside the live-process map
+  still reach Telegram.
 - Local sessions survive a bridge restart mid-turn: the prompt is kept in
   a durable `pending_prompt` column while its `session/prompt` call is in
   flight and replayed at the next boot, so a self-update deploy no longer
