@@ -109,6 +109,24 @@ and deployment update channels.
 
 ### Fixed
 
+- Local CLI turns no longer lose their tail to a bridge restart: emitted
+  reply events are mirrored into a `local_events` table and re-seeded on
+  `session/load`, so a recovery watcher still delivers the turn-end
+  message + "💬 Waiting for your reply" (cloud sessions get this
+  durability server-side). The janitor sweep now also checks persisted
+  rows, so replies stranded on a session outside the live-process map
+  still reach Telegram.
+- Local sessions survive a bridge restart mid-turn: the prompt is kept in
+  a durable `pending_prompt` column while its `session/prompt` call is in
+  flight and replayed at the next boot, so a self-update deploy no longer
+  silently eats the user's question. The marker is kept when the process
+  died (shutdown/crash/evict — an interrupted turn, not a failed one) and
+  dropped atomically when the conversation swaps sessions.
+- Local resume restores the chat's configured mode/model/thought_level —
+  `session/load` only reloads CLI state, so e.g. bypass mode silently
+  reverted to asking for approvals after a restart. Resume-time control
+  updates (`config_option_update`, `current_mode_update`) now pass the
+  replayed-history guard; only reply content is suppressed.
 - The local activity line (`→ …`) now shows the real command from
   `rawInput.command` instead of the tool title, so wrapper commands
   surface as e.g. `rtk pytest -q …` rather than a bare `Ran rtk`.
@@ -220,24 +238,6 @@ and deployment update channels.
 
 ### Fixed
 
-- Local CLI turns no longer lose their tail to a bridge restart: emitted
-  reply events are mirrored into a `local_events` table and re-seeded on
-  `session/load`, so a recovery watcher still delivers the turn-end
-  message + "💬 Waiting for your reply" (cloud sessions get this
-  durability server-side). The janitor sweep now also checks persisted
-  rows, so replies stranded on a session outside the live-process map
-  still reach Telegram.
-- Local sessions survive a bridge restart mid-turn: the prompt is kept in
-  a durable `pending_prompt` column while its `session/prompt` call is in
-  flight and replayed at the next boot, so a self-update deploy no longer
-  silently eats the user's question. The marker is kept when the process
-  died (shutdown/crash/evict — an interrupted turn, not a failed one) and
-  dropped atomically when the conversation swaps sessions.
-- Local resume restores the chat's configured mode/model/thought_level —
-  `session/load` only reloads CLI state, so e.g. bypass mode silently
-  reverted to asking for approvals after a restart. Resume-time control
-  updates (`config_option_update`, `current_mode_update`) now pass the
-  replayed-history guard; only reply content is suppressed.
 - The turn-close 👍 always lands now — a `REACT:` acknowledgment earlier in
   the turn no longer suppresses the completion mark on the triggering
   message.
