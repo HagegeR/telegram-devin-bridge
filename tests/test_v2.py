@@ -9531,3 +9531,32 @@ def test_save_conversation_drops_pending_prompt_on_session_swap() -> None:
     )
     conv = store.get_conversation("222:9")
     assert conv is not None and conv.pending_prompt == "for B"
+
+
+def test_stamp_uvicorn_loggers_prefixes_formatters() -> None:
+    import uvicorn.logging
+
+    attached: list[tuple[str, logging.Handler]] = []
+    for name, formatter in (
+        ("uvicorn.error", logging.Formatter("%(levelname)s %(message)s")),
+        (
+            "uvicorn.access",
+            uvicorn.logging.DefaultFormatter(
+                "%(levelprefix)s %(message)s", use_colors=False
+            ),
+        ),
+    ):
+        handler = logging.StreamHandler(io.StringIO())
+        handler.setFormatter(formatter)
+        logging.getLogger(name).addHandler(handler)
+        attached.append((name, handler))
+    try:
+        main_module._stamp_uvicorn_loggers()
+        for _, handler in attached:
+            assert handler.formatter._fmt.startswith("%(asctime)s")
+        main_module._stamp_uvicorn_loggers()  # idempotent
+        for _, handler in attached:
+            assert handler.formatter._fmt.count("%(asctime)s") == 1
+    finally:
+        for name, handler in attached:
+            logging.getLogger(name).removeHandler(handler)

@@ -60,9 +60,33 @@ from app.transcription import (
 )
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s:%(name)s %(message)s",
+)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+
+def _stamp_uvicorn_loggers() -> None:
+    """Prefix uvicorn's handler formatters with %(asctime)s. Config installs
+    them before app.main is even imported, so only the app lifespan can
+    restamp them — call before startup work begins."""
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for handler in logging.getLogger(name).handlers:
+            old = handler.formatter
+            fmt = getattr(old, "_fmt", "")
+            if not fmt or fmt.startswith("%(asctime)s"):
+                continue
+            try:
+                stamped = type(old)(
+                    f"%(asctime)s {fmt}",
+                    use_colors=getattr(old, "use_colors", None),
+                )
+            except TypeError:
+                stamped = type(old)(f"%(asctime)s {fmt}")
+            handler.setFormatter(stamped)
+
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _ANNOUNCE_MAX_ATTEMPTS = 3
@@ -3378,6 +3402,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        _stamp_uvicorn_loggers()
         await runtime.startup()
         if actual_settings.telegram_mode != "polling":
             await configure_bot(runtime.telegram)
