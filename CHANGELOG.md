@@ -46,6 +46,10 @@ and deployment update channels.
 - Recovered replies and restart digests now thread under the user message
   that prompted the turn, and a turn boundary keeps late output from a
   previous turn from claiming the newer message.
+- A restart no longer drops accepted Telegram updates: the dedupe marker
+  and the full payload land in `pending_updates` atomically, undispatched
+  rows are re-queued at startup, and dispatched rows are removed so
+  delivery stays at-least-once without replays.
 
 - `/settings`, `/repos`, `/platform` (and the other toggles) now persist
   at the chat level: a setting made in one forum topic applies to every
