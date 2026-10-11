@@ -9493,3 +9493,41 @@ def test_prompt_state_hook_persists_and_resume_config_reads_settings(
     }
     # unknown sessions return None, not a crash
     assert runtime._local_resume_config("local:missing") is None
+
+
+def test_save_conversation_drops_pending_prompt_on_session_swap() -> None:
+    # a pending marker belongs to the session it was sent to — /resume
+    # swapping the row's session must not replay the old prompt into the
+    # replacement
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:a",
+        session_url="local:a · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:a", "for A")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:b",
+        session_url="local:b · local CLI",
+        title="t",
+    )
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt is None
+    # same-session save preserves it
+    store.set_pending_prompt("222:9", "local:b", "for B")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:b",
+        session_url="local:b · local CLI",
+        title="t2",
+    )
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt == "for B"

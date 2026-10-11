@@ -630,3 +630,59 @@ async def test_resume_reapplies_mode_model_and_thought_level(
         await asyncio.sleep(0.1)
     assert sess.config["model"] == "swe-2-low"
     assert sess.config["thought_level"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_reap_keeps_pending_prompt_for_replay(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # shutdown/evict terminates the process mid-turn — the turn was
+    # interrupted, not answered, so the marker must survive for the next
+    # boot's replay
+    monkeypatch.setenv("FAKE_SLOW", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "second para tail")
+    await shell_client.send_message(session_id, "second")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if sess.pending_prompt == "second":
+            break
+        await asyncio.sleep(0.1)
+    await shell_client._reap(sess)
+    for _ in range(50):
+        if sess.turns == 0:
+            break
+        await asyncio.sleep(0.1)
+    assert sess.pending_prompt == "second"
+    # already reaped — terminate() in teardown would double-kill it
+    shell_client.sessions.pop(session_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_applies_config_on_next_prompt_when_conv_late(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # /resume loads a history session before its conversation is active —
+    # the config hook can't see the chat settings yet, so apply them on
+    # the first prompt instead of dropping them
+    applied: list[dict] = []
+    calls = {"n": 0}
+
+    def config(sid):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        cfg = {"mode": "smart", "model": "swe-2-low", "thought_level": "max"}
+        applied.append(cfg)
+        return cfg
+
+    shell_client.resume_config = config
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+    await shell_client.send_message(session_id, "second")
+    assert applied == [
+        {"mode": "smart", "model": "swe-2-low", "thought_level": "max"}
+    ]
+    await _wait_for(shell_client, session_id, "echo: second")

@@ -507,6 +507,12 @@ class Store:
                     last_user_text = excluded.last_user_text,
                     last_user_message_id = excluded.last_user_message_id,
                     last_pr_url = excluded.last_pr_url,
+                    -- an interrupted-turn marker belongs to the session it
+                    -- was sent to: swapping sessions must not replay the
+                    -- old prompt into the replacement
+                    pending_prompt = CASE
+                        WHEN conversations.session_id = excluded.session_id
+                        THEN conversations.pending_prompt ELSE NULL END,
                     updated_at = excluded.updated_at
                 """,
                 (

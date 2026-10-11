@@ -61,6 +61,10 @@ class _AcpSession:
     # user text currently in flight: the bridge persists it so a bridge
     # restart mid-turn can replay it; cleared when the turn settles
     pending_prompt: str | None = None
+    # resume loaded the session before its conversation was active (e.g.
+    # /resume of a history entry) — apply the chat config on the next
+    # prompt, when the conv lookup can see it
+    cfg_pending: bool = False
     # latest agent activity (tool-call title / thought tail) for the
     # watcher's live status line — cloud exposes nothing this granular
     activity: str = ""
@@ -447,6 +451,8 @@ class LocalClient:
             raise RuntimeError(f"local session {session_id} is gone")
         if sess.dead:
             raise RuntimeError(f"local session {sess.acp_id} is gone")
+        if sess.cfg_pending:
+            await self._apply_resume_config(session_id, sess)
         # chain turns so two in-flight prompts can't interleave chunks into
         # one merged reply; ACP serializes prompts per session anyway
         sess.turns += 1
@@ -478,7 +484,11 @@ class LocalClient:
                 # shutdown mid-turn: keep the pending marker for replay
                 raise
             except BaseException:
-                self._clear_pending_prompt(sess, session_id, message)
+                # a dead process means the turn was interrupted (shutdown,
+                # crash, evict), not answered — keep the marker for replay;
+                # only a live-process failure clears it
+                if not sess.dead:
+                    self._clear_pending_prompt(sess, session_id, message)
                 raise
             self._clear_pending_prompt(sess, session_id, message)
             return result
@@ -833,23 +843,34 @@ class LocalClient:
         logger.info("resumed local session %s", acp_id)
         # session/load restores the CLI's state, not the chat's configured
         # mode/model/thought_level — re-apply them so e.g. bypass mode
-        # survives a bridge restart instead of silently reverting
-        cfg = self.resume_config(session_id) if self.resume_config else None
-        if cfg:
-            mode = cfg.get("mode")
-            if mode:
-                try:
-                    await self.set_mode(session_id, mode)
-                except RuntimeError as exc:
-                    self._emit(sess, f"⚠ mode {mode} rejected: {exc}")
-            for config_id in ("model", "thought_level"):
-                value = cfg.get(config_id)
-                if value:
-                    try:
-                        await self._set_config(session_id, config_id, value)
-                    except RuntimeError as exc:
-                        self._emit(sess, f"⚠ {config_id} {value} rejected: {exc}")
+        # survives a bridge restart instead of silently reverting. When
+        # resume runs before the conversation is active (/resume of a
+        # history entry) the hook can't see the settings yet — keep the
+        # flag so the next prompt applies them instead.
+        sess.cfg_pending = True
+        await self._apply_resume_config(session_id, sess)
         return sess
+
+    async def _apply_resume_config(
+        self, session_id: str, sess: _AcpSession
+    ) -> None:
+        cfg = self.resume_config(session_id) if self.resume_config else None
+        if not cfg:
+            return
+        sess.cfg_pending = False
+        mode = cfg.get("mode")
+        if mode:
+            try:
+                await self.set_mode(session_id, mode)
+            except RuntimeError as exc:
+                self._emit(sess, f"⚠ mode {mode} rejected: {exc}")
+        for config_id in ("model", "thought_level"):
+            value = cfg.get(config_id)
+            if value:
+                try:
+                    await self._set_config(session_id, config_id, value)
+                except RuntimeError as exc:
+                    self._emit(sess, f"⚠ {config_id} {value} rejected: {exc}")
 
     async def _session_title(self, sess: _AcpSession, acp_id: str) -> str:
         try:

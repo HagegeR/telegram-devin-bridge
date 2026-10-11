@@ -181,7 +181,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     flight the prompt is kept in `conversations.pending_prompt`; a
     shutdown that cancels the turn leaves the marker, and the next boot
     replays it (`_replay_interrupted_turns`) so a self-update deploy
-    can't silently eat a question. Sessions have no cloud URL, and ignore
+    can't silently eat a question. The marker is kept when the process
+    died (shutdown/crash/evict — an interrupted turn, not a failed one),
+    cleared when a live prompt call errors, and dropped atomically when
+    `save_conversation` swaps the row to a different session. A resume
+    that runs before its conversation is active (`/resume` of a history
+    entry) applies the chat config on the first prompt instead.
+    Sessions have no cloud URL, and ignore
     the cloud
     session options — the CLI's own mode/model config applies instead
     (a `⚠ local sessions ignore cloud options: …` note lists whichever of
