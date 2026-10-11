@@ -9291,3 +9291,72 @@ async def test_sessions_merges_cli_session_db(tmp_path: Path) -> None:
     await handle_command(runtime, message("/resume 2"), "/resume 2")
     assert "isn't tracked" in str(telegram.sent[-1]["text"])
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recovery_digest_keeps_option_replies_interactive(
+    tmp_path: Path,
+) -> None:
+    class BacklogDevin(_FakeDevin):
+        async def get_session(
+            self, _: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [
+                    DevinMessage(
+                        "devin_message", "e1",
+                        "Pick one\nOPTIONS: " + "a " * 40 + "| Skip", None,
+                    ),
+                    DevinMessage("devin_message", "e2", "Update", None),
+                    DevinMessage("devin_message", "e3", "Done", None),
+                ],
+            )
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        BacklogDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=20,
+            devin_settle_seconds=30,
+        ),
+        clock=clock,
+        sleep=sleep,
+        resume_from=now,
+    ).run()
+    texts = [str(item["text"]) for item in telegram.sent]
+    digests = [t for t in texts if "While the bridge was restarting" in t]
+    # the option reply is delivered normally with its keyboard, not digested
+    assert all("Pick one" not in d for d in digests)
+    pick = next(t for t in texts if "Pick one" in t)
+    assert pick is not None
+    assert telegram.sent[[str(i["text"]) for i in telegram.sent].index(pick)].get(
+        "reply_markup"
+    )
