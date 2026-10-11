@@ -41,6 +41,12 @@ and deployment update channels.
 
 ### Fixed
 
+- Local permission prompts with non-integer request ids (the CLI can send
+  UUID ids) no longer crash the prompt task — the crash left the request
+  permanently unanswered and the local session looked stuck on
+  `⏳ working` forever. Request ids are now echoed back verbatim and the
+  answer callback accepts string ids.
+
 - Restart digests no longer swallow interactive replies: a pending reply
   carrying `OPTIONS:` is excluded from the digest and delivered normally
   with its buttons instead of being stripped and marked covered.
