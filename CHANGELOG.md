@@ -14,9 +14,9 @@ and deployment update channels.
   reply events are mirrored into a `local_events` table and re-seeded on
   `session/load`, so a recovery watcher still delivers the turn-end
   message + "💬 Waiting for your reply" (cloud sessions get this
-  durability server-side). A prompt killed mid-turn by a restart now
-  surfaces a "⚠ bridge restarted mid-turn" notice on resume instead of
-  going silently idle.
+  durability server-side). The janitor sweep now also checks persisted
+  rows, so replies stranded on a session outside the live-process map
+  still reach Telegram.
 
 ### Added
 
@@ -50,6 +50,39 @@ and deployment update channels.
   can't grow without bound.
 
 ### Fixed
+
+- The local activity line (`→ …`) now shows the real command from
+  `rawInput.command` instead of the tool title, so wrapper commands
+  surface as e.g. `rtk pytest -q …` rather than a bare `Ran rtk`.
+
+- Self-update no longer wedges itself: the restarted service inherited
+  the update lock's fd, so every later `/update` (and the cron pull)
+  printed `another update is running` forever. The restart command now
+  runs with the lock fd closed — serialization during the restart is
+  kept, the spawned service does not inherit the flock.
+
+- Local permission prompts with non-integer request ids (the CLI can send
+  UUID ids) no longer crash the prompt task — the crash left the request
+  permanently unanswered and the local session looked stuck on
+  `⏳ working` forever. Request ids are now echoed back verbatim and the
+  answer callback accepts string ids.
+
+- Restart digests no longer swallow interactive replies: a pending reply
+  carrying `OPTIONS:` is excluded from the digest and delivered normally
+  with its buttons instead of being stripped and marked covered.
+
+- `OPTIONS:` button labels up to 100 chars now render — labels over the
+  old 60-char cap silently dropped the whole marker, leaving the raw
+  `OPTIONS: …` line visible instead of buttons.
+
+- `/sessions` no longer silently truncates at 10 entries — it lists up to
+  200 history rows, and on `platform=local` chats it merges the CLI's
+  own session DB (`session/list`) so dormant untracked sessions appear
+  as `dormant (local)` rows — they are listed but not resumable, since
+  the CLI does not record which chat owns them; `/resume <n>` numbers
+  against the same merged list. Long lists that exceed the message cap
+  now end with an `…and N older sessions` note instead of dropping
+  entries silently.
 
 - A non-admin tap on a local permission prompt no longer consumes the
   keyboard — the choice rows are now deleted only after the admin check,
@@ -197,6 +230,15 @@ and deployment update channels.
 
 ### Fixed
 
+- Local sessions survive a bridge restart mid-turn: the prompt is kept in
+  a durable `pending_prompt` column while its `session/prompt` call is in
+  flight and replayed at the next boot, so a self-update deploy no longer
+  silently eats the user's question.
+- Local resume restores the chat's configured mode/model/thought_level —
+  `session/load` only reloads CLI state, so e.g. bypass mode silently
+  reverted to asking for approvals after a restart. Resume-time control
+  updates (`config_option_update`, `current_mode_update`) now pass the
+  replayed-history guard; only reply content is suppressed.
 - The turn-close 👍 always lands now — a `REACT:` acknowledgment earlier in
   the turn no longer suppresses the completion mark on the triggering
   message.

@@ -20,7 +20,7 @@ back to Telegram. The user only ever sees your messages — never the Devin UI.
   Markdown/MarkdownV2 and preserves fenced code and tables.
 - To offer choices, end the message with exactly one line:
   `OPTIONS: first choice | second choice | third choice`
-  (max 8 options, each under 60 chars). The bridge strips that line and
+  (max 8 options, each under 100 chars). The bridge strips that line and
   renders inline buttons; the pressed label is sent back to this session as a
   normal user message.
 - Do not ask the user to open a UI, click in Devin, or check a dashboard.

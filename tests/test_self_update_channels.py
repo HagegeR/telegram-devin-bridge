@@ -391,3 +391,55 @@ def test_openrc_restart_sweeps_orphan_supervisors(deploy_clone, tmp_path: Path):
     # d[a]emon bracket: the pattern must not match the restart shell's own
     # cmdline (which carries the pattern text), or pkill kills the restart
     assert "supervise-d[a]emon" in (pkill_lines[0] if pkill_lines else "")
+
+
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() != 0,
+    reason="the OpenRC branch is root-only",
+)
+def test_restart_command_runs_without_lock_fd(deploy_clone, tmp_path: Path):
+    # the restart shell holds fd 9 on the update lock for serialization;
+    # if the restart command inherits it, the new supervise-daemon holds
+    # the flock forever and every later update reports "another update
+    # is running"
+    import time
+
+    clone, _ = deploy_clone
+    calls = tmp_path / "calls"
+    stubbin = tmp_path / "bin"
+    stubbin.mkdir()
+    rcsvc = stubbin / "rc-service"
+    rcsvc.write_text(
+        '#!/bin/sh\n'
+        'if [ -e /proc/self/fd/9 ] || [ -e /dev/fd/9 ]; then open=yes; else open=no; fi\n'
+        f'echo "rc-service $* fd9=$open" >> "{calls}"\n'
+    )
+    rcsvc.chmod(0o755)
+    pkill = stubbin / "pkill"
+    pkill.write_text("#!/bin/sh\nexit 0\n")
+    pkill.chmod(0o755)
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{stubbin}:{os.environ['PATH']}",
+    }
+    env.pop("INVOCATION_ID", None)
+    result = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    for _ in range(80):
+        if calls.exists() and calls.read_text().count("rc-service") >= 2:
+            break
+        time.sleep(0.1)
+    rc_lines = calls.read_text().splitlines() if calls.exists() else []
+    assert [line.split()[-1] for line in rc_lines] == ["fd9=no", "fd9=no"]

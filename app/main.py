@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
@@ -138,6 +139,8 @@ class Bridge:
         )
         self.local.on_emit = self._on_local_emit
         self.local.on_permission = self._on_local_permission
+        self.local.on_prompt_state = self._on_local_prompt_state
+        self.local.resume_config = self._local_resume_config
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.bot_topics_enabled = False
@@ -240,6 +243,7 @@ class Bridge:
         for conv_key in list(self.pending_turns):
             await self._flush_pending(conv_key)
         await self._resume_watchers()
+        await self._replay_interrupted_turns()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
             self.background_tasks.add(task)
@@ -260,6 +264,39 @@ class Bridge:
                 trigger_message_id=conversation.last_user_message_id,
                 trigger_at=conversation.updated_at,
             )
+
+    async def _replay_interrupted_turns(self) -> None:
+        # a turn in flight when the bridge last stopped keeps its prompt in
+        # the conversation row — replay it so a self-update restart doesn't
+        # silently eat the user's question
+        for conv in self.store.list_conversations():
+            prompt = conv.pending_prompt
+            if not prompt or not is_local(conv.session_id):
+                continue
+            try:
+                await self.local.send_message(conv.session_id, prompt)
+            except RuntimeError:
+                self.store.set_pending_prompt(
+                    conv.conv_key, conv.session_id, None
+                )
+
+    def _on_local_prompt_state(
+        self, session_id: str, prompt: str | None
+    ) -> None:
+        conv = self.store.get_conversation_for_session(session_id)
+        if conv is not None:
+            self.store.set_pending_prompt(conv.conv_key, conv.session_id, prompt)
+
+    def _local_resume_config(self, session_id: str) -> dict | None:
+        conv = self.store.get_conversation_for_session(session_id)
+        if conv is None:
+            return None
+        settings = self.store.get_settings(conv.conv_key)
+        return {
+            "mode": settings.devin_mode,
+            "model": settings.local_model,
+            "thought_level": settings.thought_level,
+        }
 
     async def _retry_announce_update(self) -> None:
         for delay in _ANNOUNCE_RETRY_DELAYS:
@@ -931,7 +968,7 @@ class Bridge:
 
     def _on_local_permission(self, session_id: str, msg: dict) -> None:
         if self.shutting_down:
-            self.local.answer_permission(session_id, int(msg.get("id") or 0), None)
+            self.local.answer_permission(session_id, msg.get("id"), None)
             return
         task = asyncio.create_task(self._send_permission_prompt(session_id, msg))
         self.background_tasks.add(task)
@@ -941,7 +978,8 @@ class Bridge:
         """Surface an ACP session/request_permission as approve/reject
         buttons; falls back to auto-allow when no conv or the send fails
         so the turn never stalls on an invisible prompt."""
-        req_id = int(msg.get("id") or 0)
+        # ACP request ids may be UUID strings, not ints — echo verbatim
+        req_id = msg.get("id")
         conv = self.store.get_conversation_for_session(session_id)
         options = self.local.permission_options(msg)
         if conv is None or not options:
@@ -968,13 +1006,17 @@ class Bridge:
             self.local.answer_permission(session_id, req_id, None)
             return
         message_id = _sent_message_id(results)
+        # b64url(JSON) keeps any JSON id type verbatim through callback_data
+        # — a raw `id:option` string loses types (digit strings) and breaks
+        # on ids containing colons
+        enc = base64.urlsafe_b64encode(json.dumps(req_id).encode()).decode()
         for (option_id, _label), cid in zip(options, choice_ids):
             self.store.add_choice(
                 cid,
                 conv.conv_key,
                 session_id,
                 conv.chat_id,
-                f"__cmd:perm:{req_id}:{option_id}",
+                f"__cmd:perm:{enc}:{option_id}",
                 message_id,
             )
 
@@ -1636,15 +1678,15 @@ class Bridge:
                         callback_id, "Admins only — permission decisions are restricted."
                     )
                     return
-                parts = option.split(":", 3)
+                enc, _, option_id = option[len("__cmd:perm:"):].partition(":")
                 label: str | None = None
-                if len(parts) == 4:
-                    try:
-                        label = self.local.answer_permission(
-                            session_id, int(parts[2]), parts[3] or None
-                        )
-                    except ValueError:
-                        label = None
+                try:
+                    req_id = json.loads(base64.urlsafe_b64decode(enc))
+                    label = self.local.answer_permission(
+                        session_id, req_id, option_id or None
+                    )
+                except ValueError:
+                    label = None
                 updated = (
                     f"✅ {label}"
                     if label

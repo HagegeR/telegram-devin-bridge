@@ -95,6 +95,12 @@ def test_formatting_and_options() -> None:
     assert body == "Choose:"
     assert options == ["Yes", "No"]
     assert extract_options("OPTIONS: " + " | ".join(str(i) for i in range(9)))[1] == []
+    # labels past the old 60-char cap still render as buttons
+    long_label = "Pick the " + "very " * 12 + "long option"
+    assert extract_options(f"OPTIONS: {long_label} | Skip")[1] == [
+        long_label,
+        "Skip",
+    ]
 
 
 def test_extract_attachments() -> None:
@@ -9082,18 +9088,20 @@ async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
     )
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
-    answered: list[tuple[str, int, str | None]] = []
+    answered: list[tuple[str, int | str, str | None]] = []
 
     def fake_answer(
-        session_id: str, req_id: int, option_id: str | None
+        session_id: str, req_id: int | str, option_id: str | None
     ) -> str | None:
         answered.append((session_id, req_id, option_id))
         return "Reject"
 
     runtime.local.answer_permission = fake_answer  # type: ignore[method-assign]
     runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+    # ACP request ids can be UUID strings — int() on them used to crash
+    # the prompt task and leave the permission request unanswered forever
     msg = {
-        "id": 5,
+        "id": "4c05946c-1b32-49c7-878a-235fb99f8d86",
         "params": {
             "toolCall": {"title": "Run rm -rf"},
             "options": [
@@ -9117,13 +9125,15 @@ async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
         "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
         "data": buttons[1]["callback_data"],
     })
-    assert answered == [("local:s1", 5, "reject")]
+    assert answered == [
+        ("local:s1", "4c05946c-1b32-49c7-878a-235fb99f8d86", "reject")
+    ]
     assert "Reject" in str(telegram.edits[-1])
     # an already-answered request surfaces as expired
     answered.clear()
     runtime.local.answer_permission = lambda *a: None  # type: ignore[method-assign]
     store.add_choice(
-        "cb2", "222", "local:s1", 222, "__cmd:perm:5:allow", 1
+        "cb2", "222", "local:s1", 222, "__cmd:perm:NQ==:allow", 1
     )
     await runtime.handle_callback({
         "id": "cb2",
@@ -9132,6 +9142,51 @@ async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
         "data": "cb2",
     })
     assert "expired" in str(telegram.edits[-1])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_permission_callback_roundtrips_request_ids(
+    tmp_path: Path,
+) -> None:
+    # digit-only strings, negative ints, and ids containing colons must
+    # all survive the choice -> callback -> answer_permission round-trip
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    answered: list[tuple[str, int | str, str | None]] = []
+    runtime.local.answer_permission = (  # type: ignore[method-assign]
+        lambda s, r, o: answered.append((s, r, o)) or "Allow"
+    )
+    for req_id in (123, "123", -5, "a:b:c"):
+        await runtime._send_permission_prompt("local:s1", {
+            "id": req_id,
+            "params": {
+                "toolCall": {"title": "x"},
+                "options": [{"optionId": "allow", "name": "Allow"}],
+            },
+        })
+        cid = telegram.sent[-1]["reply_markup"]["inline_keyboard"][0][0][  # type: ignore[index]
+            "callback_data"
+        ]
+        await runtime.handle_callback({
+            "id": "cb",
+            "from": {"id": 111, "is_bot": False},
+            "message": {
+                "message_id": 1,
+                "chat": {"id": 222, "type": "private"},
+            },
+            "data": cid,
+        })
+    assert [r for _s, r, _o in answered] == [123, "123", -5, "a:b:c"]
     await runtime.shutdown()
 
 
@@ -9174,7 +9229,7 @@ async def test_attachment_uploads_after_local_session_expires(
 def test_delete_choices_preserves_perm_prompts(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.add_choice("a1", "222", "local:s1", 222, "option one", 50)
-    store.add_choice("a2", "222", "local:s1", 222, "__cmd:perm:5:allow", 51)
+    store.add_choice("a2", "222", "local:s1", 222, "__cmd:perm:NQ==:allow", 51)
     store.delete_choices("222")
     assert store.get_choice("a1") is None
     assert store.get_choice("a2") is not None
@@ -9252,3 +9307,227 @@ async def test_permission_prompt_non_admin_tap_preserves_buttons(
     })
     assert answered == [("local:s1", 5, "reject")]
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sessions_merges_cli_session_db(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.add_history(
+        conv_key="222",
+        session_id="local:tracked",
+        session_url="tracked · local CLI (no cloud URL)",
+        title="tracked",
+    )
+    store.update_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.local.list_sessions = lambda: _async(  # type: ignore[method-assign]
+        [
+            {"sessionId": "tracked", "title": "tracked"},
+            {"sessionId": "ghost", "title": "ghost session"},
+            {"title": "idless — skipped"},
+        ]
+    )
+    probed: list[str] = []
+    runtime.get_session_status = lambda sid: probed.append(sid) or _async("blocked")  # type: ignore[method-assign]
+    await handle_command(runtime, message("/sessions"), "/sessions")
+    text = str(telegram.sent[-1]["text"])
+    assert "ghost session" in text
+    # neither dormant local row is probed — probing would resume it into
+    # the process pool and evict live sessions
+    assert text.count("dormant (local)") == 2 and probed == []
+    # a dormant untracked session is listed but not resumable — its owning
+    # chat is unknown, so loading it could leak another chat's session
+    await handle_command(runtime, message("/resume 2"), "/resume 2")
+    assert "isn't tracked" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recovery_digest_keeps_option_replies_interactive(
+    tmp_path: Path,
+) -> None:
+    class BacklogDevin(_FakeDevin):
+        async def get_session(
+            self, _: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [
+                    DevinMessage(
+                        "devin_message", "e1",
+                        "Pick one\nOPTIONS: " + "a " * 40 + "| Skip", None,
+                    ),
+                    DevinMessage("devin_message", "e2", "Update", None),
+                    DevinMessage("devin_message", "e3", "Done", None),
+                ],
+            )
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        BacklogDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=20,
+            devin_settle_seconds=30,
+        ),
+        clock=clock,
+        sleep=sleep,
+        resume_from=now,
+    ).run()
+    texts = [str(item["text"]) for item in telegram.sent]
+    digests = [t for t in texts if "While the bridge was restarting" in t]
+    # the option reply is delivered normally with its keyboard, not digested
+    assert all("Pick one" not in d for d in digests)
+    pick = next(t for t in texts if "Pick one" in t)
+    assert pick is not None
+    assert telegram.sent[[str(i["text"]) for i in telegram.sent].index(pick)].get(
+        "reply_markup"
+    )
+
+
+@pytest.mark.asyncio
+async def test_replay_interrupted_turns_resends_pending_prompt(
+    tmp_path: Path,
+) -> None:
+    # a turn in flight when the bridge stopped keeps its prompt — the next
+    # boot must replay it instead of silently eating the user's question
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    store.save_conversation(
+        conv_key="222:10",
+        chat_id=222,
+        thread_id=10,
+        session_id="devin-cloud1",
+        session_url="https://devin.test/s1",
+        title="t",
+    )
+    store.set_pending_prompt("222:10", "devin-cloud1", "cloud prompt")
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, message: str) -> None:
+        sent.append((session_id, message))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+    await runtime._replay_interrupted_turns()
+    # only local prompts replay — a cloud session's watcher covers its own
+    assert sent == [("local:x", "answer me")]
+
+    async def broken_send(session_id: str, message: str) -> None:
+        raise RuntimeError("gone")
+
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    runtime.local.send_message = broken_send  # type: ignore[method-assign]
+    await runtime._replay_interrupted_turns()
+    # a session that can't resume doesn't wedge the replay loop forever
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt is None
+
+
+def test_prompt_state_hook_persists_and_resume_config_reads_settings(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.update_settings(
+        "222", devin_mode="bypass", local_model="m1", thought_level="high"
+    )
+    runtime = Bridge(
+        settings(tmp_path), Store(":memory:"), _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    runtime.store = store
+    runtime._on_local_prompt_state("local:x", "pending question")
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt == "pending question"
+    runtime._on_local_prompt_state("local:x", None)
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt is None
+    assert runtime._local_resume_config("local:x") == {
+        "mode": "bypass",
+        "model": "m1",
+        "thought_level": "high",
+    }
+    # unknown sessions return None, not a crash
+    assert runtime._local_resume_config("local:missing") is None
+
+
+def test_save_conversation_drops_pending_prompt_on_session_swap() -> None:
+    # a pending marker belongs to the session it was sent to — /resume
+    # swapping the row's session must not replay the old prompt into the
+    # replacement
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:a",
+        session_url="local:a · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:a", "for A")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:b",
+        session_url="local:b · local CLI",
+        title="t",
+    )
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt is None
+    # same-session save preserves it
+    store.set_pending_prompt("222:9", "local:b", "for B")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:b",
+        session_url="local:b · local CLI",
+        title="t2",
+    )
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt == "for B"

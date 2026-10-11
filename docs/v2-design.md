@@ -71,7 +71,7 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   - `conversation_settings` writes (`Store.update_chat_settings`) target the chat-level key (`chat_id` without the thread) and clear the same fields on the invoking topic's row, so a setting persists across new topics and a stale per-topic override can't shadow it; `get_settings` still reads the topic row first, so any remaining explicitly-set topic field (including an explicit `off` for tri-state fields; `silent` cannot express an explicit off) overrides the chat-level value for that topic.
 - `devin.py` – `DevinClient` (v1 only): `create_session(prompt, title, playbook_id=None) -> (session_id, url)`, `send_message`, `get_session -> SessionState(status_enum, title, pr_url, messages)`, `list_playbooks`, `terminate`, `upload_attachment(filename, bytes, content_type) -> url`.
 - `telegram.py` – `TelegramClient`: rich Markdown (`send_rich_message`/`send_markdown`), private-chat drafts, forum-topic creation/renaming, `send_message`, `edit_message_text`, `edit_message_reply_markup`, `send_chat_action(typing)`, `set_message_reaction(chat_id, message_id, emoji|None)`, `answer_callback_query`, `get_file`+`download_file(file_path) -> bytes`, `set_my_commands`, `set_webhook`. Handles 429 by reading `parameters.retry_after`, sleeping, retrying once. Rich-message 4xx responses fall back to MarkdownV2; unknown-method errors latch rich mode off, while transport and 5xx errors propagate.
-- `formatting.py` – `markdown_to_telegram_markdown_v2(text) -> str` and `chunk(text, limit=4096) -> list[str]` (never split inside a fenced code block; if a block itself exceeds the limit, close and reopen the fence; append ` (i/N)` suffix when N>1). Escape all MarkdownV2 reserved chars outside entities: `_ * [ ] ( ) ~ \` > # + - = | { } . !`. Support: `**bold**`/`__bold__`->`*bold*`, `*em*`/`_em_`->`_em_`, `~~s~~`->`~s~`, inline code, fenced code (```lang), `[text](url)`, headings `#..` -> bold line, `> quote` -> `>quote`, bullet `- ` -> `• `. Also `extract_options(text) -> (text_without_line, list[str])`: if the last non-empty line matches `^OPTIONS:\s*(.+)$` split on `|`, strip; max 8 options, each <= 60 chars.
+- `formatting.py` – `markdown_to_telegram_markdown_v2(text) -> str` and `chunk(text, limit=4096) -> list[str]` (never split inside a fenced code block; if a block itself exceeds the limit, close and reopen the fence; append ` (i/N)` suffix when N>1). Escape all MarkdownV2 reserved chars outside entities: `_ * [ ] ( ) ~ \` > # + - = | { } . !`. Support: `**bold**`/`__bold__`->`*bold*`, `*em*`/`_em_`->`_em_`, `~~s~~`->`~s~`, inline code, fenced code (```lang), `[text](url)`, headings `#..` -> bold line, `> quote` -> `>quote`, bullet `- ` -> `• `. Also `extract_options(text) -> (text_without_line, list[str])`: if the last non-empty line matches `^OPTIONS:\s*(.+)$` split on `|`, strip; max 8 options, each <= 100 chars.
 - `access.py` – `is_allowed(update_message) -> bool` and `should_respond_in_group(message, bot_username) -> bool`.
 - `commands.py` – slash command handlers (below).
 - `watcher.py` – `SessionWatcher` (below). Replies containing `TABLE:`/`DETAILS:`/`SUGGEST:` markers are split by `parse_rich_segments` into ordered markdown/`blocks` segments (`SUGGEST: <what> — <why>` … `END SUGGEST` renders a `details` card whose summary is prefixed `💡`, meant for proposing skills/knowledge/environment changes; pairing it with `OPTIONS:` lets the user approve in-chat): markdown segments go through `send_markdown`, block segments through `sendRichMessage` (native `table`/`details` blocks), with buttons/reply threading on the outer segments and marker-free fallback text when rich messages are unavailable. Control markers (each on its own line, stripped by `extract_controls`): `REACT: <emoji>` reacts to the triggering user message; `PIN:` pins the delivered reply; `URGENT:`/`SILENT:` override the computed `disable_notification`; `PROGRESS:` edits the previous progress message via `editMessageText` instead of sending a new one (MarkdownV2 edit; falls back to a normal send); `POLL: question | a | b` sends a native poll. `||spoiler||` and `**>`/`||` expandable quotes also pass through the MarkdownV2 converter: every continuation line inside a `**>` quote is emitted with a `>` prefix (MarkdownV2 requires it — a bare line ends the quote and the trailing `||` parses as an unclosed spoiler), a `||` on its own line closes the quote on the previous content line, and replies containing `**>` outside a code fence (`has_expandable_quote`) bypass `sendRichMessage` (whose markdown cannot render expandable quotes) and send via `sendMessage`/`MarkdownV2` instead, skipping the Show-more split while `chunk` closes and reopens the quote at each 4096 boundary.
@@ -127,7 +127,7 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
 - React 👀 on the user's message (`set_message_reaction`), start typing.
 - If message has `photo` (largest size) or `document` (<= 20 MB, Telegram getFile limit): download, `upload_attachment`, and prepend `Attached file: <url>` (+ original filename) to the text/caption.
 - If conversation has no active session (or its `status_enum` is `expired`, or the send below fails with 404/410 -> auto-create new; `finished`/`blocked`/suspended sessions resume when messaged and keep their context): `create_session(prompt=SYSTEM_PREAMBLE + text, title=f"Telegram: {first 60 chars}")`, insert into `conversations` + `session_history`, reply with `Started session: <url>` (silent).
-  - `SYSTEM_PREAMBLE` (constant in `commands.py`): "You are chatting with a user over Telegram via a bridge. Keep replies concise. Telegram renders Markdown. When you need the user to pick between a small set of options, end your message with one line exactly like `OPTIONS: first option | second option | third option` (max 8, each under 60 chars); the bridge turns it into buttons. For rich or long results (tables, charts, reports), attach a self-contained .html file; the bridge serves it and adds an Open button. To collapse a long section inline, use a Telegram expandable quote: first line prefixed `**>`, the rest prefixed `>`, and end with `||`. Inline `||spoiler||` hides text until tapped. Markers that render native blocks: `DETAILS: <summary>` on its own line, then content lines, then `END DETAILS` gives a tap-to-expand section; `TABLE:` on its own line, then `| col | col |` pipe rows, then `END TABLE` gives a real table; `SUGGEST: <what> — <short why>` on its own line, then the proposal body, then `END SUGGEST` renders a 💡 suggestion card — use it to propose a skill, knowledge entry, or environment change, and pair it with `OPTIONS:` (e.g. `OPTIONS: Save it | Skip`) so the user can approve; apply their choice with your own tools. Control markers, each on its own line: `REACT: <emoji>` reacts to the user's message (common emojis — off-set ones degrade to 👍); `PIN:` pins the reply; `URGENT:`/`SILENT:` override notification quieting; `PROGRESS:` edits your previous progress message instead of sending a new one; `POLL: question | a | b` sends a poll. Never ask the user to open a UI; they only see your messages.\n\nUser message: "
+  - `SYSTEM_PREAMBLE` (constant in `commands.py`): "You are chatting with a user over Telegram via a bridge. Keep replies concise. Telegram renders Markdown. When you need the user to pick between a small set of options, end your message with one line exactly like `OPTIONS: first option | second option | third option` (max 8, each under 100 chars); the bridge turns it into buttons. For rich or long results (tables, charts, reports), attach a self-contained .html file; the bridge serves it and adds an Open button. To collapse a long section inline, use a Telegram expandable quote: first line prefixed `**>`, the rest prefixed `>`, and end with `||`. Inline `||spoiler||` hides text until tapped. Markers that render native blocks: `DETAILS: <summary>` on its own line, then content lines, then `END DETAILS` gives a tap-to-expand section; `TABLE:` on its own line, then `| col | col |` pipe rows, then `END TABLE` gives a real table; `SUGGEST: <what> — <short why>` on its own line, then the proposal body, then `END SUGGEST` renders a 💡 suggestion card — use it to propose a skill, knowledge entry, or environment change, and pair it with `OPTIONS:` (e.g. `OPTIONS: Save it | Skip`) so the user can approve; apply their choice with your own tools. Control markers, each on its own line: `REACT: <emoji>` reacts to the user's message (common emojis — off-set ones degrade to 👍); `PIN:` pins the reply; `URGENT:`/`SILENT:` override notification quieting; `PROGRESS:` edits your previous progress message instead of sending a new one; `POLL: question | a | b` sends a poll. Never ask the user to open a UI; they only see your messages.\n\nUser message: "
 - Else `send_message(session_id, text)`.
 - Ensure a `SessionWatcher` is running for that session (idempotent registry keyed by session_id).
 
@@ -147,7 +147,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 ### Commands (`commands.py`) – reply in the same conv/thread
 - `/start`, `/help` – list commands (`/help` collapses the command list per section; prefers a `sendRichMessage` `blocks` payload of `details` blocks, falling back to HTML `<blockquote expandable>` when rich messages are unavailable).
 - `/new [title]` – archive current conv mapping (keep history), store a pending title, reply `◆ New conversation: <title>\nSend your first message to start Devin.` — no Devin call; the next user message creates the session with that title.
-- `/sessions` – last 10 from `session_history` for this conv, numbered with title + status (fetch status for each, tolerate errors), mark active with `*`; session urls collapse into a `details` rich block or an HTML `<blockquote expandable>` fallback (dropped when the reply would exceed ~4000 chars).
+- `/sessions` – up to 200 from `session_history` for this conv, numbered with title + status (fetch status for each, tolerate errors), mark active with `*`; on `platform=local` chats the CLI's own session DB (`session/list`) is merged in so dormant untracked sessions appear as `dormant (local)` without being woken, and `/resume <n>` numbers against the same merged list. Session urls collapse into a `details` rich block or an HTML `<blockquote expandable>` fallback (dropped when the reply would exceed ~4000 chars; an `…and N older sessions` note reports what trimming omitted).
 - `/resume <n>` – set that history entry as active (`last_event_id` = id of its latest devin_message so no replay), reply `Resumed: <title> <url>`.
 - `/status` – active session: title, `status_enum` (plus the v3 `status_detail` reason when it adds information), url; session id, raw `status_detail`, ACUs consumed, `updated_at`, and every PR url in a `details` rich block or an HTML `<blockquote expandable>` fallback (dropped when the reply would exceed ~4000 chars; oversized titles are truncated to fit). `/usage` renders its daily breakdown as a rich `table` block with the same fallback.
 - `/stop` – terminate active session via `DELETE` (confirm with an inline keyboard "Terminate | Cancel" using the same `pending_choices` mechanism but with `option_text` starting `__cmd:terminate:<session_id>`; handle_callback must special-case `__cmd:` prefixes). After terminate, clear active mapping.
@@ -168,7 +168,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     emitted at stopReason; `agent_thought_chunk` and `tool_call` updates
     set the session's activity, shown live as a `→ …` line in the edited
     ⏳ Working status message (cloud sessions get the same line from any
-    non-enum `status_detail`). A thought line longer than the 120-char
+    non-enum `status_detail`). For tool calls the activity prefers
+    `rawInput.command` over the title, so wrapper commands show the real
+    command (`rtk pytest -q …`) instead of `Ran rtk`. A thought line longer than the 120-char
     display cap keeps only its tail, and a cut that lands mid-word drops
     the partial token so the status never starts inside a word; the
     status message re-posts after each
@@ -178,7 +180,22 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     limit). Sessions
     persist in the CLI's own DB and are reloaded via `session/load` after a
     bridge restart (the in-memory map is only the live-process index; `/stop`
-    still deletes the record), have no cloud URL, and ignore the cloud
+    still deletes the record). Resume re-applies the chat's configured
+    mode/model/thought_level (`session/set_mode` +
+    `session/set_config_option`) since `session/load` restores CLI state
+    only, and the replayed-history guard suppresses reply content only —
+    control updates still apply. While a `session/prompt` call is in
+    flight the prompt is kept in `conversations.pending_prompt`; a
+    shutdown that cancels the turn leaves the marker, and the next boot
+    replays it (`_replay_interrupted_turns`) so a self-update deploy
+    can't silently eat a question. The marker is kept when the process
+    died (shutdown/crash/evict — an interrupted turn, not a failed one),
+    cleared when a live prompt call errors, and dropped atomically when
+    `save_conversation` swaps the row to a different session. A resume
+    that runs before its conversation is active (`/resume` of a history
+    entry) applies the chat config on the first prompt instead.
+    Sessions have no cloud URL, and ignore
+    the cloud
     session options — the CLI's own mode/model config applies instead
     (a `⚠ local sessions ignore cloud options: …` note lists whichever of
     repos/acu/tags/secrets/knowledge/snapshot/unlisted/idempotent/playbook
@@ -187,7 +204,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     under `DEVIN_LOCAL_CWD/attachments/` and the prompt hands the agent
     the host path (`Attached file: <path> — saved on the bridge host`).
     `session/request_permission` prompts are surfaced as inline-keyboard
-    buttons (`__cmd:perm:<request>:<option>` choices, restricted to
+    buttons (`__cmd:perm:<b64url-json-request-id>:<option>` choices —
+    the request id may be an int or any string, so it is encoded
+    verbatim — restricted to
     `TELEGRAM_ADMIN_USER_IDS` when configured) and the picked option
     is written back to the acp process; when the prompt can't be sent
     (no conversation, send failure) the allow option is auto-picked so the

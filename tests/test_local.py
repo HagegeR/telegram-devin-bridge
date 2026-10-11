@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from app.local import LocalClient, is_local
+from app.local import LocalClient, _scrub_command, is_local
 
 FAKE_ACP = textwrap.dedent(
     """
@@ -130,6 +130,12 @@ FAKE_ACP = textwrap.dedent(
                               "params": {"sessionId": sid, "update": {
                                   "sessionUpdate": "tool_call",
                                   "title": "Running pytest"}}}), flush=True)
+            if os.environ.get("FAKE_RTK"):
+                print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                                  "params": {"sessionId": sid, "update": {
+                                      "sessionUpdate": "tool_call",
+                                      "title": "Ran rtk",
+                                      "rawInput": {"command": "rtk pytest -q tests/x.py"}}}}), flush=True)
             variant = os.environ.get("FAKE_LONG_THOUGHT")
             if variant:
                 long_line = {
@@ -335,6 +341,34 @@ async def test_activity_surfaces_in_status_detail(
 
 
 @pytest.mark.asyncio
+async def test_tool_call_prefers_raw_command_over_wrapper_title(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "Ran rtk" is the wrapper name — the status line should show the
+    # real command from rawInput.command instead
+    monkeypatch.setenv("FAKE_RTK", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_detail == "rtk pytest -q tests/x.py"
+
+
+def test_scrub_command_masks_credentials() -> None:
+    # the activity line is posted to the chat — a command that embeds a
+    # credential must not publish it
+    for raw in (
+        "curl -H 'Authorization: Bearer tok123' https://x",
+        "export API_KEY=sk-abc123 && pytest",
+        'rtk --token "secret value" run',
+        "gh auth login --with-token ghp_xyz",
+    ):
+        scrubbed = _scrub_command(raw)
+        for secret in ("tok123", "sk-abc123", "secret", "ghp_xyz"):
+            assert secret not in scrubbed, (raw, scrubbed)
+    assert _scrub_command("rtk pytest -q") == "rtk pytest -q"
+
+
+@pytest.mark.asyncio
 async def test_long_thought_tail_starts_on_word_boundary(
     shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -523,6 +557,138 @@ async def test_modes_probe_deletes_its_session(
 
 
 @pytest.mark.asyncio
+
+async def test_pending_prompt_hook_tracks_turn(shell_client: LocalClient) -> None:
+    states: list[tuple[str, str | None]] = []
+    shell_client.on_prompt_state = lambda sid, p: states.append((sid, p))
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    assert (session_id, "hello") in states
+    assert states[-1] == (session_id, None)
+    assert shell_client.sessions[session_id].pending_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_pending_prompt_survives_turn_cancellation(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a bridge shutdown cancels the in-flight turn — the pending marker
+    # must stay so the next boot can replay the prompt
+    monkeypatch.setenv("FAKE_SLOW", "1")
+    states: list[str | None] = []
+    shell_client.on_prompt_state = lambda sid, p: states.append(p)
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "second para tail")
+    await shell_client.send_message(session_id, "second")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if sess.pending_prompt == "second":
+            break
+        await asyncio.sleep(0.1)
+    assert sess.tail is not None
+    sess.tail.cancel()
+    for _ in range(50):
+        if sess.turns == 0:
+            break
+        await asyncio.sleep(0.1)
+    assert sess.pending_prompt == "second"
+    assert states[-1] == "second"
+
+
+@pytest.mark.asyncio
+async def test_resume_reapplies_mode_model_and_thought_level(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # session/load restores CLI state, not the chat's configured values —
+    # resume must re-apply mode/model/thought_level or e.g. bypass mode
+    # silently reverts to asking for approvals
+    modes: list[str] = []
+    original = LocalClient.set_mode
+
+    async def spy(self, sid, mode):  # type: ignore[no-untyped-def]
+        modes.append(mode)
+        await original(self, sid, mode)
+
+    monkeypatch.setattr(LocalClient, "set_mode", spy)
+    shell_client.resume_config = lambda sid: {
+        "mode": "smart",
+        "model": "swe-2-low",
+        "thought_level": "max",
+    }
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+    await shell_client.send_message(session_id, "second")
+    assert "smart" in modes
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if (
+            sess.config.get("model") == "swe-2-low"
+            and sess.config.get("thought_level") == "max"
+        ):
+            break
+        await asyncio.sleep(0.1)
+    assert sess.config["model"] == "swe-2-low"
+    assert sess.config["thought_level"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_reap_keeps_pending_prompt_for_replay(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # shutdown/evict terminates the process mid-turn — the turn was
+    # interrupted, not answered, so the marker must survive for the next
+    # boot's replay
+    monkeypatch.setenv("FAKE_SLOW", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "second para tail")
+    await shell_client.send_message(session_id, "second")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if sess.pending_prompt == "second":
+            break
+        await asyncio.sleep(0.1)
+    await shell_client._reap(sess)
+    for _ in range(50):
+        if sess.turns == 0:
+            break
+        await asyncio.sleep(0.1)
+    assert sess.pending_prompt == "second"
+    # already reaped — terminate() in teardown would double-kill it
+    shell_client.sessions.pop(session_id)
+
+
+@pytest.mark.asyncio
+async def test_resume_applies_config_on_next_prompt_when_conv_late(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # /resume loads a history session before its conversation is active —
+    # the config hook can't see the chat settings yet, so apply them on
+    # the first prompt instead of dropping them
+    applied: list[dict] = []
+    calls = {"n": 0}
+
+    def config(sid):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        cfg = {"mode": "smart", "model": "swe-2-low", "thought_level": "max"}
+        applied.append(cfg)
+        return cfg
+
+    shell_client.resume_config = config
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+    await shell_client.send_message(session_id, "second")
+    assert applied == [
+        {"mode": "smart", "model": "swe-2-low", "thought_level": "max"}
+    ]
+    await _wait_for(shell_client, session_id, "echo: second")
+
+@pytest.mark.asyncio
 async def test_local_events_survive_bridge_restart(tmp_path: Path) -> None:
     # a bridge restart kills the acp process and its in-memory events —
     # persisted rows let a resumed session re-offer the undelivered tail,
@@ -545,8 +711,6 @@ async def test_local_events_survive_bridge_restart(tmp_path: Path) -> None:
     try:
         state = await second.get_session(session_id)
         assert state.status_enum == "blocked"
-        # the turn ended cleanly — no interruption notice
-        assert not any("restarted mid-turn" in m.message for m in state.messages)
         delivered = [m for m in state.messages if m.message == "echo: hello"]
         assert delivered and delivered[0].event_id in first_ids
         # the session/load transcript replay stays suppressed — recovery
@@ -559,88 +723,12 @@ async def test_local_events_survive_bridge_restart(tmp_path: Path) -> None:
         assert all(
             int(m.event_id or 0) > int(first_ids[0]) for m in tail.messages
         )
+        # janitor-facing count for sessions absent from the live map
+        assert store.count_local_events_since(session_id, "0") >= 1
+        assert store.count_local_events_since(session_id, first_ids[-1]) == 0
     finally:
         await second.aclose()
 
     store.delete_local_events(session_id)
     assert store.local_events(session_id) == []
 
-
-@pytest.mark.asyncio
-async def test_interrupted_turn_notice_on_resume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # a bridge restart mid-prompt kills the acp process — the resumed
-    # session must say the turn was lost instead of going silently idle
-    from app.store import Store
-
-    store = Store(str(tmp_path / "bridge.sqlite3"))
-    fake = tmp_path / "fake_acp.py"
-    fake.write_text(FAKE_ACP, encoding="utf-8")
-    monkeypatch.setenv("FAKE_PERMISSION", "1")  # prompt waits on a decision
-    cmd = _devin_command(tmp_path, fake)
-    first = LocalClient(cli_command=cmd, api_key=None, event_store=store)
-    first.on_permission = lambda sid, msg: None  # leave it unanswered
-    session_id, _ = await first.create_session("hello")
-    for _ in range(50):
-        if first.sessions[session_id].permissions:
-            break
-        await asyncio.sleep(0.1)
-    assert first.sessions[session_id].permissions  # turn in flight
-    await first.aclose()  # what a bridge restart does to the process
-
-    second = LocalClient(cli_command=cmd, api_key=None, event_store=store)
-    state = await second.get_session(session_id)
-    assert any("restarted mid-turn" in m.message for m in state.messages)
-    await second.aclose()
-
-    # the flag is consumed — a later resume re-seeds the persisted notice
-    # but must not emit a second one
-    third = LocalClient(cli_command=cmd, api_key=None, event_store=store)
-    try:
-        again = await third.get_session(session_id)
-        notices = [
-            m for m in again.messages if "restarted mid-turn" in m.message
-        ]
-        assert len(notices) == 1
-    finally:
-        await third.aclose()
-
-
-@pytest.mark.asyncio
-async def test_completed_turn_clears_flag_even_when_process_died(
-    tmp_path: Path,
-) -> None:
-    # review edge: prompt resolved but the process died before the done
-    # callback ran — the turn WAS answered, so no interruption notice
-    from app.local import _AcpSession
-    from app.store import Store
-
-    store = Store(str(tmp_path / "bridge.sqlite3"))
-    client = LocalClient(cli_command="devin", api_key=None, event_store=store)
-    sess = _AcpSession(proc=object(), acp_id="dead-sid")
-    sid = "local:dead-sid"
-    flag = f"local_running:{sid}"
-    sess.dead = True
-
-    store.set_setting(flag, "1")
-    sess.turns = 1
-    resolved: asyncio.Future = asyncio.Future()
-    resolved.set_result({"stopReason": "end_turn"})
-    client._turn_done(sess, resolved)
-    assert store.get_setting(flag) is None
-
-    store.set_setting(flag, "1")
-    sess.turns = 1
-    killed: asyncio.Future = asyncio.Future()
-    killed.set_exception(RuntimeError("acp process exited"))
-    client._turn_done(sess, killed)
-    assert store.get_setting(flag) == "1"
-
-    # separate session so the _emit rows above can't skew the counts
-    other = "local:count-sid"
-    store.append_local_event(other, "5", "2026-01-01T00:00:00Z", "m")
-    store.append_local_event(other, "9", "2026-01-01T00:00:01Z", "n")
-    assert store.count_local_events_since(other, "5") == 1
-    assert store.count_local_events_since(other, "9") == 0
-    assert store.count_local_events_since(other, "0") == 2
