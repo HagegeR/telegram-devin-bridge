@@ -8,6 +8,13 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Changed
+
+- Service log lines now carry an `asctime` timestamp — both app loggers
+  and uvicorn's access/error/shutdown lines (restamped at app startup;
+  uvicorn builds its handlers before `app.main` is imported) — so
+  restart-correlated entries can be told apart from days-old residue.
+
 ### Fixed
 
 - Local CLI turns no longer lose their tail to a bridge restart: emitted
