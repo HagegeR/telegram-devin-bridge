@@ -8161,6 +8161,14 @@ async def test_model_settings_submenu_paginates(tmp_path: Path) -> None:
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
     models = [f"m{i:03d}" for i in range(75)]
     runtime.local.models = lambda: _async(models)  # type: ignore[method-assign]
+    runtime.local.model_costs = lambda: _async(  # type: ignore[method-assign]
+        {
+            "m000": "Free",
+            "m001": "Med cost",
+            "m002": "High cost",
+            "m003": "Low cost",
+        }
+    )
 
     callback = {
         "from": {"id": 111, "is_bot": False},
@@ -8173,6 +8181,12 @@ async def test_model_settings_submenu_paginates(tmp_path: Path) -> None:
     assert "cfg:model:m000" in callbacks
     assert "cfg:model:m030" not in callbacks
     assert "cfg:modelpage:1" in callbacks
+    texts = [b["text"] for row in rows for b in row]
+    assert "🎁 m000" in texts
+    assert "💰 m001" in texts
+    assert "💎 m002" in texts
+    assert "🏷️ m003" in texts
+    assert "m004" in texts  # unknown tier -> bare slug
 
     await runtime.handle_callback({**callback, "id": "cfg-2", "data": "cfg:modelpage:2"})
     rows = telegram.markup_edits[-1]["inline_keyboard"]
