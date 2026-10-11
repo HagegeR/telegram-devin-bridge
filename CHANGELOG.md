@@ -41,6 +41,9 @@ and deployment update channels.
 
 ### Fixed
 
+- A non-admin tap on a local permission prompt no longer consumes the
+  keyboard — the choice rows are now deleted only after the admin check,
+  so the prompt stays answerable for an admin.
 - The local probe behind `/settings`, `/mode`, `/model`, `/think`, and
   `/commands` now deletes the throwaway session it creates — each call
   previously left a persistent phantom entry in the CLI's session DB
