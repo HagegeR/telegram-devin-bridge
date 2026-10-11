@@ -9276,6 +9276,7 @@ async def test_sessions_merges_cli_session_db(tmp_path: Path) -> None:
         [
             {"sessionId": "tracked", "title": "tracked"},
             {"sessionId": "ghost", "title": "ghost session"},
+            {"title": "idless — skipped"},
         ]
     )
     probed: list[str] = []

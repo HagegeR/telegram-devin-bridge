@@ -1043,7 +1043,10 @@ async def _session_history(
         return history
     known = {entry.session_id for entry in history}
     for entry in await runtime.local.list_sessions():
-        session_id = f"local:{entry.get('sessionId')}"
+        acp_id = entry.get("sessionId")
+        if not acp_id:
+            continue
+        session_id = f"local:{acp_id}"
         if session_id in known:
             continue
         title = str(entry.get("title") or session_id)
