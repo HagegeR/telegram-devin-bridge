@@ -41,6 +41,12 @@ and deployment update channels.
 
 ### Fixed
 
+- Self-update no longer wedges itself: the restarted service inherited
+  the update lock's fd, so every later `/update` (and the cron pull)
+  printed `another update is running` forever. The restart command now
+  runs with the lock fd closed — serialization during the restart is
+  kept, the spawned service does not inherit the flock.
+
 - Local permission prompts with non-integer request ids (the CLI can send
   UUID ids) no longer crash the prompt task — the crash left the request
   permanently unanswered and the local session looked stuck on
