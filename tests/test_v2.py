@@ -8824,15 +8824,15 @@ async def test_edit_to_staged_turn_survives_restart(tmp_path: Path) -> None:
         task.cancel()
 
     runtime2 = Bridge(
-        settings(tmp_path, telegram_debounce_seconds=60),
+        settings(tmp_path, telegram_debounce_seconds=0),
         Store(str(tmp_path / "bridge.sqlite3")),
         devin,
         telegram,  # type: ignore[arg-type]
     )
     await runtime2.startup()
-    # sequential replay staged the original then applied the edit
-    assert runtime2.pending_turns["444"][0][1] == "omega-msg"
-    await runtime2._flush_pending("444")
+    # replayed turns hold in pending_turns until every row is dispatched,
+    # so the edit lands before the original flushes — one corrected turn,
+    # no stale original + follow-up correction
     assert any("omega-msg" in p for p in devin.created)
     assert not any("alpha-msg" in p for p in devin.created)
     assert not runtime2.store.list_pending_updates()
@@ -8876,6 +8876,38 @@ async def test_replay_drops_already_delivered_turn(tmp_path: Path) -> None:
     assert not runtime2.store.list_pending_updates()
     assert len(devin.created) == 1
     await runtime2.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_update_below_sent_marker_still_delivers(
+    tmp_path: Path,
+) -> None:
+    # concurrent workers can hold an older update until a newer turn has
+    # already delivered — the sent_turn marker must not drop live updates
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await runtime.handle_update(
+        {"update_id": 30, "message": message("newer", chat_id=444, message_id=9)}
+    )
+    for _ in range(50):
+        if devin.created:
+            break
+        await asyncio.sleep(0.05)
+    assert store.get_setting("sent_turn:444") == "9"
+
+    # delayed older update arriving after the marker advanced still sends
+    await runtime.handle_update(
+        {"update_id": 31, "message": message("older", chat_id=444, message_id=8)}
+    )
+    for _ in range(50):
+        if any(text == "older" for _, text in devin.sent):
+            break
+        await asyncio.sleep(0.05)
+    assert any(text == "older" for _, text in devin.sent)
+    assert not store.list_pending_updates()
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio

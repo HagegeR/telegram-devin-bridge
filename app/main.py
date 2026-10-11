@@ -228,10 +228,15 @@ class Bridge:
         # the workers could interleave a message→edit pair or scramble
         # turn order inside one conversation.
         for pending in self.store.list_pending_updates():
-            await self._dispatch_update(pending)
+            await self._dispatch_update(pending, replayed=True)
             update_id = pending.get("update_id")
             if isinstance(update_id, int) and update_id not in self._update_conv:
                 self.store.delete_pending_update(update_id)
+        # replayed turns stage in pending_turns rather than flushing
+        # inline, so a following edit update still lands on the staged
+        # fragment before anything reaches Devin
+        for conv_key in list(self.pending_turns):
+            await self._flush_pending(conv_key)
         await self._resume_watchers()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
@@ -407,7 +412,9 @@ class Bridge:
                     self.store.delete_pending_update(update_id)
                 self._update_queue.task_done()
 
-    async def _dispatch_update(self, update: Mapping[str, object]) -> None:
+    async def _dispatch_update(
+        self, update: Mapping[str, object], *, replayed: bool = False
+    ) -> None:
         try:
             callback = _mapping(update.get("callback_query"))
             if callback:
@@ -433,6 +440,7 @@ class Bridge:
                 await self.handle_message(
                     message,
                     update_id=update_id if isinstance(update_id, int) else None,
+                    replayed=replayed,
                 )
         except Exception as exc:
             logger.exception("Failed to process Telegram update")
@@ -443,6 +451,7 @@ class Bridge:
         message: Mapping[str, object],
         *,
         update_id: int | None = None,
+        replayed: bool = False,
     ) -> None:
         sender = _mapping(message.get("from"))
         chat = _mapping(message.get("chat"))
@@ -585,7 +594,9 @@ class Bridge:
                 thread_id=_thread_id(message),
             )
             return
-        await self._queue_turn(message, text, attachment, update_id=update_id)
+        await self._queue_turn(
+            message, text, attachment, update_id=update_id, replayed=replayed
+        )
 
     async def _queue_turn(
         self,
@@ -594,18 +605,21 @@ class Bridge:
         attachment: Attachment | None,
         *,
         update_id: int | None = None,
+        replayed: bool = False,
     ) -> None:
         conv_key = self._conversation_key(message)
         uids = [update_id] if update_id is not None else []
         if update_id is not None:
             self._update_conv[update_id] = conv_key
-        # replayed or redelivered update for a turn Devin already received —
-        # message_ids are monotone per chat so anything at or below the
-        # marker was already delivered
+        # replayed update for a turn Devin already received — message_ids
+        # are monotone per chat so anything at or below the marker was
+        # already delivered. Only safe during replay: live dispatch runs
+        # on concurrent workers, so a slow message can legitimately arrive
+        # at the queue behind a newer one
         message_id = _int(message.get("message_id"))
         raw_marker = self.store.get_setting(f"sent_turn:{conv_key}")
         sent_marker = int(raw_marker) if raw_marker and raw_marker.isdigit() else 0
-        if message_id and sent_marker and message_id <= sent_marker:
+        if replayed and message_id and sent_marker and message_id <= sent_marker:
             self._consume_pending_turns(uids)
             return
         pending = self.pending_turns.setdefault(conv_key, [])
@@ -624,6 +638,10 @@ class Bridge:
             await self._flush_fragments(conv_key, overflow)
         else:
             pending.append((message, text, attachment, uids))
+        # replayed turns wait for the startup flush so a following edit
+        # update still lands on the staged fragment before anything sends
+        if replayed:
+            return
         if self.settings.telegram_debounce_seconds <= 0:
             await self._flush_pending(conv_key)
             return
