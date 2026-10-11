@@ -554,3 +554,79 @@ async def test_modes_probe_deletes_its_session(
     monkeypatch.setattr(LocalClient, "_request", record)
     assert await shell_client.modes() == ["accept-edits", "smart"]
     assert "session/delete" in seen
+
+
+@pytest.mark.asyncio
+async def test_pending_prompt_hook_tracks_turn(shell_client: LocalClient) -> None:
+    states: list[tuple[str, str | None]] = []
+    shell_client.on_prompt_state = lambda sid, p: states.append((sid, p))
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    assert (session_id, "hello") in states
+    assert states[-1] == (session_id, None)
+    assert shell_client.sessions[session_id].pending_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_pending_prompt_survives_turn_cancellation(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a bridge shutdown cancels the in-flight turn — the pending marker
+    # must stay so the next boot can replay the prompt
+    monkeypatch.setenv("FAKE_SLOW", "1")
+    states: list[str | None] = []
+    shell_client.on_prompt_state = lambda sid, p: states.append(p)
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "second para tail")
+    await shell_client.send_message(session_id, "second")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if sess.pending_prompt == "second":
+            break
+        await asyncio.sleep(0.1)
+    assert sess.tail is not None
+    sess.tail.cancel()
+    for _ in range(50):
+        if sess.turns == 0:
+            break
+        await asyncio.sleep(0.1)
+    assert sess.pending_prompt == "second"
+    assert states[-1] == "second"
+
+
+@pytest.mark.asyncio
+async def test_resume_reapplies_mode_model_and_thought_level(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # session/load restores CLI state, not the chat's configured values —
+    # resume must re-apply mode/model/thought_level or e.g. bypass mode
+    # silently reverts to asking for approvals
+    modes: list[str] = []
+    original = LocalClient.set_mode
+
+    async def spy(self, sid, mode):  # type: ignore[no-untyped-def]
+        modes.append(mode)
+        await original(self, sid, mode)
+
+    monkeypatch.setattr(LocalClient, "set_mode", spy)
+    shell_client.resume_config = lambda sid: {
+        "mode": "smart",
+        "model": "swe-2-low",
+        "thought_level": "max",
+    }
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+    await shell_client.send_message(session_id, "second")
+    assert "smart" in modes
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if (
+            sess.config.get("model") == "swe-2-low"
+            and sess.config.get("thought_level") == "max"
+        ):
+            break
+        await asyncio.sleep(0.1)
+    assert sess.config["model"] == "swe-2-low"
+    assert sess.config["thought_level"] == "max"

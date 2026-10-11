@@ -29,6 +29,8 @@ class Conversation:
     last_user_message_id: int | None
     last_pr_url: str | None
     updated_at: float
+    # a local prompt whose turn never settled — replayed on the next boot
+    pending_prompt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -295,6 +297,10 @@ class Store:
             if "title_pending" not in columns:
                 self.connection.execute(
                     "ALTER TABLE conversations ADD COLUMN title_pending INTEGER NOT NULL DEFAULT 0"
+                )
+            if "pending_prompt" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN pending_prompt TEXT"
                 )
             history_columns = {
                 str(row["name"])
@@ -575,6 +581,16 @@ class Store:
                     "WHERE conv_key = ? AND session_id = ?",
                     (int(title_pending), conv_key, session_id),
                 )
+
+    def set_pending_prompt(
+        self, conv_key: str, session_id: str, prompt: str | None
+    ) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "UPDATE conversations SET pending_prompt = ? "
+                "WHERE conv_key = ? AND session_id = ?",
+                (prompt, conv_key, session_id),
+            )
 
     def clear_conversation(self, conv_key: str, session_id: str) -> None:
         with self.lock, self.connection:
@@ -1269,4 +1285,8 @@ class Store:
                 None if row["last_pr_url"] is None else str(row["last_pr_url"])
             ),
             updated_at=float(row["updated_at"] or row["created_at"]),
+            pending_prompt=(
+                None if row["pending_prompt"] is None
+                else str(row["pending_prompt"])
+            ),
         )
