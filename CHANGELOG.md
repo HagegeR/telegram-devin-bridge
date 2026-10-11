@@ -109,6 +109,22 @@ and deployment update channels.
 
 ### Fixed
 
+- The local activity line (`→ …`) now shows the real command from
+  `rawInput.command` instead of the tool title, so wrapper commands
+  surface as e.g. `rtk pytest -q …` rather than a bare `Ran rtk`.
+
+- Self-update no longer wedges itself: the restarted service inherited
+  the update lock's fd, so every later `/update` (and the cron pull)
+  printed `another update is running` forever. The restart command now
+  runs with the lock fd closed — serialization during the restart is
+  kept, the spawned service does not inherit the flock.
+
+- Local permission prompts with non-integer request ids (the CLI can send
+  UUID ids) no longer crash the prompt task — the crash left the request
+  permanently unanswered and the local session looked stuck on
+  `⏳ working` forever. Request ids are now echoed back verbatim and the
+  answer callback accepts string ids.
+
 - Restart digests no longer swallow interactive replies: a pending reply
   carrying `OPTIONS:` is excluded from the digest and delivered normally
   with its buttons instead of being stripped and marked covered.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
@@ -929,7 +930,7 @@ class Bridge:
 
     def _on_local_permission(self, session_id: str, msg: dict) -> None:
         if self.shutting_down:
-            self.local.answer_permission(session_id, int(msg.get("id") or 0), None)
+            self.local.answer_permission(session_id, msg.get("id"), None)
             return
         task = asyncio.create_task(self._send_permission_prompt(session_id, msg))
         self.background_tasks.add(task)
@@ -939,7 +940,8 @@ class Bridge:
         """Surface an ACP session/request_permission as approve/reject
         buttons; falls back to auto-allow when no conv or the send fails
         so the turn never stalls on an invisible prompt."""
-        req_id = int(msg.get("id") or 0)
+        # ACP request ids may be UUID strings, not ints — echo verbatim
+        req_id = msg.get("id")
         conv = self.store.get_conversation_for_session(session_id)
         options = self.local.permission_options(msg)
         if conv is None or not options:
@@ -966,13 +968,17 @@ class Bridge:
             self.local.answer_permission(session_id, req_id, None)
             return
         message_id = _sent_message_id(results)
+        # b64url(JSON) keeps any JSON id type verbatim through callback_data
+        # — a raw `id:option` string loses types (digit strings) and breaks
+        # on ids containing colons
+        enc = base64.urlsafe_b64encode(json.dumps(req_id).encode()).decode()
         for (option_id, _label), cid in zip(options, choice_ids):
             self.store.add_choice(
                 cid,
                 conv.conv_key,
                 session_id,
                 conv.chat_id,
-                f"__cmd:perm:{req_id}:{option_id}",
+                f"__cmd:perm:{enc}:{option_id}",
                 message_id,
             )
 
@@ -1627,15 +1633,15 @@ class Bridge:
                         callback_id, "Admins only — permission decisions are restricted."
                     )
                     return
-                parts = option.split(":", 3)
+                enc, _, option_id = option[len("__cmd:perm:"):].partition(":")
                 label: str | None = None
-                if len(parts) == 4:
-                    try:
-                        label = self.local.answer_permission(
-                            session_id, int(parts[2]), parts[3] or None
-                        )
-                    except ValueError:
-                        label = None
+                try:
+                    req_id = json.loads(base64.urlsafe_b64decode(enc))
+                    label = self.local.answer_permission(
+                        session_id, req_id, option_id or None
+                    )
+                except ValueError:
+                    label = None
                 updated = (
                     f"✅ {label}"
                     if label

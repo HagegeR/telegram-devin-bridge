@@ -144,7 +144,10 @@ restart_after() {
     # fd closes, even on death — a live-but-hung updater should block the
     # restart rather than race it. The lock path travels as $0 so an
     # apostrophe in SELF_UPDATE_LOCK can't break the inner shell.
-    nohup sh -c "sleep 2; exec 9>\"\$0\"; flock 9; $1" "$LOCK" >/dev/null 2>&1 9>&- &
+    # the lock is held only while the restart command runs — fd 9 must be
+    # closed inside it (9>&-) or the service it starts inherits the flock
+    # and every later update reports "another update is running" forever
+    nohup sh -c "sleep 2; exec 9>\"\$0\"; flock 9; ( $1 ) 9>&-" "$LOCK" >/dev/null 2>&1 9>&- &
   else
     nohup sh -c "sleep 2; $1" >/dev/null 2>&1 9>&- &
   fi
