@@ -929,7 +929,7 @@ class Bridge:
 
     def _on_local_permission(self, session_id: str, msg: dict) -> None:
         if self.shutting_down:
-            self.local.answer_permission(session_id, int(msg.get("id") or 0), None)
+            self.local.answer_permission(session_id, msg.get("id"), None)
             return
         task = asyncio.create_task(self._send_permission_prompt(session_id, msg))
         self.background_tasks.add(task)
@@ -939,7 +939,8 @@ class Bridge:
         """Surface an ACP session/request_permission as approve/reject
         buttons; falls back to auto-allow when no conv or the send fails
         so the turn never stalls on an invisible prompt."""
-        req_id = int(msg.get("id") or 0)
+        # ACP request ids may be UUID strings, not ints — echo verbatim
+        req_id = msg.get("id")
         conv = self.store.get_conversation_for_session(session_id)
         options = self.local.permission_options(msg)
         if conv is None or not options:
@@ -1632,7 +1633,9 @@ class Bridge:
                 if len(parts) == 4:
                     try:
                         label = self.local.answer_permission(
-                            session_id, int(parts[2]), parts[3] or None
+                            session_id,
+                            int(parts[2]) if parts[2].isdigit() else parts[2],
+                            parts[3] or None,
                         )
                     except ValueError:
                         label = None

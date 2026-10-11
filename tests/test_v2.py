@@ -9088,18 +9088,20 @@ async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
     )
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
-    answered: list[tuple[str, int, str | None]] = []
+    answered: list[tuple[str, int | str, str | None]] = []
 
     def fake_answer(
-        session_id: str, req_id: int, option_id: str | None
+        session_id: str, req_id: int | str, option_id: str | None
     ) -> str | None:
         answered.append((session_id, req_id, option_id))
         return "Reject"
 
     runtime.local.answer_permission = fake_answer  # type: ignore[method-assign]
     runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+    # ACP request ids can be UUID strings — int() on them used to crash
+    # the prompt task and leave the permission request unanswered forever
     msg = {
-        "id": 5,
+        "id": "4c05946c-1b32-49c7-878a-235fb99f8d86",
         "params": {
             "toolCall": {"title": "Run rm -rf"},
             "options": [
@@ -9123,7 +9125,9 @@ async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
         "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
         "data": buttons[1]["callback_data"],
     })
-    assert answered == [("local:s1", 5, "reject")]
+    assert answered == [
+        ("local:s1", "4c05946c-1b32-49c7-878a-235fb99f8d86", "reject")
+    ]
     assert "Reject" in str(telegram.edits[-1])
     # an already-answered request surfaces as expired
     answered.clear()
