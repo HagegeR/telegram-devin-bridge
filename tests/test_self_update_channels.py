@@ -342,7 +342,8 @@ def test_bridge_supervised_caller_gets_termed(deploy_clone):
 
 
 @pytest.mark.skipif(
-    os.geteuid() != 0, reason="the OpenRC branch is root-only"
+    getattr(os, "geteuid", lambda: -1)() != 0,
+    reason="the OpenRC branch is root-only",
 )
 def test_openrc_restart_sweeps_orphan_supervisors(deploy_clone, tmp_path: Path):
     # rc-service only stops the pidfile-tracked supervise-daemon — orphans
@@ -387,4 +388,6 @@ def test_openrc_restart_sweeps_orphan_supervisors(deploy_clone, tmp_path: Path):
     rc_lines = [line for line in lines if line.startswith("rc-service")]
     pkill_lines = [line for line in lines if line.startswith("pkill")]
     assert [line.split()[-1] for line in rc_lines] == ["stop", "start"]
-    assert pkill_lines and "supervise-daemon" in pkill_lines[0]
+    # d[a]emon bracket: the pattern must not match the restart shell's own
+    # cmdline (which carries the pattern text), or pkill kills the restart
+    assert "supervise-d[a]emon" in (pkill_lines[0] if pkill_lines else "")
