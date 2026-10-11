@@ -58,6 +58,13 @@ class _AcpSession:
     # session/request_permission requests awaiting a Telegram decision —
     # answered via answer_permission() from the choice callback
     permissions: dict[int | str, dict] = field(default_factory=dict)
+    # user text currently in flight: the bridge persists it so a bridge
+    # restart mid-turn can replay it; cleared when the turn settles
+    pending_prompt: str | None = None
+    # resume loaded the session before its conversation was active (e.g.
+    # /resume of a history entry) — apply the chat config on the next
+    # prompt, when the conv lookup can see it
+    cfg_pending: bool = False
     # latest agent activity (tool-call title / thought tail) for the
     # watcher's live status line — cloud exposes nothing this granular
     activity: str = ""
@@ -140,6 +147,13 @@ class LocalClient:
         # bridge hooks this to surface ACP permission prompts as Telegram
         # approve/reject buttons; None -> every request is auto-allowed
         self.on_permission: Callable[[str, dict], None] | None = None
+        # bridge hooks these to (a) persist a prompt while its turn is in
+        # flight so a restart can replay it, and (b) supply the desired
+        # mode/model/thought_level when a session resumes into a fresh
+        # process (session/load restores the CLI state, not the chat's
+        # configured values)
+        self.on_prompt_state: Callable[[str, str | None], None] | None = None
+        self.resume_config: Callable[[str], dict | None] | None = None
         self._terminated: set[str] = set()
         self._resuming: dict[str, asyncio.Task] = {}
         self._next_id = 0
@@ -413,12 +427,32 @@ class LocalClient:
         await self.send_message(session_id, prompt)
         return session_id, f"{title or sess.acp_id} · local CLI (no cloud URL)"
 
+    def _prompt_state(self, session_id: str, prompt: str | None) -> None:
+        hook = self.on_prompt_state
+        if hook is None:
+            return
+        try:
+            hook(session_id, prompt)
+        except Exception:
+            logger.exception("on_prompt_state hook failed")
+
+    def _clear_pending_prompt(
+        self, sess: _AcpSession, session_id: str, message: str
+    ) -> None:
+        # only the turn that set it clears it — a queued turn may already
+        # have written its own prompt over the slot
+        if sess.pending_prompt == message:
+            sess.pending_prompt = None
+            self._prompt_state(session_id, None)
+
     async def send_message(self, session_id: str, message: str) -> None:
         sess = await self._get_or_resume(session_id)
         if sess is None:
             raise RuntimeError(f"local session {session_id} is gone")
         if sess.dead:
             raise RuntimeError(f"local session {sess.acp_id} is gone")
+        if sess.cfg_pending:
+            await self._apply_resume_config(session_id, sess)
         # chain turns so two in-flight prompts can't interleave chunks into
         # one merged reply; ACP serializes prompts per session anyway
         sess.turns += 1
@@ -436,10 +470,28 @@ class LocalClient:
             sess.thought = ""
             sess.buffer.clear()
             sess.replaying = False
-            return await self._request(sess, "session/prompt", {
-                "sessionId": sess.acp_id,
-                "prompt": [{"type": "text", "text": message}],
-            }, timeout=None)
+            # the prompt's Telegram row was already consumed; keep it
+            # durable until the turn settles so a bridge restart mid-turn
+            # replays it instead of losing the user's question
+            sess.pending_prompt = None if sess.suppress_turn else message
+            self._prompt_state(session_id, sess.pending_prompt)
+            try:
+                result = await self._request(sess, "session/prompt", {
+                    "sessionId": sess.acp_id,
+                    "prompt": [{"type": "text", "text": message}],
+                }, timeout=None)
+            except asyncio.CancelledError:
+                # shutdown mid-turn: keep the pending marker for replay
+                raise
+            except BaseException:
+                # a dead process means the turn was interrupted (shutdown,
+                # crash, evict), not answered — keep the marker for replay;
+                # only a live-process failure clears it
+                if not sess.dead:
+                    self._clear_pending_prompt(sess, session_id, message)
+                raise
+            self._clear_pending_prompt(sess, session_id, message)
+            return result
 
         sess.tail = asyncio.create_task(_turn())
         sess.tail.add_done_callback(lambda f: self._turn_done(sess, f))
@@ -789,7 +841,36 @@ class LocalClient:
         await self._evict()
         self.sessions[session_id] = sess
         logger.info("resumed local session %s", acp_id)
+        # session/load restores the CLI's state, not the chat's configured
+        # mode/model/thought_level — re-apply them so e.g. bypass mode
+        # survives a bridge restart instead of silently reverting. When
+        # resume runs before the conversation is active (/resume of a
+        # history entry) the hook can't see the settings yet — keep the
+        # flag so the next prompt applies them instead.
+        sess.cfg_pending = True
+        await self._apply_resume_config(session_id, sess)
         return sess
+
+    async def _apply_resume_config(
+        self, session_id: str, sess: _AcpSession
+    ) -> None:
+        cfg = self.resume_config(session_id) if self.resume_config else None
+        if not cfg:
+            return
+        sess.cfg_pending = False
+        mode = cfg.get("mode")
+        if mode:
+            try:
+                await self.set_mode(session_id, mode)
+            except RuntimeError as exc:
+                self._emit(sess, f"⚠ mode {mode} rejected: {exc}")
+        for config_id in ("model", "thought_level"):
+            value = cfg.get(config_id)
+            if value:
+                try:
+                    await self._set_config(session_id, config_id, value)
+                except RuntimeError as exc:
+                    self._emit(sess, f"⚠ {config_id} {value} rejected: {exc}")
 
     async def _session_title(self, sess: _AcpSession, acp_id: str) -> str:
         try:
@@ -919,9 +1000,17 @@ class LocalClient:
         if msg.get("method") != "session/update":
             return
         update = msg.get("params", {}).get("update", {})
-        if sess.replaying:
-            return
         kind = update.get("sessionUpdate")
+        # replayed history is only reply content — control updates
+        # (commands, config, mode, plan) still apply during replay so
+        # resume-time re-configuration isn't silently dropped
+        if sess.replaying and kind not in (
+            "available_commands_update",
+            "config_option_update",
+            "current_mode_update",
+            "plan",
+        ):
+            return
         if kind == "available_commands_update":
             commands = update.get("availableCommands")
             if isinstance(commands, list):

@@ -138,6 +138,8 @@ class Bridge:
         )
         self.local.on_emit = self._on_local_emit
         self.local.on_permission = self._on_local_permission
+        self.local.on_prompt_state = self._on_local_prompt_state
+        self.local.resume_config = self._local_resume_config
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.bot_topics_enabled = False
@@ -240,6 +242,7 @@ class Bridge:
         for conv_key in list(self.pending_turns):
             await self._flush_pending(conv_key)
         await self._resume_watchers()
+        await self._replay_interrupted_turns()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
             self.background_tasks.add(task)
@@ -260,6 +263,39 @@ class Bridge:
                 trigger_message_id=conversation.last_user_message_id,
                 trigger_at=conversation.updated_at,
             )
+
+    async def _replay_interrupted_turns(self) -> None:
+        # a turn in flight when the bridge last stopped keeps its prompt in
+        # the conversation row — replay it so a self-update restart doesn't
+        # silently eat the user's question
+        for conv in self.store.list_conversations():
+            prompt = conv.pending_prompt
+            if not prompt or not is_local(conv.session_id):
+                continue
+            try:
+                await self.local.send_message(conv.session_id, prompt)
+            except RuntimeError:
+                self.store.set_pending_prompt(
+                    conv.conv_key, conv.session_id, None
+                )
+
+    def _on_local_prompt_state(
+        self, session_id: str, prompt: str | None
+    ) -> None:
+        conv = self.store.get_conversation_for_session(session_id)
+        if conv is not None:
+            self.store.set_pending_prompt(conv.conv_key, conv.session_id, prompt)
+
+    def _local_resume_config(self, session_id: str) -> dict | None:
+        conv = self.store.get_conversation_for_session(session_id)
+        if conv is None:
+            return None
+        settings = self.store.get_settings(conv.conv_key)
+        return {
+            "mode": settings.devin_mode,
+            "model": settings.local_model,
+            "thought_level": settings.thought_level,
+        }
 
     async def _retry_announce_update(self) -> None:
         for delay in _ANNOUNCE_RETRY_DELAYS:
