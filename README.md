@@ -167,7 +167,9 @@ Details and curl examples: [docs/operations.md](docs/operations.md).
 Self-updates: `deploy/self-update.sh` resolves your release channel — `main`,
 `stable`, `v1`, `v1.2`, or an exact tag — reinstalls requirements when they
 changed, and restarts; triggerable by cron or `/update`. See
-[docs/versioning.md](docs/versioning.md).
+[docs/versioning.md](docs/versioning.md). If an update pulls but the bot
+never comes back on OpenRC (repeated `address in use` in the log), see
+[Stuck update on OpenRC](docs/operations.md#stuck-update-on-openrc-duplicate-supervise-daemons).
 
 **Scaling note.** The bridge is deliberately one process with one SQLite
 database — in-memory queues and watchers don't survive a second replica, and
