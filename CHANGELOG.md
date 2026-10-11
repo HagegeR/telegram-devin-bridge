@@ -41,6 +41,10 @@ and deployment update channels.
 
 ### Fixed
 
+- `OPTIONS:` button labels up to 100 chars now render — labels over the
+  old 60-char cap silently dropped the whole marker, leaving the raw
+  `OPTIONS: …` line visible instead of buttons.
+
 - `/sessions` no longer silently truncates at 10 entries — it lists up to
   200 history rows, and on `platform=local` chats it merges the CLI's
   own session DB (`session/list`) so dormant untracked sessions appear

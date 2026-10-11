@@ -95,6 +95,12 @@ def test_formatting_and_options() -> None:
     assert body == "Choose:"
     assert options == ["Yes", "No"]
     assert extract_options("OPTIONS: " + " | ".join(str(i) for i in range(9)))[1] == []
+    # labels past the old 60-char cap still render as buttons
+    long_label = "Pick the " + "very " * 12 + "long option"
+    assert extract_options(f"OPTIONS: {long_label} | Skip")[1] == [
+        long_label,
+        "Skip",
+    ]
 
 
 def test_extract_attachments() -> None:
