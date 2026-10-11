@@ -220,6 +220,17 @@ and deployment update channels.
 
 ### Fixed
 
+- Local sessions survive a bridge restart mid-turn: the prompt is kept in
+  a durable `pending_prompt` column while its `session/prompt` call is in
+  flight and replayed at the next boot, so a self-update deploy no longer
+  silently eats the user's question. The marker is kept when the process
+  died (shutdown/crash/evict — an interrupted turn, not a failed one) and
+  dropped atomically when the conversation swaps sessions.
+- Local resume restores the chat's configured mode/model/thought_level —
+  `session/load` only reloads CLI state, so e.g. bypass mode silently
+  reverted to asking for approvals after a restart. Resume-time control
+  updates (`config_option_update`, `current_mode_update`) now pass the
+  replayed-history guard; only reply content is suppressed.
 - The turn-close 👍 always lands now — a `REACT:` acknowledgment earlier in
   the turn no longer suppresses the completion mark on the triggering
   message.
