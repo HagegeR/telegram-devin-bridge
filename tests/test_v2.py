@@ -9252,3 +9252,36 @@ async def test_permission_prompt_non_admin_tap_preserves_buttons(
     })
     assert answered == [("local:s1", 5, "reject")]
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sessions_merges_cli_session_db(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.add_history(
+        conv_key="222",
+        session_id="local:tracked",
+        session_url="tracked · local CLI (no cloud URL)",
+        title="tracked",
+    )
+    store.update_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.local.list_sessions = lambda: _async(  # type: ignore[method-assign]
+        [
+            {"sessionId": "tracked", "title": "tracked"},
+            {"sessionId": "ghost", "title": "ghost session"},
+        ]
+    )
+    probed: list[str] = []
+    runtime.get_session_status = lambda sid: probed.append(sid) or _async("blocked")  # type: ignore[method-assign]
+    await handle_command(runtime, message("/sessions"), "/sessions")
+    text = str(telegram.sent[-1]["text"])
+    assert "ghost session" in text
+    # neither dormant local row is probed — probing would resume it into
+    # the process pool and evict live sessions
+    assert text.count("dormant (local)") == 2 and probed == []
+    # a dormant untracked session is listed but not resumable — its owning
+    # chat is unknown, so loading it could leak another chat's session
+    await handle_command(runtime, message("/resume 2"), "/resume 2")
+    assert "isn't tracked" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()

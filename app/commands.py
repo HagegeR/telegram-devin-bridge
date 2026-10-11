@@ -19,7 +19,7 @@ from app.formatting import (
     rich_text_link,
 )
 from app.local import LocalClient, is_local
-from app.store import Conversation, Store
+from app.store import Conversation, HistoryEntry, Store
 
 SYSTEM_PREAMBLE = (
     "You are chatting with a user over Telegram via a bridge. Keep replies concise. "
@@ -1028,24 +1028,66 @@ async def handle_command(
         await runtime.send_text(message, "Unknown command; /help")
 
 
+async def _session_history(
+    runtime: CommandRuntime, conv_key: str
+) -> list[HistoryEntry]:
+    """Bridge-tracked sessions plus, on local chats, CLI-persisted
+    sessions the bridge never tracked (created before the bridge existed
+    or after a store reset) — still resumable via session/load. The
+    shared list keeps /sessions numbering aligned with /resume <n>.
+    Extras get id=0 so callers can skip status probes for them — they
+    are listed but not resumable, since the CLI does not record which
+    chat owns them."""
+    history = list(runtime.store.list_history(conv_key, limit=200))
+    if runtime.store.get_settings(conv_key).platform != "local":
+        return history
+    known = {entry.session_id for entry in history}
+    for entry in await runtime.local.list_sessions():
+        session_id = f"local:{entry.get('sessionId')}"
+        if session_id in known:
+            continue
+        title = str(entry.get("title") or session_id)
+        history.append(
+            HistoryEntry(
+                id=0,
+                conv_key=conv_key,
+                session_id=session_id,
+                session_url=f"{title} · local CLI (no cloud URL)",
+                title=title,
+                created_at=0.0,
+            )
+        )
+    return history
+
+
 async def _sessions(
     runtime: CommandRuntime,
     message: Mapping[str, object],
     conv_key: str,
     conversation: Conversation | None,
 ) -> None:
-    history = runtime.store.list_history(conv_key)
+    history = await _session_history(runtime, conv_key)
     if not history:
         await runtime.send_text(message, "No saved sessions.", ephemeral=True)
         return
     rows: list[str] = []
     details: list[str] = []
     links: list[dict[str, object]] = []
+    is_local = runtime.store.get_settings(conv_key).platform == "local"
     for index, entry in enumerate(history, start=1):
-        try:
-            status = await runtime.get_session_status(entry.session_id)
-        except Exception:  # noqa: BLE001
-            status = "unknown"
+        if entry.id == 0 or (
+            is_local
+            and entry.session_id.startswith("local:")
+            # probing a dormant local session resumes it, and enough probes
+            # evict live processes — only live processes report real status
+            and entry.session_id not in runtime.local.sessions
+        ):
+            status = "dormant (local)"
+        else:
+            try:
+                status = await runtime.get_session_status(entry.session_id)
+            except Exception:  # noqa: BLE001
+                status = "unknown"
         marker = (
             "*"
             if conversation is not None and entry.session_id == conversation.session_id
@@ -1066,14 +1108,23 @@ async def _sessions(
     # send_message's HTML path has no chunker: keep the rows under the
     # 4096 cap (oldest entries drop first), then keep as many details
     # entries as still fit.
-    while len(rows) > 1 and len("\n".join(rows)) > 3900:
+    dropped = 0
+    # escape() expands & < > — trim against the escaped length Telegram sees
+    escaped_rows = [escape(row) for row in rows]
+    while len(rows) > 1 and len("\n".join(escaped_rows)) > 3900:
         rows.pop()
+        escaped_rows.pop()
         details.pop()
         links.pop()
-    body = "\n".join(escape(row) for row in rows)
+        dropped += 1
+    body = "\n".join(escaped_rows)
     while details and len(body + _expandable(details)) > 4000:
         details.pop()
         links.pop()
+    if dropped:
+        # honest about trimming — the list reports what it omits
+        rows.append(f"…and {dropped} older sessions")
+        body += f"\n…and {dropped} older sessions"
     if details:
         body += _expandable(details)
     rich = [rich_paragraph(row) for row in rows]
@@ -1092,11 +1143,18 @@ async def _resume(
     except ValueError:
         await runtime.send_text(message, "Usage: /resume <n>")
         return
-    history = runtime.store.list_history(conv_key)
+    history = await _session_history(runtime, conv_key)
     if index < 0 or index >= len(history):
         await runtime.send_text(message, "Session number not found.")
         return
     entry = history[index]
+    if entry.id == 0:
+        # untracked CLI session — its owning chat is unknown, so resuming
+        # it here could hand another chat's session to this conversation
+        await runtime.send_text(
+            message, "That session isn't tracked for this chat — start a new one."
+        )
+        return
     state = await runtime.get_state(entry.session_id)
     latest = next(
         (

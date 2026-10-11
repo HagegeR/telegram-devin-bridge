@@ -41,6 +41,15 @@ and deployment update channels.
 
 ### Fixed
 
+- `/sessions` no longer silently truncates at 10 entries — it lists up to
+  200 history rows, and on `platform=local` chats it merges the CLI's
+  own session DB (`session/list`) so dormant untracked sessions appear
+  as `dormant (local)` rows — they are listed but not resumable, since
+  the CLI does not record which chat owns them; `/resume <n>` numbers
+  against the same merged list. Long lists that exceed the message cap
+  now end with an `…and N older sessions` note instead of dropping
+  entries silently.
+
 - A non-admin tap on a local permission prompt no longer consumes the
   keyboard — the choice rows are now deleted only after the admin check,
   so the prompt stays answerable for an admin.
