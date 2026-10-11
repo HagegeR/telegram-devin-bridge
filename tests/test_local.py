@@ -502,3 +502,21 @@ def test_save_attachment_sweeps_old_files(tmp_path: Path) -> None:
     dest = client.save_attachment("new.txt", b"data")
     assert dest.exists()
     assert not old.exists()
+
+
+@pytest.mark.asyncio
+async def test_modes_probe_deletes_its_session(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the probe's session/new persists in the CLI's session DB — without a
+    # session/delete every /settings or /model call leaks a phantom entry
+    seen: list[str] = []
+    original = LocalClient._request
+
+    async def record(self, sess, method, params, **kw):  # type: ignore[no-untyped-def]
+        seen.append(method)
+        return await original(self, sess, method, params, **kw)
+
+    monkeypatch.setattr(LocalClient, "_request", record)
+    assert await shell_client.modes() == ["accept-edits", "smart"]
+    assert "session/delete" in seen

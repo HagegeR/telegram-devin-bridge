@@ -210,6 +210,15 @@ class LocalClient:
                 await asyncio.sleep(0.1)
             if sess.commands:
                 self._commands = sess.commands
+            # the probe's session/new lands in the CLI's session DB like
+            # any real session — delete it or every /settings and /model
+            # leaves a phantom entry in `devin list`
+            try:
+                await self._request(sess, "session/delete", {
+                    "sessionId": str(created["sessionId"]),
+                })
+            except (RuntimeError, TimeoutError, KeyError):
+                pass
         except (RuntimeError, TimeoutError, KeyError):
             modes = []
         proc.terminate()

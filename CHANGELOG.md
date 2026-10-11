@@ -41,6 +41,10 @@ and deployment update channels.
 
 ### Fixed
 
+- The local probe behind `/settings`, `/mode`, `/model`, `/think`, and
+  `/commands` now deletes the throwaway session it creates — each call
+  previously left a persistent phantom entry in the CLI's session DB
+  (`devin list`).
 - Answering one permission prompt no longer expires the buttons on
   another: choice cleanup is scoped to the tapped message and the
   conversation-wide wipe preserves `__cmd:perm:` rows.
