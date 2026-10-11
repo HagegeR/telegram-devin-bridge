@@ -44,7 +44,8 @@ and deployment update channels.
 - `/sessions` no longer silently truncates at 10 entries — it lists up to
   200 history rows, and on `platform=local` chats it merges the CLI's
   own session DB (`session/list`) so dormant untracked sessions appear
-  as `dormant (local)` without being woken; `/resume <n>` numbers
+  as `dormant (local)` rows — they are listed but not resumable, since
+  the CLI does not record which chat owns them; `/resume <n>` numbers
   against the same merged list. Long lists that exceed the message cap
   now end with an `…and N older sessions` note instead of dropping
   entries silently.

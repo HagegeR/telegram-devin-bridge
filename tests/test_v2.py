@@ -9276,7 +9276,12 @@ async def test_sessions_merges_cli_session_db(tmp_path: Path) -> None:
     runtime.get_session_status = lambda sid: probed.append(sid) or _async("blocked")  # type: ignore[method-assign]
     await handle_command(runtime, message("/sessions"), "/sessions")
     text = str(telegram.sent[-1]["text"])
-    assert "ghost session" in text and "dormant (local)" in text
-    # untracked CLI sessions are listed without waking them
-    assert probed == ["local:tracked"]
+    assert "ghost session" in text
+    # neither dormant local row is probed — probing would resume it into
+    # the process pool and evict live sessions
+    assert text.count("dormant (local)") == 2 and probed == []
+    # a dormant untracked session is listed but not resumable — its owning
+    # chat is unknown, so loading it could leak another chat's session
+    await handle_command(runtime, message("/resume 2"), "/resume 2")
+    assert "isn't tracked" in str(telegram.sent[-1]["text"])
     await runtime.shutdown()

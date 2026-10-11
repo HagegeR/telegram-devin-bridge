@@ -1035,7 +1035,9 @@ async def _session_history(
     sessions the bridge never tracked (created before the bridge existed
     or after a store reset) — still resumable via session/load. The
     shared list keeps /sessions numbering aligned with /resume <n>.
-    Extras get id=0 so callers can skip status probes for them."""
+    Extras get id=0 so callers can skip status probes for them — they
+    are listed but not resumable, since the CLI does not record which
+    chat owns them."""
     history = list(runtime.store.list_history(conv_key, limit=200))
     if runtime.store.get_settings(conv_key).platform != "local":
         return history
@@ -1071,10 +1073,15 @@ async def _sessions(
     rows: list[str] = []
     details: list[str] = []
     links: list[dict[str, object]] = []
+    is_local = runtime.store.get_settings(conv_key).platform == "local"
     for index, entry in enumerate(history, start=1):
-        if entry.id == 0:
-            # untracked CLI session: probing would spawn a process per
-            # dormant session — report it without waking it
+        if entry.id == 0 or (
+            is_local
+            and entry.session_id.startswith("local:")
+            # probing a dormant local session resumes it, and enough probes
+            # evict live processes — only live processes report real status
+            and entry.session_id not in runtime.local.sessions
+        ):
             status = "dormant (local)"
         else:
             try:
@@ -1102,12 +1109,15 @@ async def _sessions(
     # 4096 cap (oldest entries drop first), then keep as many details
     # entries as still fit.
     dropped = 0
-    while len(rows) > 1 and len("\n".join(rows)) > 3900:
+    # escape() expands & < > — trim against the escaped length Telegram sees
+    escaped_rows = [escape(row) for row in rows]
+    while len(rows) > 1 and len("\n".join(escaped_rows)) > 3900:
         rows.pop()
+        escaped_rows.pop()
         details.pop()
         links.pop()
         dropped += 1
-    body = "\n".join(escape(row) for row in rows)
+    body = "\n".join(escaped_rows)
     while details and len(body + _expandable(details)) > 4000:
         details.pop()
         links.pop()
@@ -1138,6 +1148,13 @@ async def _resume(
         await runtime.send_text(message, "Session number not found.")
         return
     entry = history[index]
+    if entry.id == 0:
+        # untracked CLI session — its owning chat is unknown, so resuming
+        # it here could hand another chat's session to this conversation
+        await runtime.send_text(
+            message, "That session isn't tracked for this chat — start a new one."
+        )
+        return
     state = await runtime.get_state(entry.session_id)
     latest = next(
         (
