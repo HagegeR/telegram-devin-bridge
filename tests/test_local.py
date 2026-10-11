@@ -130,6 +130,12 @@ FAKE_ACP = textwrap.dedent(
                               "params": {"sessionId": sid, "update": {
                                   "sessionUpdate": "tool_call",
                                   "title": "Running pytest"}}}), flush=True)
+            if os.environ.get("FAKE_RTK"):
+                print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                                  "params": {"sessionId": sid, "update": {
+                                      "sessionUpdate": "tool_call",
+                                      "title": "Ran rtk",
+                                      "rawInput": {"command": "rtk pytest -q tests/x.py"}}}}), flush=True)
             variant = os.environ.get("FAKE_LONG_THOUGHT")
             if variant:
                 long_line = {
@@ -332,6 +338,19 @@ async def test_activity_surfaces_in_status_detail(
     await _wait_for(shell_client, session_id, "echo: hello")
     state = await shell_client.get_session(session_id)
     assert state.status_detail == "Running pytest"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_prefers_raw_command_over_wrapper_title(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "Ran rtk" is the wrapper name — the status line should show the
+    # real command from rawInput.command instead
+    monkeypatch.setenv("FAKE_RTK", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_detail == "rtk pytest -q tests/x.py"
 
 
 @pytest.mark.asyncio

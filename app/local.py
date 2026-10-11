@@ -959,6 +959,10 @@ class LocalClient:
                         sess.activity = line
             return
         if kind in {"tool_call", "tool_call_update"}:
-            title = update.get("title") or update.get("kind")
+            # rawInput.command holds the full command ("rtk --version")
+            # while title is just "Ran rtk" — prefer the real command
+            raw = update.get("rawInput")
+            cmd = raw.get("command") if isinstance(raw, dict) else None
+            title = cmd or update.get("title") or update.get("kind")
             if title:
                 sess.activity = str(title)[:120]
