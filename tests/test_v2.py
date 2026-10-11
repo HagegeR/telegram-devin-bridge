@@ -9410,3 +9410,124 @@ async def test_recovery_digest_keeps_option_replies_interactive(
     assert telegram.sent[[str(i["text"]) for i in telegram.sent].index(pick)].get(
         "reply_markup"
     )
+
+
+@pytest.mark.asyncio
+async def test_replay_interrupted_turns_resends_pending_prompt(
+    tmp_path: Path,
+) -> None:
+    # a turn in flight when the bridge stopped keeps its prompt — the next
+    # boot must replay it instead of silently eating the user's question
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    store.save_conversation(
+        conv_key="222:10",
+        chat_id=222,
+        thread_id=10,
+        session_id="devin-cloud1",
+        session_url="https://devin.test/s1",
+        title="t",
+    )
+    store.set_pending_prompt("222:10", "devin-cloud1", "cloud prompt")
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, message: str) -> None:
+        sent.append((session_id, message))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+    await runtime._replay_interrupted_turns()
+    # only local prompts replay — a cloud session's watcher covers its own
+    assert sent == [("local:x", "answer me")]
+
+    async def broken_send(session_id: str, message: str) -> None:
+        raise RuntimeError("gone")
+
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    runtime.local.send_message = broken_send  # type: ignore[method-assign]
+    await runtime._replay_interrupted_turns()
+    # a session that can't resume doesn't wedge the replay loop forever
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt is None
+
+
+def test_prompt_state_hook_persists_and_resume_config_reads_settings(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.update_settings(
+        "222", devin_mode="bypass", local_model="m1", thought_level="high"
+    )
+    runtime = Bridge(
+        settings(tmp_path), Store(":memory:"), _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    runtime.store = store
+    runtime._on_local_prompt_state("local:x", "pending question")
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt == "pending question"
+    runtime._on_local_prompt_state("local:x", None)
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt is None
+    assert runtime._local_resume_config("local:x") == {
+        "mode": "bypass",
+        "model": "m1",
+        "thought_level": "high",
+    }
+    # unknown sessions return None, not a crash
+    assert runtime._local_resume_config("local:missing") is None
+
+
+def test_save_conversation_drops_pending_prompt_on_session_swap() -> None:
+    # a pending marker belongs to the session it was sent to — /resume
+    # swapping the row's session must not replay the old prompt into the
+    # replacement
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:a",
+        session_url="local:a · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:a", "for A")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:b",
+        session_url="local:b · local CLI",
+        title="t",
+    )
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt is None
+    # same-session save preserves it
+    store.set_pending_prompt("222:9", "local:b", "for B")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:b",
+        session_url="local:b · local CLI",
+        title="t2",
+    )
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt == "for B"

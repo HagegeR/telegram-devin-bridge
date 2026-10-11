@@ -173,7 +173,22 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     limit). Sessions
     persist in the CLI's own DB and are reloaded via `session/load` after a
     bridge restart (the in-memory map is only the live-process index; `/stop`
-    still deletes the record), have no cloud URL, and ignore the cloud
+    still deletes the record). Resume re-applies the chat's configured
+    mode/model/thought_level (`session/set_mode` +
+    `session/set_config_option`) since `session/load` restores CLI state
+    only, and the replayed-history guard suppresses reply content only —
+    control updates still apply. While a `session/prompt` call is in
+    flight the prompt is kept in `conversations.pending_prompt`; a
+    shutdown that cancels the turn leaves the marker, and the next boot
+    replays it (`_replay_interrupted_turns`) so a self-update deploy
+    can't silently eat a question. The marker is kept when the process
+    died (shutdown/crash/evict — an interrupted turn, not a failed one),
+    cleared when a live prompt call errors, and dropped atomically when
+    `save_conversation` swaps the row to a different session. A resume
+    that runs before its conversation is active (`/resume` of a history
+    entry) applies the chat config on the first prompt instead.
+    Sessions have no cloud URL, and ignore
+    the cloud
     session options — the CLI's own mode/model config applies instead
     (a `⚠ local sessions ignore cloud options: …` note lists whichever of
     repos/acu/tags/secrets/knowledge/snapshot/unlisted/idempotent/playbook
