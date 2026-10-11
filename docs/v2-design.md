@@ -161,7 +161,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     emitted at stopReason; `agent_thought_chunk` and `tool_call` updates
     set the session's activity, shown live as a `→ …` line in the edited
     ⏳ Working status message (cloud sessions get the same line from any
-    non-enum `status_detail`). A thought line longer than the 120-char
+    non-enum `status_detail`). For tool calls the activity prefers
+    `rawInput.command` over the title, so wrapper commands show the real
+    command (`rtk pytest -q …`) instead of `Ran rtk`. A thought line longer than the 120-char
     display cap keeps only its tail, and a cut that lands mid-word drops
     the partial token so the status never starts inside a word; the
     status message re-posts after each

@@ -89,6 +89,22 @@ _FLUSH_INTERVAL = 20
 # but never let a single paragraph-less blob accumulate unbounded — emit
 # it anyway rather than holding the turn's whole output back
 _STREAM_MAX_BUFFER = 3072
+# the activity line posts rawInput.command to Telegram — blank anything
+# that looks like a credential before it can leak to the chat
+_SECRET_RE = re.compile(
+    r"(?i)("
+    r"(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]"
+    r"\s*(?:(?:bearer|basic)\s+)?"
+    r"|(?:bearer|basic)\s+"
+    r"|--?[\w-]*(?:key|token|secret|passw(?:or)?d|auth)[\w-]*\s*[= ]"
+    r")\s*(?:[\"'][^\"']*[\"']?|\S+)"
+)
+_USERINFO_RE = re.compile(r"(?<=://)[^\s/:]+:[^\s@]+@")
+
+
+def _scrub_command(cmd: str) -> str:
+    scrubbed = _SECRET_RE.sub(lambda m: m.group(1) + "***", cmd)
+    return _USERINFO_RE.sub("***@", scrubbed)
 
 
 class LocalClient:
@@ -959,6 +975,10 @@ class LocalClient:
                         sess.activity = line
             return
         if kind in {"tool_call", "tool_call_update"}:
-            title = update.get("title") or update.get("kind")
+            # rawInput.command holds the full command ("rtk --version")
+            # while title is just "Ran rtk" — prefer the real command
+            raw = update.get("rawInput")
+            cmd = raw.get("command") if isinstance(raw, dict) else None
+            title = cmd or update.get("title") or update.get("kind")
             if title:
-                sess.activity = str(title)[:120]
+                sess.activity = _scrub_command(str(title))[:120]

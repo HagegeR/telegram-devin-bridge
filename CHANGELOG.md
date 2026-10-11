@@ -41,6 +41,10 @@ and deployment update channels.
 
 ### Fixed
 
+- The local activity line (`→ …`) now shows the real command from
+  `rawInput.command` instead of the tool title, so wrapper commands
+  surface as e.g. `rtk pytest -q …` rather than a bare `Ran rtk`.
+
 - Self-update no longer wedges itself: the restarted service inherited
   the update lock's fd, so every later `/update` (and the cron pull)
   printed `another update is running` forever. The restart command now
