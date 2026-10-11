@@ -339,3 +339,52 @@ def test_bridge_supervised_caller_gets_termed(deploy_clone):
     )
     assert result.returncode == -signal.SIGTERM
     assert (clone / ".self-update-pending").exists()
+
+
+@pytest.mark.skipif(
+    os.geteuid() != 0, reason="the OpenRC branch is root-only"
+)
+def test_openrc_restart_sweeps_orphan_supervisors(deploy_clone, tmp_path: Path):
+    # rc-service only stops the pidfile-tracked supervise-daemon — orphans
+    # keep their child holding the port and the new code dies on
+    # EADDRINUSE, so the detached restart must sweep every supervise-daemon
+    # for the service between stop and start
+    import time
+
+    clone, _ = deploy_clone
+    calls = tmp_path / "calls"
+    stubbin = tmp_path / "bin"
+    stubbin.mkdir()
+    for name in ("rc-service", "pkill"):
+        stub = stubbin / name
+        stub.write_text(f'#!/bin/sh\necho "{name} $*" >> "{calls}"\n')
+        stub.chmod(0o755)
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{stubbin}:{os.environ['PATH']}",
+    }
+    env.pop("INVOCATION_ID", None)
+    result = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    # the restart is detached (sleep 2 + lock): wait for it to log calls
+    for _ in range(80):
+        if calls.exists() and calls.read_text().count("rc-service") >= 2:
+            break
+        time.sleep(0.1)
+    lines = calls.read_text().splitlines() if calls.exists() else []
+    rc_lines = [line for line in lines if line.startswith("rc-service")]
+    pkill_lines = [line for line in lines if line.startswith("pkill")]
+    assert [line.split()[-1] for line in rc_lines] == ["stop", "start"]
+    assert pkill_lines and "supervise-daemon" in pkill_lines[0]

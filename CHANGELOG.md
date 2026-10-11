@@ -55,6 +55,10 @@ and deployment update channels.
   at the chat level: a setting made in one forum topic applies to every
   new topic instead of resetting to defaults. An explicitly-set value on
   an existing topic row still overrides the chat-level one for that topic.
+- OpenRC self-update restarts now sweep orphaned `supervise-daemon`
+  processes between stop and start, so a stale supervisor's child can't
+  keep `:8000` and wedge the service in an `EADDRINUSE` respawn loop.
+  Recovery steps for already-stuck hosts are in `docs/operations.md`.
 
 ### Added
 
