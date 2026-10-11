@@ -163,6 +163,11 @@ and deployment update channels.
   Ships with `instagram` (oEmbed: caption + cover image) and `article`
   (generic page title/description/body) crawlers in `app/crawlers.py`.
 
+### Changed
+
+- CI now runs the test suite on Python 3.12 through 3.15 (previously
+  3.12/3.13 only).
+
 ## [v1.4.0] - 2026-10-05
 
 ### Added
