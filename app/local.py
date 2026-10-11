@@ -2,8 +2,9 @@
 
 Prototype scope: one long-lived `devin acp` subprocess per session on the
 host where the bridge runs. Sessions are in-memory (a bridge restart kills
-them), there is no cloud URL, attachments are not supported, and settings
-like repos/platform/acu don't apply — the CLI's own mode/model config does.
+them), there is no cloud URL, attachments are saved on the host and
+handed to the agent by path, and settings like repos/acu don't apply —
+the CLI's own mode/model config does.
 """
 
 from __future__ import annotations
@@ -12,9 +13,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.clients import DevinMessage, SessionState
 
@@ -52,6 +55,9 @@ class _AcpSession:
     # notifications — ignore them until a real turn starts, or the old
     # reply would be re-emitted as if it were new
     replaying: bool = False
+    # session/request_permission requests awaiting a Telegram decision —
+    # answered via answer_permission() from the choice callback
+    permissions: dict[int, dict] = field(default_factory=dict)
     # latest agent activity (tool-call title / thought tail) for the
     # watcher's live status line — cloud exposes nothing this granular
     activity: str = ""
@@ -115,6 +121,9 @@ class LocalClient:
         # its watcher — local turns emit events with no cloud counterpart
         # polling for them, so an emit is the earliest recovery signal
         self.on_emit: Callable[[str], None] | None = None
+        # bridge hooks this to surface ACP permission prompts as Telegram
+        # approve/reject buttons; None -> every request is auto-allowed
+        self.on_permission: Callable[[str, dict], None] | None = None
         self._terminated: set[str] = set()
         self._resuming: dict[str, asyncio.Task] = {}
         self._next_id = 0
@@ -445,6 +454,95 @@ class LocalClient:
                 # reader — that would end the session's output for good
                 logger.exception("on_emit hook failed for %s", sess.acp_id)
 
+    @staticmethod
+    def _pick_allow(msg: dict) -> str | None:
+        options = msg.get("params", {}).get("options") or []
+        pick = next(
+            (
+                o for o in options
+                if "allow" in str(o.get("kind", "") + o.get("name", "")).lower()
+            ),
+            options[0] if options else None,
+        )
+        if pick is None:
+            return None
+        opt = pick.get("optionId", pick.get("id"))
+        return str(opt) if opt is not None else None
+
+    @staticmethod
+    def permission_options(msg: dict) -> list[tuple[str, str]]:
+        """(optionId, label) pairs for the Telegram approval keyboard."""
+        out = []
+        for opt in msg.get("params", {}).get("options") or []:
+            if not isinstance(opt, dict):
+                continue
+            option_id = opt.get("optionId", opt.get("id"))
+            label = opt.get("name") or opt.get("kind") or option_id
+            if option_id is not None and label is not None:
+                out.append((str(option_id), str(label)))
+        return out
+
+    @staticmethod
+    def _answer_permission(
+        sess: _AcpSession, req_id: int, option_id: str | None
+    ) -> None:
+        if option_id is None or sess.proc.stdin is None:
+            return
+        sess.proc.stdin.write(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"outcome": {
+                    "outcome": "selected",
+                    "optionId": option_id,
+                }},
+            }).encode() + b"\n"
+        )
+
+    def answer_permission(
+        self, session_id: str, req_id: int, option_id: str | None
+    ) -> str | None:
+        """Reply to a pending session/request_permission; returns the
+        picked option's label (option_id=None picks the allow option —
+        the no-hook fallback). None when the request is already gone:
+        expired choice, dead session."""
+        sess = self.sessions.get(session_id)
+        if sess is None:
+            return None
+        msg = sess.permissions.pop(req_id, None)
+        if msg is None:
+            return None
+        option_id = option_id or self._pick_allow(msg)
+        self._answer_permission(sess, req_id, option_id)
+        return next(
+            (
+                label
+                for oid, label in self.permission_options(msg)
+                if oid == option_id
+            ),
+            option_id,
+        )
+
+    def save_attachment(self, filename: str, content: bytes) -> Path:
+        """Persist a Telegram file on the host — ACP has no file-transfer
+        channel, but a local session can read host paths."""
+        safe = re.sub(r"[^\w.-]", "_", Path(filename).name)[:80] or "file"
+        attachments = Path(self.cwd).expanduser() / "attachments"
+        attachments.mkdir(parents=True, exist_ok=True)
+        # unbounded growth would silently fill the host disk — retain a
+        # week (agent-read prompts reference the path within the turn,
+        # so days of slack is plenty)
+        cutoff = time.time() - 7 * 86400
+        for old in attachments.iterdir():
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
+        dest = attachments / f"{int(time.time() * 1000)}-{safe}"
+        dest.write_bytes(content)
+        return dest
+
     async def get_session(
         self,
         session_id: str,
@@ -722,28 +820,24 @@ class LocalClient:
             return
         if msg.get("method") == "session/request_permission":
             # ACP sends permission prompts as server->client requests;
-            # unanswered they stall the turn — pick an allow option so
-            # every mode keeps working (bypass-tier access is the
-            # prototype's operating mode anyway)
-            options = msg.get("params", {}).get("options") or []
-            pick = next(
-                (
-                    o for o in options
-                    if "allow" in str(o.get("kind", "") + o.get("name", "")).lower()
-                ),
-                options[0] if options else None,
-            )
-            if pick is not None and req_id is not None and sess.proc.stdin is not None:
-                sess.proc.stdin.write(
-                    json.dumps({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {"outcome": {
-                            "outcome": "selected",
-                            "optionId": pick.get("optionId", pick.get("id")),
-                        }},
-                    }).encode() + b"\n"
-                )
+            # unanswered they stall the turn. With no approval hook every
+            # request is auto-allowed (bypass-tier access is the
+            # prototype's operating mode); with one the bridge surfaces
+            # the options in Telegram and answer_permission replies.
+            if req_id is not None:
+                if self.on_permission is None:
+                    self._answer_permission(sess, req_id, self._pick_allow(msg))
+                else:
+                    sess.permissions[req_id] = msg
+                    try:
+                        self.on_permission(f"{LOCAL_PREFIX}{sess.acp_id}", msg)
+                    except Exception:
+                        logger.exception(
+                            "on_permission hook failed for %s — auto-allowing",
+                            sess.acp_id,
+                        )
+                        sess.permissions.pop(req_id, None)
+                        self._answer_permission(sess, req_id, self._pick_allow(msg))
             return
         if msg.get("method") != "session/update":
             return

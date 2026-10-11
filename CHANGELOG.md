@@ -27,9 +27,38 @@ and deployment update channels.
   local-only commands (`/model`, `/think`, `/commands`) only autocomplete
   for `platform=local` chats and admin commands (`/update`, `/users`,
   `/revoke`, `/sethome`) only for admins. Groups keep the shared menu.
+- Interactive permission approval on `/platform local`: the CLI's
+  `session/request_permission` prompts render as inline-keyboard buttons
+  (`🔐 Permission requested: <action>`) and the picked option is written
+  back to the acp process — instead of every request being auto-allowed.
+  Auto-allow remains as the fallback when the prompt can't reach the
+  chat, so turns never stall on an invisible question.
+- Photos and documents now reach local sessions: they're saved under
+  `DEVIN_LOCAL_CWD/attachments/` on the bridge host and the prompt hands
+  the agent the file path, instead of being dropped with a "not sent"
+  note. Files older than 7 days are swept on each save so the directory
+  can't grow without bound.
 
 ### Fixed
 
+- Answering one permission prompt no longer expires the buttons on
+  another: choice cleanup is scoped to the tapped message and the
+  conversation-wide wipe preserves `__cmd:perm:` rows.
+- An attachment sent to an expired local session no longer routes to the
+  freshly created session that replaced it — the session-id check runs
+  before the routing decision.
+- Attachment filenames embedded in local prompts are sanitized to
+  `[\w .-]` (80 chars max), so a hostile name can't inject prompt text.
+- Local permission buttons are admin-only when
+  `TELEGRAM_ADMIN_USER_IDS` is configured — a group member can no
+  longer approve a permission request on someone else's session.
+- The `⚠ local sessions ignore cloud options` notice now also lists
+  unlisted/idempotent when they were explicitly turned off — `False` was
+  previously treated as unset.
+- Starting a local session with cloud-only options set (repos, acu,
+  tags, secrets, knowledge, snapshot, unlisted, idempotent, playbook) now
+  posts a `⚠ local sessions ignore cloud options: …` notice instead of
+  silently dropping them — previously only playbooks warned.
 - The live `→ …` activity line in `⏳ Working` no longer starts mid-word:
   a thought line over the display cap keeps its tail but drops a partial
   leading token, so `Orphaned supervise-daemon…` can't render as

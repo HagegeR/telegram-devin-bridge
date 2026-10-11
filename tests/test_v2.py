@@ -9005,3 +9005,180 @@ async def test_failed_repin_delete_is_retried_by_cleanup(
     telegram.delete_error = None
     await watcher._cleanup_transients()
     assert (222, first_id) in telegram.deleted
+
+
+@pytest.mark.asyncio
+async def test_local_attachment_saved_on_host(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.update_chat_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(  # type: ignore[arg-type]
+        settings(tmp_path, devin_local_cwd=str(tmp_path / "lw")),
+        store,
+        _FakeDevin(),
+        telegram,
+    )
+    created: list[str] = []
+
+    async def fake_create(
+        prompt: str, title: str | None, **kwargs: object
+    ) -> tuple[str, str]:
+        created.append(prompt)
+        return "local:s1", "local"
+
+    runtime.local.create_session = fake_create  # type: ignore[method-assign]
+    photo = message("look")
+    photo.pop("text")
+    photo["photo"] = [{"file_id": "file-1", "width": 1, "height": 1}]
+    await runtime.handle_message(photo)
+    assert created
+    attached = next(
+        line for line in created[0].splitlines() if "Attached file:" in line
+    )
+    path = Path(attached.split("Attached file: ")[1].split(" ")[0])
+    assert path.read_bytes() == b"audio"  # _FakeTelegram.download_file
+    assert path.parent == tmp_path / "lw" / "attachments"
+    assert "saved on the bridge host" in attached
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_local_session_warns_on_ignored_cloud_options(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.update_chat_settings(
+        "222", platform="local", acu_limit=5, repos="a/b", tags="t1"
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+
+    async def fake_create(
+        prompt: str, title: str | None, **kwargs: object
+    ) -> tuple[str, str]:
+        return "local:s1", "local"
+
+    runtime.local.create_session = fake_create  # type: ignore[method-assign]
+    await runtime.handle_message(message("hi"))
+    warnings = [
+        str(s["text"]) for s in telegram.sent if "ignore cloud options" in str(s["text"])
+    ]
+    assert warnings and all(
+        name in warnings[0] for name in ("repos", "acu", "tags")
+    )
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    answered: list[tuple[str, int, str | None]] = []
+
+    def fake_answer(
+        session_id: str, req_id: int, option_id: str | None
+    ) -> str | None:
+        answered.append((session_id, req_id, option_id))
+        return "Reject"
+
+    runtime.local.answer_permission = fake_answer  # type: ignore[method-assign]
+    runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+    msg = {
+        "id": 5,
+        "params": {
+            "toolCall": {"title": "Run rm -rf"},
+            "options": [
+                {"optionId": "allow", "name": "Allow"},
+                {"optionId": "reject", "name": "Reject"},
+            ],
+        },
+    }
+    await runtime._send_permission_prompt("local:s1", msg)
+    sent = telegram.sent[-1]
+    assert "Run rm -rf" in str(sent["text"])
+    buttons = [
+        button
+        for row in sent["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+        for button in row
+    ]
+    assert [b["text"] for b in buttons] == ["Allow", "Reject"]
+    await runtime.handle_callback({
+        "id": "cb1",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
+        "data": buttons[1]["callback_data"],
+    })
+    assert answered == [("local:s1", 5, "reject")]
+    assert "Reject" in str(telegram.edits[-1])
+    # an already-answered request surfaces as expired
+    answered.clear()
+    runtime.local.answer_permission = lambda *a: None  # type: ignore[method-assign]
+    store.add_choice(
+        "cb2", "222", "local:s1", 222, "__cmd:perm:5:allow", 1
+    )
+    await runtime.handle_callback({
+        "id": "cb2",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
+        "data": "cb2",
+    })
+    assert "expired" in str(telegram.edits[-1])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_attachment_uploads_after_local_session_expires(
+    tmp_path: Path,
+) -> None:
+    # expired local conv + platform now cloud -> the file must upload to
+    # cloud storage, not be saved as an unreachable host path
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:old",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    runtime._is_finished = lambda _sid: _async(True)  # type: ignore[method-assign]
+    created: list[str] = []
+    original = devin.create_session
+
+    async def record(*args: object, **kwargs: object) -> tuple[str, str]:
+        created.append(str(args[0]))
+        return await original(*args, **kwargs)
+
+    devin.create_session = record  # type: ignore[method-assign]
+    photo = message("look")
+    photo.pop("text")
+    photo["photo"] = [{"file_id": "file-1", "width": 1, "height": 1}]
+    await runtime.handle_message(photo)
+    assert created
+    assert "files.test/" in created[0]
+    await runtime.shutdown()
+
+
+def test_delete_choices_preserves_perm_prompts(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.add_choice("a1", "222", "local:s1", 222, "option one", 50)
+    store.add_choice("a2", "222", "local:s1", 222, "__cmd:perm:5:allow", 51)
+    store.delete_choices("222")
+    assert store.get_choice("a1") is None
+    assert store.get_choice("a2") is not None
+    store.add_choice("b1", "222", "local:s1", 222, "option two", 50)
+    store.delete_choices_for_message("222", 51)
+    assert store.get_choice("a2") is None
+    assert store.get_choice("b1") is not None

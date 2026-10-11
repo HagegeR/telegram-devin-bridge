@@ -1121,10 +1121,23 @@ class Store:
         return [int(row["message_id"]) for row in rows]
 
     def delete_choices(self, conv_key: str) -> None:
+        # option-group reset — permission prompts survive: their rows map
+        # to live ACP requests that still need an answer
         with self.lock, self.connection:
             self.connection.execute(
-                "DELETE FROM pending_choices WHERE conv_key = ?",
+                "DELETE FROM pending_choices WHERE conv_key = ? "
+                "AND substr(option_text, 1, 11) != '__cmd:perm:'",
                 (conv_key,),
+            )
+
+    def delete_choices_for_message(
+        self, conv_key: str, message_id: int
+    ) -> None:
+        with self.lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM pending_choices "
+                "WHERE conv_key = ? AND message_id = ?",
+                (conv_key, message_id),
             )
 
     def add_long_text(
