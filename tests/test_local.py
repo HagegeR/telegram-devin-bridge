@@ -86,6 +86,29 @@ FAKE_ACP = textwrap.dedent(
         elif meth == "session/prompt":
             text = m["params"]["prompt"][0]["text"]
             chunks = ["echo: ", text]
+            if os.environ.get("FAKE_PERMISSION"):
+                print(json.dumps({"jsonrpc": "2.0", "id": 9000,
+                                  "method": "session/request_permission",
+                                  "params": {"sessionId": sid, "toolCall": {
+                                      "title": "Run rm -rf"},
+                                     "options": [
+                                         {"optionId": "allow",
+                                          "name": "Allow",
+                                          "kind": "allow_once"},
+                                         {"optionId": "reject",
+                                          "name": "Reject",
+                                          "kind": "reject_once"},
+                                     ]}}), flush=True)
+                opt = "?"
+                for pline in sys.stdin:      # the turn waits for the decision
+                    try:
+                        pm = json.loads(pline)
+                    except ValueError:
+                        continue
+                    if pm.get("id") == 9000:
+                        opt = pm["result"]["outcome"]["optionId"]
+                        break
+                chunks = ["granted: " + opt + " | echo: ", text]
             if os.environ.get("FAKE_SLOW"):
                 chunks = ["echo: first para\\n\\n", "second", " para tail"]
             if os.environ.get("FAKE_FENCE"):
@@ -423,3 +446,47 @@ async def test_login_turn_suppressed_when_logged_out(tmp_path: Path) -> None:
     finally:
         for sid in list(client.sessions):
             await client.terminate(sid)
+
+
+@pytest.mark.asyncio
+async def test_permission_auto_allowed_without_hook(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # no approval hook -> the request is answered with the allow option
+    # immediately, so non-bypass modes can't stall the turn
+    monkeypatch.setenv("FAKE_PERMISSION", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "granted: allow")
+
+
+@pytest.mark.asyncio
+async def test_permission_routed_to_hook(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # with the hook set the request stays pending for the bridge to
+    # answer — answer_permission writes the picked option to the CLI
+    monkeypatch.setenv("FAKE_PERMISSION", "1")
+    seen: list[tuple[str, dict]] = []
+    shell_client.on_permission = lambda sid, msg: seen.append((sid, msg))
+    session_id, _ = await shell_client.create_session("hello")
+    for _ in range(50):
+        if seen:
+            break
+        await asyncio.sleep(0.1)
+    assert seen and seen[0][0] == session_id
+    options = LocalClient.permission_options(seen[0][1])
+    assert options == [("allow", "Allow"), ("reject", "Reject")]
+    assert 9000 in shell_client.sessions[session_id].permissions
+    label = shell_client.answer_permission(session_id, 9000, "reject")
+    assert label == "Reject"
+    await _wait_for(shell_client, session_id, "granted: reject")
+    # answered once — a second answer reports the request is gone
+    assert shell_client.answer_permission(session_id, 9000, "allow") is None
+
+
+def test_save_attachment_writes_on_host(tmp_path: Path) -> None:
+    client = LocalClient(cli_command="devin", cwd=str(tmp_path))
+    dest = client.save_attachment("my file!.txt", b"data")
+    assert dest.read_bytes() == b"data"
+    assert dest.parent.name == "attachments"
+    assert dest.name.endswith("-my_file_.txt")

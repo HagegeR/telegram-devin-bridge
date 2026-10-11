@@ -136,6 +136,7 @@ class Bridge:
             pr_fetcher=self.devin.fetch_github_pr,
         )
         self.local.on_emit = self._on_local_emit
+        self.local.on_permission = self._on_local_permission
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.bot_topics_enabled = False
@@ -926,6 +927,54 @@ class Bridge:
         self.background_tasks.add(task)
         task.add_done_callback(self.background_tasks.discard)
 
+    def _on_local_permission(self, session_id: str, msg: dict) -> None:
+        if self.shutting_down:
+            self.local.answer_permission(session_id, int(msg.get("id") or 0), None)
+            return
+        task = asyncio.create_task(self._send_permission_prompt(session_id, msg))
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
+
+    async def _send_permission_prompt(self, session_id: str, msg: dict) -> None:
+        """Surface an ACP session/request_permission as approve/reject
+        buttons; falls back to auto-allow when no conv or the send fails
+        so the turn never stalls on an invisible prompt."""
+        req_id = int(msg.get("id") or 0)
+        conv = self.store.get_conversation_for_session(session_id)
+        options = self.local.permission_options(msg)
+        if conv is None or not options:
+            self.local.answer_permission(session_id, req_id, None)
+            return
+        tool = _mapping(_mapping(msg.get("params")).get("toolCall"))
+        what = str(tool.get("title") or tool.get("kind") or "an action")
+        choice_ids = [self.new_choice_id() for _ in options]
+        markup = {
+            "inline_keyboard": [
+                [{"text": label[:60], "callback_data": cid}]
+                for (_, label), cid in zip(options, choice_ids)
+            ]
+        }
+        try:
+            results = await self.telegram.send_markdown(
+                conv.chat_id,
+                f"🔐 Permission requested: {what}",
+                thread_id=conv.thread_id,
+                reply_markup=markup,
+            )
+        except (httpx.HTTPError, RuntimeError):
+            self.local.answer_permission(session_id, req_id, None)
+            return
+        message_id = _sent_message_id(results)
+        for (option_id, _label), cid in zip(options, choice_ids):
+            self.store.add_choice(
+                cid,
+                conv.conv_key,
+                session_id,
+                conv.chat_id,
+                f"__cmd:perm:{req_id}:{option_id}",
+                message_id,
+            )
+
     async def _redeliver_backlog(self) -> None:
         # a live local session can keep accumulating emitted events with
         # no watcher alive to deliver them (watchers close on settle and
@@ -1125,9 +1174,16 @@ class Bridge:
                 else self.store.get_settings(conv_key).platform == "local"
             )
             if local_dest:
-                # local sessions can't receive files, and uploading to cloud
-                # storage would defeat running locally
-                text = f"{text}\n\nAttached file: {filename} (not sent — local sessions can't receive files)".strip()
+                # ACP has no file transfer, but the session runs on this
+                # host — save the file and hand it the path instead of
+                # uploading to cloud storage (which would defeat local)
+                try:
+                    dest = self.local.save_attachment(filename, content)
+                except OSError:
+                    logger.warning("couldn't save local attachment", exc_info=True)
+                    text = f"{text}\n\nAttached file: {filename} (not sent — couldn't save it on the host)".strip()
+                else:
+                    text = f"{text}\n\nAttached file: {dest} ({filename} — saved on the bridge host)".strip()
             else:
                 url = await self.devin.upload_attachment(filename, content, content_type)
                 text = f"{text}\n\nAttached file: {url} ({filename})".strip()
@@ -1246,10 +1302,26 @@ class Bridge:
         conv_settings = self.store.get_settings(conv_key)
         if conv_settings.platform == "local":
             # local CLI sessions don't take the cloud session options
-            if playbook_id is not None:
+            ignored = [
+                name
+                for name, value in [
+                    ("playbook", playbook_id),
+                    ("repos", conv_settings.repo_list),
+                    ("acu", conv_settings.acu_limit),
+                    ("tags", conv_settings.tag_list),
+                    ("secrets", conv_settings.secret_id_list),
+                    ("knowledge", conv_settings.knowledge_id_list),
+                    ("snapshot", conv_settings.snapshot_id),
+                    ("unlisted", conv_settings.unlisted),
+                    ("idempotent", conv_settings.idempotent),
+                ]
+                if value
+            ]
+            if ignored:
                 await self.send_text(
                     message,
-                    "⚠ playbooks aren't supported on local sessions — starting without it",
+                    "⚠ local sessions ignore cloud options: "
+                    + ", ".join(ignored),
                     silent=True,
                 )
             session_id, session_url = await self.local.create_session(
@@ -1536,6 +1608,21 @@ class Bridge:
                 active = None
             elif option == "__cmd:cancel":
                 updated = "Cancelled."
+            elif option.startswith("__cmd:perm:"):
+                parts = option.split(":", 3)
+                label: str | None = None
+                if len(parts) == 4:
+                    try:
+                        label = self.local.answer_permission(
+                            session_id, int(parts[2]), parts[3] or None
+                        )
+                    except ValueError:
+                        label = None
+                updated = (
+                    f"✅ {label}"
+                    if label
+                    else "This permission request already expired."
+                )
             else:
                 self.store.update_conversation(
                     conv_key,

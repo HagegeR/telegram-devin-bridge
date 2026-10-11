@@ -27,9 +27,23 @@ and deployment update channels.
   local-only commands (`/model`, `/think`, `/commands`) only autocomplete
   for `platform=local` chats and admin commands (`/update`, `/users`,
   `/revoke`, `/sethome`) only for admins. Groups keep the shared menu.
+- Interactive permission approval on `/platform local`: the CLI's
+  `session/request_permission` prompts render as inline-keyboard buttons
+  (`🔐 Permission requested: <action>`) and the picked option is written
+  back to the acp process — instead of every request being auto-allowed.
+  Auto-allow remains as the fallback when the prompt can't reach the
+  chat, so turns never stall on an invisible question.
+- Photos and documents now reach local sessions: they're saved under
+  `DEVIN_LOCAL_CWD/attachments/` on the bridge host and the prompt hands
+  the agent the file path, instead of being dropped with a "not sent"
+  note.
 
 ### Fixed
 
+- Starting a local session with cloud-only options set (repos, acu,
+  tags, secrets, knowledge, snapshot, unlisted, idempotent, playbook) now
+  posts a `⚠ local sessions ignore cloud options: …` notice instead of
+  silently dropping them — previously only playbooks warned.
 - The live `→ …` activity line in `⏳ Working` no longer starts mid-word:
   a thought line over the display cap keeps its tail but drops a partial
   leading token, so `Orphaned supervise-daemon…` can't render as
