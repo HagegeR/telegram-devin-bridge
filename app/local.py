@@ -124,6 +124,13 @@ def _terminate(proc: asyncio.subprocess.Process) -> None:
         pass  # already exited on its own
 
 
+def _kill(proc: asyncio.subprocess.Process) -> None:
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass  # already exited on its own
+
+
 def _scrub_command(cmd: str) -> str:
     scrubbed = _SECRET_RE.sub(lambda m: m.group(1) + "***", cmd)
     return _USERINFO_RE.sub("***@", scrubbed)
@@ -285,7 +292,7 @@ class LocalClient:
                 try:
                     await asyncio.wait_for(proc.wait(), 5)
                 except TimeoutError:
-                    proc.kill()
+                    _kill(proc)
         if modes:
             self._modes_cache = (time.monotonic(), modes)
         return modes
@@ -337,7 +344,7 @@ class LocalClient:
             try:
                 await asyncio.wait_for(proc.wait(), 5)
             except TimeoutError:
-                proc.kill()
+                _kill(proc)
         if costs:
             self._costs_cache = (time.monotonic(), costs)
         return costs
@@ -398,7 +405,7 @@ class LocalClient:
             try:
                 await asyncio.wait_for(proc.wait(), 5)
             except TimeoutError:
-                proc.kill()
+                _kill(proc)
 
     async def set_model_default(self, session_id: str) -> None:
         if self._default_model:
@@ -825,7 +832,7 @@ class LocalClient:
         try:
             await asyncio.wait_for(sess.proc.wait(), 5)
         except TimeoutError:
-            sess.proc.kill()
+            _kill(sess.proc)
 
     async def _evict(self) -> None:
         while len(self.sessions) >= _MAX_SESSIONS:
