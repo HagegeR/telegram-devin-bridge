@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from app.local import LocalClient, _scrub_command, is_local
+from app.local import LocalClient, _kill, _scrub_command, _terminate, is_local
 
 FAKE_ACP = textwrap.dedent(
     """
@@ -759,3 +759,41 @@ async def test_model_costs_empty_on_probe_failure(tmp_path: Path) -> None:
     fake.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
     client = LocalClient(cli_command=[sys.executable, str(fake)], api_key=None)
     assert await client.model_costs() == {}
+
+
+class _DeadProc:
+    def __init__(self) -> None:
+        self.called: list[str] = []
+
+    def terminate(self) -> None:
+        self.called.append("terminate")
+        raise ProcessLookupError
+
+    def kill(self) -> None:
+        self.called.append("kill")
+        raise ProcessLookupError
+
+
+def test_terminate_and_kill_tolerate_exited_process() -> None:
+    dead = _DeadProc()
+    _terminate(dead)
+    _kill(dead)
+    assert dead.called == ["terminate", "kill"]
+
+
+class _AliveProc:
+    def __init__(self) -> None:
+        self.called: list[str] = []
+
+    def terminate(self) -> None:
+        self.called.append("terminate")
+
+    def kill(self) -> None:
+        self.called.append("kill")
+
+
+def test_terminate_and_kill_reach_live_process() -> None:
+    alive = _AliveProc()
+    _terminate(alive)
+    _kill(alive)
+    assert alive.called == ["terminate", "kill"]
