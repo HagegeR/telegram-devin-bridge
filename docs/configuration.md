@@ -149,7 +149,7 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 - Telegram hidden `text_link` entities are expanded to `visible text (URL)`
   before the prompt is sent, including links following emoji.
 - A final `OPTIONS: one | two` line becomes inline buttons (≤ 8 options,
-  ≤ 60 chars each); the picked choice is marked with a disabled button. `/stop`
+  ≤ 100 chars each); the picked choice is marked with a disabled button. `/stop`
   confirmations use the Bot API 10.3 danger/primary styles. Unknown
   rich-message methods latch rich delivery off for the process.
 - Large fenced code blocks are extracted as `snippet-*` documents.

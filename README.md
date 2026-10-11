@@ -220,5 +220,5 @@ To offer the user buttons, Devin ends a reply with exactly one line:
 OPTIONS: Run it | Explain it | Cancel
 ```
 
-The bridge strips that line and renders one button per choice (max 8, ≤ 60
+The bridge strips that line and renders one button per choice (max 8, ≤ 100
 chars each); the picked text is sent back into the same Devin session.

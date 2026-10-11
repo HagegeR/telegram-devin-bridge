@@ -303,7 +303,7 @@ def extract_options(text: str) -> tuple[str, list[str]]:
         return text, []
     options = [item.strip() for item in match.group(1).split("|")]
     if not 1 <= len(options) <= 8 or any(
-        not option or len(option) > 60 for option in options
+        not option or len(option) > 100 for option in options
     ):
         return text, []
     return "\n".join(lines[:index]).rstrip(), options

@@ -41,6 +41,14 @@ and deployment update channels.
 
 ### Fixed
 
+- Restart digests no longer swallow interactive replies: a pending reply
+  carrying `OPTIONS:` is excluded from the digest and delivered normally
+  with its buttons instead of being stripped and marked covered.
+
+- `OPTIONS:` button labels up to 100 chars now render — labels over the
+  old 60-char cap silently dropped the whole marker, leaving the raw
+  `OPTIONS: …` line visible instead of buttons.
+
 - `/sessions` no longer silently truncates at 10 entries — it lists up to
   200 history rows, and on `platform=local` chats it merges the CLI's
   own session DB (`session/list`) so dormant untracked sessions appear
