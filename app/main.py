@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
@@ -967,13 +968,17 @@ class Bridge:
             self.local.answer_permission(session_id, req_id, None)
             return
         message_id = _sent_message_id(results)
+        # b64url(JSON) keeps any JSON id type verbatim through callback_data
+        # — a raw `id:option` string loses types (digit strings) and breaks
+        # on ids containing colons
+        enc = base64.urlsafe_b64encode(json.dumps(req_id).encode()).decode()
         for (option_id, _label), cid in zip(options, choice_ids):
             self.store.add_choice(
                 cid,
                 conv.conv_key,
                 session_id,
                 conv.chat_id,
-                f"__cmd:perm:{req_id}:{option_id}",
+                f"__cmd:perm:{enc}:{option_id}",
                 message_id,
             )
 
@@ -1628,17 +1633,15 @@ class Bridge:
                         callback_id, "Admins only — permission decisions are restricted."
                     )
                     return
-                parts = option.split(":", 3)
+                enc, _, option_id = option[len("__cmd:perm:"):].partition(":")
                 label: str | None = None
-                if len(parts) == 4:
-                    try:
-                        label = self.local.answer_permission(
-                            session_id,
-                            int(parts[2]) if parts[2].isdigit() else parts[2],
-                            parts[3] or None,
-                        )
-                    except ValueError:
-                        label = None
+                try:
+                    req_id = json.loads(base64.urlsafe_b64decode(enc))
+                    label = self.local.answer_permission(
+                        session_id, req_id, option_id or None
+                    )
+                except ValueError:
+                    label = None
                 updated = (
                     f"✅ {label}"
                     if label

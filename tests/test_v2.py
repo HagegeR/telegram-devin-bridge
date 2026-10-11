@@ -9133,7 +9133,7 @@ async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
     answered.clear()
     runtime.local.answer_permission = lambda *a: None  # type: ignore[method-assign]
     store.add_choice(
-        "cb2", "222", "local:s1", 222, "__cmd:perm:5:allow", 1
+        "cb2", "222", "local:s1", 222, "__cmd:perm:NQ==:allow", 1
     )
     await runtime.handle_callback({
         "id": "cb2",
@@ -9142,6 +9142,51 @@ async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
         "data": "cb2",
     })
     assert "expired" in str(telegram.edits[-1])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_permission_callback_roundtrips_request_ids(
+    tmp_path: Path,
+) -> None:
+    # digit-only strings, negative ints, and ids containing colons must
+    # all survive the choice -> callback -> answer_permission round-trip
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    answered: list[tuple[str, int | str, str | None]] = []
+    runtime.local.answer_permission = (  # type: ignore[method-assign]
+        lambda s, r, o: answered.append((s, r, o)) or "Allow"
+    )
+    for req_id in (123, "123", -5, "a:b:c"):
+        await runtime._send_permission_prompt("local:s1", {
+            "id": req_id,
+            "params": {
+                "toolCall": {"title": "x"},
+                "options": [{"optionId": "allow", "name": "Allow"}],
+            },
+        })
+        cid = telegram.sent[-1]["reply_markup"]["inline_keyboard"][0][0][  # type: ignore[index]
+            "callback_data"
+        ]
+        await runtime.handle_callback({
+            "id": "cb",
+            "from": {"id": 111, "is_bot": False},
+            "message": {
+                "message_id": 1,
+                "chat": {"id": 222, "type": "private"},
+            },
+            "data": cid,
+        })
+    assert [r for _s, r, _o in answered] == [123, "123", -5, "a:b:c"]
     await runtime.shutdown()
 
 
@@ -9184,7 +9229,7 @@ async def test_attachment_uploads_after_local_session_expires(
 def test_delete_choices_preserves_perm_prompts(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.add_choice("a1", "222", "local:s1", 222, "option one", 50)
-    store.add_choice("a2", "222", "local:s1", 222, "__cmd:perm:5:allow", 51)
+    store.add_choice("a2", "222", "local:s1", 222, "__cmd:perm:NQ==:allow", 51)
     store.delete_choices("222")
     assert store.get_choice("a1") is None
     assert store.get_choice("a2") is not None
