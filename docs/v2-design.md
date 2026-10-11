@@ -58,6 +58,13 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
     concurrent workers that can legitimately deliver an older update
     behind a newer one (stale >24h rows are dropped rather than
     replayed).
+  - `local_events(session_id, event_id, timestamp, message, created_at)` – the
+    emitted-event mirror for `/platform local` sessions; local events are
+    emitted into process memory only, so a restart would otherwise drop
+    whatever the watcher had not polled yet. Rows are re-seeded into the
+    resumed session's event list (original ids preserved, so the
+    conversation's persisted `last_event_id` filters out what was already
+    delivered), deleted on `session/delete`, and pruned after 7 days.
   - `pending_choices(choice_id TEXT PK, conv_key, session_id, option_text, created_at)` – inline-keyboard callbacks (`callback_data` <= 64 bytes, so store a short random id).
   - `settings(key TEXT PK, value TEXT)` – `home_chat_id`, `home_thread_id` set by `/sethome`, `crawl_sites` set by the `/settings` pre-crawl submenu.
   - conv_key = `f"{chat_id}"` for DMs/plain groups, `f"{chat_id}:{message_thread_id}"` for forum topics (only when `chat.is_forum` and `message_thread_id` present).

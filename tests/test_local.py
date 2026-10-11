@@ -520,3 +520,88 @@ async def test_modes_probe_deletes_its_session(
     monkeypatch.setattr(LocalClient, "_request", record)
     assert await shell_client.modes() == ["accept-edits", "smart"]
     assert "session/delete" in seen
+
+
+@pytest.mark.asyncio
+async def test_local_events_survive_bridge_restart(tmp_path: Path) -> None:
+    # a bridge restart kills the acp process and its in-memory events —
+    # persisted rows let a resumed session re-offer the undelivered tail,
+    # same as cloud events surviving server-side
+    from app.store import Store
+
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    fake = tmp_path / "fake_acp.py"
+    fake.write_text(FAKE_ACP, encoding="utf-8")
+    cmd = _devin_command(tmp_path, fake)
+    first = LocalClient(cli_command=cmd, api_key=None, event_store=store)
+    session_id, _ = await first.create_session("hello")
+    await _wait_for(first, session_id, "echo: hello")
+    first_ids = [
+        m.event_id for m in (await first.get_session(session_id)).messages
+    ]
+    await first.aclose()
+
+    second = LocalClient(cli_command=cmd, api_key=None, event_store=store)
+    try:
+        state = await second.get_session(session_id)
+        assert state.status_enum == "blocked"
+        # the turn ended cleanly — no interruption notice
+        assert not any("restarted mid-turn" in m.message for m in state.messages)
+        delivered = [m for m in state.messages if m.message == "echo: hello"]
+        assert delivered and delivered[0].event_id in first_ids
+        # the session/load transcript replay stays suppressed — recovery
+        # relies on the persisted rows, not the ACP replay
+        assert not any("replayed" in m.message for m in state.messages)
+        # the watcher's persisted cursor still filters: only later events
+        tail = await second.get_session(
+            session_id, since_event_id=first_ids[0]
+        )
+        assert all(
+            int(m.event_id or 0) > int(first_ids[0]) for m in tail.messages
+        )
+    finally:
+        await second.aclose()
+
+    store.delete_local_events(session_id)
+    assert store.local_events(session_id) == []
+
+
+@pytest.mark.asyncio
+async def test_interrupted_turn_notice_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a bridge restart mid-prompt kills the acp process — the resumed
+    # session must say the turn was lost instead of going silently idle
+    from app.store import Store
+
+    store = Store(str(tmp_path / "bridge.sqlite3"))
+    fake = tmp_path / "fake_acp.py"
+    fake.write_text(FAKE_ACP, encoding="utf-8")
+    monkeypatch.setenv("FAKE_PERMISSION", "1")  # prompt waits on a decision
+    cmd = _devin_command(tmp_path, fake)
+    first = LocalClient(cli_command=cmd, api_key=None, event_store=store)
+    first.on_permission = lambda sid, msg: None  # leave it unanswered
+    session_id, _ = await first.create_session("hello")
+    for _ in range(50):
+        if first.sessions[session_id].permissions:
+            break
+        await asyncio.sleep(0.1)
+    assert first.sessions[session_id].permissions  # turn in flight
+    await first.aclose()  # what a bridge restart does to the process
+
+    second = LocalClient(cli_command=cmd, api_key=None, event_store=store)
+    state = await second.get_session(session_id)
+    assert any("restarted mid-turn" in m.message for m in state.messages)
+    await second.aclose()
+
+    # the flag is consumed — a later resume re-seeds the persisted notice
+    # but must not emit a second one
+    third = LocalClient(cli_command=cmd, api_key=None, event_store=store)
+    try:
+        again = await third.get_session(session_id)
+        notices = [
+            m for m in again.messages if "restarted mid-turn" in m.message
+        ]
+        assert len(notices) == 1
+    finally:
+        await third.aclose()

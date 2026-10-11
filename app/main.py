@@ -134,6 +134,7 @@ class Bridge:
             cwd=settings.devin_local_cwd,
             api_key=settings.devin_service_user_api_key,
             pr_fetcher=self.devin.fetch_github_pr,
+            event_store=store,
         )
         self.local.on_emit = self._on_local_emit
         self.local.on_permission = self._on_local_permission
@@ -898,6 +899,7 @@ class Bridge:
                 self.store.cleanup_message_index()
                 self.store.cleanup_long_texts()
                 self.store.cleanup_reports()
+                self.store.cleanup_local_events()
                 await self._redeliver_backlog()
             except Exception:
                 logger.exception("Janitor sweep failed")

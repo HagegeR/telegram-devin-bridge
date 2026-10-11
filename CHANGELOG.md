@@ -8,6 +8,16 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Fixed
+
+- Local CLI turns no longer lose their tail to a bridge restart: emitted
+  reply events are mirrored into a `local_events` table and re-seeded on
+  `session/load`, so a recovery watcher still delivers the turn-end
+  message + "💬 Waiting for your reply" (cloud sessions get this
+  durability server-side). A prompt killed mid-turn by a restart now
+  surfaces a "⚠ bridge restarted mid-turn" notice on resume instead of
+  going silently idle.
+
 ### Added
 
 - Local CLI capability surfacing (`/platform local` chats): `/commands`
