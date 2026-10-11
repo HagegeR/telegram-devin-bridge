@@ -117,6 +117,13 @@ _SECRET_RE = re.compile(
 _USERINFO_RE = re.compile(r"(?<=://)[^\s/:]+:[^\s@]+@")
 
 
+def _terminate(proc: asyncio.subprocess.Process) -> None:
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        pass  # already exited on its own
+
+
 def _scrub_command(cmd: str) -> str:
     scrubbed = _SECRET_RE.sub(lambda m: m.group(1) + "***", cmd)
     return _USERINFO_RE.sub("***@", scrubbed)
@@ -274,7 +281,7 @@ class LocalClient:
                             "probe session %s not deleted: %s", probe_id, exc
                         )
             finally:
-                proc.terminate()
+                _terminate(proc)
                 try:
                     await asyncio.wait_for(proc.wait(), 5)
                 except TimeoutError:
@@ -326,7 +333,7 @@ class LocalClient:
         except (TimeoutError, ValueError):
             costs = {}
         finally:
-            proc.terminate()
+            _terminate(proc)
             try:
                 await asyncio.wait_for(proc.wait(), 5)
             except TimeoutError:
@@ -387,7 +394,7 @@ class LocalClient:
         except (RuntimeError, TimeoutError):
             return []
         finally:
-            proc.terminate()
+            _terminate(proc)
             try:
                 await asyncio.wait_for(proc.wait(), 5)
             except TimeoutError:
@@ -452,7 +459,7 @@ class LocalClient:
                 "mcpServers": [],
             })
         except (RuntimeError, TimeoutError, asyncio.CancelledError):
-            sess.proc.terminate()
+            _terminate(sess.proc)
             raise
         sess.acp_id = str(created["sessionId"])
         sess.title = title or ""
@@ -814,7 +821,7 @@ class LocalClient:
         sess.dead = True
         if sess.flusher is not None:
             sess.flusher.cancel()
-        sess.proc.terminate()
+        _terminate(sess.proc)
         try:
             await asyncio.wait_for(sess.proc.wait(), 5)
         except TimeoutError:
@@ -860,7 +867,7 @@ class LocalClient:
                 "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
             })
         except (RuntimeError, TimeoutError, asyncio.CancelledError):
-            sess.proc.terminate()
+            _terminate(sess.proc)
             raise
         # strictly increasing bases so a same-ms respawn can't reuse ids
         sess.event_base = max(
@@ -904,7 +911,7 @@ class LocalClient:
                 "mcpServers": [],
             })
         except (RuntimeError, TimeoutError) as exc:
-            sess.proc.terminate()
+            _terminate(sess.proc)
             raise RuntimeError(
                 f"local session {acp_id} couldn't resume: {exc}"
             ) from exc
