@@ -490,3 +490,15 @@ def test_save_attachment_writes_on_host(tmp_path: Path) -> None:
     assert dest.read_bytes() == b"data"
     assert dest.parent.name == "attachments"
     assert dest.name.endswith("-my_file_.txt")
+
+
+def test_save_attachment_sweeps_old_files(tmp_path: Path) -> None:
+    client = LocalClient(cli_command="devin", cwd=str(tmp_path))
+    attachments = tmp_path / "attachments"
+    attachments.mkdir()
+    old = attachments / "ancient.txt"
+    old.write_bytes(b"stale")
+    os.utime(old, (0, 0))
+    dest = client.save_attachment("new.txt", b"data")
+    assert dest.exists()
+    assert not old.exists()

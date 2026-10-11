@@ -527,12 +527,19 @@ class LocalClient:
         """Persist a Telegram file on the host — ACP has no file-transfer
         channel, but a local session can read host paths."""
         safe = re.sub(r"[^\w.-]", "_", Path(filename).name)[:80] or "file"
-        dest = (
-            Path(self.cwd).expanduser()
-            / "attachments"
-            / f"{int(time.time() * 1000)}-{safe}"
-        )
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        attachments = Path(self.cwd).expanduser() / "attachments"
+        attachments.mkdir(parents=True, exist_ok=True)
+        # unbounded growth would silently fill the host disk — retain a
+        # week (agent-read prompts reference the path within the turn,
+        # so days of slack is plenty)
+        cutoff = time.time() - 7 * 86400
+        for old in attachments.iterdir():
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
+        dest = attachments / f"{int(time.time() * 1000)}-{safe}"
         dest.write_bytes(content)
         return dest
 

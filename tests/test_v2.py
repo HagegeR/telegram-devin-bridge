@@ -9133,3 +9133,52 @@ async def test_permission_prompt_buttons_route_answer(tmp_path: Path) -> None:
     })
     assert "expired" in str(telegram.edits[-1])
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_attachment_uploads_after_local_session_expires(
+    tmp_path: Path,
+) -> None:
+    # expired local conv + platform now cloud -> the file must upload to
+    # cloud storage, not be saved as an unreachable host path
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:old",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    runtime._is_finished = lambda _sid: _async(True)  # type: ignore[method-assign]
+    created: list[str] = []
+    original = devin.create_session
+
+    async def record(*args: object, **kwargs: object) -> tuple[str, str]:
+        created.append(str(args[0]))
+        return await original(*args, **kwargs)
+
+    devin.create_session = record  # type: ignore[method-assign]
+    photo = message("look")
+    photo.pop("text")
+    photo["photo"] = [{"file_id": "file-1", "width": 1, "height": 1}]
+    await runtime.handle_message(photo)
+    assert created
+    assert "https://files.test/" in created[0]
+    await runtime.shutdown()
+
+
+def test_delete_choices_preserves_perm_prompts(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.add_choice("a1", "222", "local:s1", 222, "option one", 50)
+    store.add_choice("a2", "222", "local:s1", 222, "__cmd:perm:5:allow", 51)
+    store.delete_choices("222")
+    assert store.get_choice("a1") is None
+    assert store.get_choice("a2") is not None
+    store.add_choice("b1", "222", "local:s1", 222, "option two", 50)
+    store.delete_choices_for_message("222", 51)
+    assert store.get_choice("a2") is None
+    assert store.get_choice("b1") is not None

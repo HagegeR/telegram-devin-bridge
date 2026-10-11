@@ -180,11 +180,15 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     under `DEVIN_LOCAL_CWD/attachments/` and the prompt hands the agent
     the host path (`Attached file: <path> — saved on the bridge host`).
     `session/request_permission` prompts are surfaced as inline-keyboard
-    buttons (`__cmd:perm:<request>:<option>` choices) and the picked option
+    buttons (`__cmd:perm:<request>:<option>` choices, restricted to
+    `TELEGRAM_ADMIN_USER_IDS` when configured) and the picked option
     is written back to the acp process; when the prompt can't be sent
     (no conversation, send failure) the allow option is auto-picked so the
     turn never stalls, the same answer used for every request when no
-    approval hook is installed. The service-user key is sent as a
+    approval hook is installed. Choice cleanup is scoped to the tapped
+    message (and `delete_choices` skips `__cmd:perm:` rows), so answering
+    one prompt never expires another still-pending request. The
+    service-user key is sent as a
     `/login` command on session start when set. Requires the Devin CLI
     (`DEVIN_LOCAL_CLI`/`DEVIN_LOCAL_CWD`).
   - On `platform=local` chats, `/mode` + the 🤖 Devin mode submenu

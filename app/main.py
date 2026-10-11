@@ -954,10 +954,11 @@ class Bridge:
                 for (_, label), cid in zip(options, choice_ids)
             ]
         }
+        who = " — admins decide" if self.settings.admin_user_ids else ""
         try:
             results = await self.telegram.send_markdown(
                 conv.chat_id,
-                f"🔐 Permission requested: {what}",
+                f"🔐 Permission requested: {what}{who}",
                 thread_id=conv.thread_id,
                 reply_markup=markup,
             )
@@ -1164,8 +1165,16 @@ class Bridge:
         enabled_crawls = self.crawl_sites()
         if enabled_crawls:
             text = await self._append_crawled_content(text, enabled_crawls)
+        # decide the receiving backend only after expiry clears the
+        # conversation — an expired local session + a /platform flip to
+        # cloud must upload, not save a host path the cloud can't read
+        if conversation is not None and await self._is_finished(conversation.session_id):
+            conversation = None
         if attachment is not None:
             filename, content, content_type = attachment
+            # sender-controlled filenames go straight into the prompt —
+            # strip anything that could smuggle instructions
+            display_name = re.sub(r"[^\w .-]", "_", filename)[:80]
             # route by the session's backend, not the current setting — a
             # /platform flip must not misroute files for an existing session
             local_dest = (
@@ -1181,17 +1190,15 @@ class Bridge:
                     dest = self.local.save_attachment(filename, content)
                 except OSError:
                     logger.warning("couldn't save local attachment", exc_info=True)
-                    text = f"{text}\n\nAttached file: {filename} (not sent — couldn't save it on the host)".strip()
+                    text = f"{text}\n\nAttached file: {display_name} (not sent — couldn't save it on the host)".strip()
                 else:
-                    text = f"{text}\n\nAttached file: {dest} ({filename} — saved on the bridge host)".strip()
+                    text = f"{text}\n\nAttached file: {dest} ({display_name} — saved on the bridge host)".strip()
             else:
                 url = await self.devin.upload_attachment(filename, content, content_type)
-                text = f"{text}\n\nAttached file: {url} ({filename})".strip()
+                text = f"{text}\n\nAttached file: {url} ({display_name})".strip()
         if not text:
             text = "Please inspect the attached file."
         sent_at: float | None = None
-        if conversation is not None and await self._is_finished(conversation.session_id):
-            conversation = None
         if conversation is not None:
             self.store.update_conversation(
                 conv_key,
@@ -1315,7 +1322,8 @@ class Bridge:
                     ("unlisted", conv_settings.unlisted),
                     ("idempotent", conv_settings.idempotent),
                 ]
-                if value
+                # explicit off is still an option the backend ignores
+                if value is not None
             ]
             if ignored:
                 await self.send_text(
@@ -1600,7 +1608,13 @@ class Bridge:
                 )
                 return
             choices = self.store.list_choices(conv_key, callback_message_id)
-            self.store.delete_choices(conv_key)
+            # only this keyboard's rows — an unrelated prompt (another
+            # permission request, a confirm) still maps to a live
+            # decision that must stay answerable
+            if callback_message_id is not None:
+                self.store.delete_choices_for_message(conv_key, callback_message_id)
+            else:
+                self.store.delete_choices(conv_key)
             plain_option = not option.startswith("__cmd:")
             if option.startswith("__cmd:terminate:"):
                 await self.stop_conversation(active)
@@ -1609,6 +1623,17 @@ class Bridge:
             elif option == "__cmd:cancel":
                 updated = "Cancelled."
             elif option.startswith("__cmd:perm:"):
+                # host actions are admin decisions when admins are
+                # configured — another group member must not approve
+                # what the requester meant to reject
+                if (
+                    self.settings.admin_user_ids
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id, "Admins only — permission decisions are restricted."
+                    )
+                    return
                 parts = option.split(":", 3)
                 label: str | None = None
                 if len(parts) == 4:
