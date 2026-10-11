@@ -18,7 +18,7 @@ from app.formatting import (
     rich_text_code,
     rich_text_link,
 )
-from app.local import LocalClient, is_local
+from app.local import MODEL_TIER_ICONS, LocalClient, is_local
 from app.store import Conversation, HistoryEntry, Store
 
 SYSTEM_PREAMBLE = (
@@ -66,6 +66,13 @@ _STATUS_DETAIL = {
     "inactivity": "idle timeout",
     "user_request": "paused on request",
 }
+
+
+def _model_list(models: list[str], costs: dict[str, str]) -> str:
+    return ", ".join(
+        f"{icon} {m}" if (icon := MODEL_TIER_ICONS.get(costs.get(m, ""))) else m
+        for m in models
+    )
 
 
 class CommandRuntime(Protocol):
@@ -528,7 +535,10 @@ async def handle_command(
         elif not value:
             current = runtime.store.get_settings(conv_key).local_model
             models = await runtime.local.models()
-            options_line = f"\nAvailable: {', '.join(models)}" if models else ""
+            costs = await runtime.local.model_costs()
+            options_line = (
+                f"\nAvailable: {_model_list(models, costs)}" if models else ""
+            )
             await runtime.send_text(
                 message,
                 f"Model: {current or 'cli default'}"
@@ -554,9 +564,10 @@ async def handle_command(
         elif re.fullmatch(r"[\w.-]+", value):
             models = await runtime.local.models()
             if models and value not in models:
+                costs = await runtime.local.model_costs()
                 await runtime.send_text(
                     message,
-                    f"Unknown model: {value}\nAvailable: {', '.join(models)}",
+                    f"Unknown model: {value}\nAvailable: {_model_list(models, costs)}",
                     ephemeral=True,
                 )
             else:

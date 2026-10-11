@@ -230,6 +230,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     `/model` + a 🧠 Model settings row enumerate the values the ACP `model` config option accepts (`session/new` configOptions), paged 30 per screen (like every long option submenu) — `devin models list` advertises families the account may not be able to select
     and apply via `session/set_config_option configId=model`, persisted in
     `conversation_settings.local_model` and sent at session create.
+    A pricing icon prefixes each entry when `devin models list --format
+    json` reports its `cost_tier`: 🎁 Free, 🏷️ Low cost, 💰 Med cost,
+    💎 High cost; models with no reported tier show the bare slug.
     `/think` + a 💭 Thinking settings row do the same for the
     `thought_level` configOption (`conversation_settings.thought_level`).
     `/commands` browses the CLI's `available_commands_update` slash-command

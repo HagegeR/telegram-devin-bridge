@@ -41,7 +41,7 @@ from app.formatting import (
     rich_paragraph,
     split_long_text,
 )
-from app.local import LocalClient, is_local
+from app.local import MODEL_TIER_ICONS, LocalClient, is_local
 from app.notify import register_notify_route
 from app.polling import run_polling
 from app.set_webhook import chat_commands, configure_bot
@@ -60,9 +60,33 @@ from app.transcription import (
 )
 from app.watcher import ACTIVE_STATUSES, SessionWatcher
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s:%(name)s %(message)s",
+)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+
+def _stamp_uvicorn_loggers() -> None:
+    """Prefix uvicorn's handler formatters with %(asctime)s. Config installs
+    them before app.main is even imported, so only the app lifespan can
+    restamp them — call before startup work begins."""
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for handler in logging.getLogger(name).handlers:
+            old = handler.formatter
+            fmt = getattr(old, "_fmt", "")
+            if not fmt or fmt.startswith("%(asctime)s"):
+                continue
+            try:
+                stamped = type(old)(
+                    f"%(asctime)s {fmt}",
+                    use_colors=getattr(old, "use_colors", None),
+                )
+            except TypeError:
+                stamped = type(old)(f"%(asctime)s {fmt}")
+            handler.setFormatter(stamped)
+
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _ANNOUNCE_MAX_ATTEMPTS = 3
@@ -2770,12 +2794,18 @@ class Bridge:
                 # the CLI can offer 100+ models — Telegram rejects oversized
                 # keyboards, so long lists page through _page_rows
                 models = await self.local.models()
+                costs = await self.local.model_costs()
                 current_model = self.store.get_settings(conv_key).local_model
-                items = [
-                    (f"{'✓ ' if model == current_model else ''}{model}", callback)
-                    for model in models
-                    if len(callback := f"cfg:model:{model}") <= 64
-                ]
+                items = []
+                for model in models:
+                    callback = f"cfg:model:{model}"
+                    if len(callback) > 64:
+                        continue
+                    icon = MODEL_TIER_ICONS.get(costs.get(model, ""), "")
+                    prefix = ("✓ " if model == current_model else "") + (
+                        f"{icon} " if icon else ""
+                    )
+                    items.append((f"{prefix}{model}", callback))
                 rows = [[{
                     "text": "cli default",
                     "callback_data": "cfg:model:default",
@@ -3378,6 +3408,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        _stamp_uvicorn_loggers()
         await runtime.startup()
         if actual_settings.telegram_mode != "polling":
             await configure_bot(runtime.telegram)

@@ -732,3 +732,30 @@ async def test_local_events_survive_bridge_restart(tmp_path: Path) -> None:
     store.delete_local_events(session_id)
     assert store.local_events(session_id) == []
 
+
+
+@pytest.mark.asyncio
+async def test_model_costs_parses_cli_json_and_caches(tmp_path: Path) -> None:
+    fake = tmp_path / "fake_devin.py"
+    fake.write_text(
+        "import json\n"
+        "print(json.dumps({'families': [{'variants': ["
+        "{'model_uid': 'free-m', 'cost_tier': 'Free'},"
+        "{'model_uid': 'hi-m', 'cost_tier': 'High cost'},"
+        "{'model_uid': 'no-tier'}]}]}))",
+        encoding="utf-8",
+    )
+    client = LocalClient(cli_command=[sys.executable, str(fake)], api_key=None)
+    costs = await client.model_costs()
+    assert costs == {"free-m": "Free", "hi-m": "High cost"}
+    # the 5-min cache serves repeat calls — a now-broken fake must not run
+    fake.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    assert await client.model_costs() == costs
+
+
+@pytest.mark.asyncio
+async def test_model_costs_empty_on_probe_failure(tmp_path: Path) -> None:
+    fake = tmp_path / "fake_devin.py"
+    fake.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    client = LocalClient(cli_command=[sys.executable, str(fake)], api_key=None)
+    assert await client.model_costs() == {}

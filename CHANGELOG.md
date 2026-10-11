@@ -12,6 +12,10 @@ and deployment update channels.
 
 ### Added
 
+- Local `/model` listings and the 🧠 Model settings submenu now prefix
+  each model with a pricing icon from `devin models list --format json`:
+  🎁 Free, 🏷️ Low cost, 💰 Med cost, 💎 High cost (bare slug when the
+  CLI reports no tier).
 - Local CLI capability surfacing (`/platform local` chats): `/commands`
   opens a category → command browser built from the CLI's
   `available_commands_update` (Session/Skills/System/…), with tap-to-run
@@ -223,6 +227,10 @@ and deployment update channels.
 
 ### Changed
 
+- Service log lines now carry an `asctime` timestamp — both app loggers
+  and uvicorn's access/error/shutdown lines (restamped at app startup;
+  uvicorn builds its handlers before `app.main` is imported) — so
+  restart-correlated entries can be told apart from days-old residue.
 - CI now runs the test suite on Python 3.12 through 3.15 (previously
   3.12/3.13 only).
 
