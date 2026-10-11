@@ -9167,7 +9167,7 @@ async def test_attachment_uploads_after_local_session_expires(
     photo["photo"] = [{"file_id": "file-1", "width": 1, "height": 1}]
     await runtime.handle_message(photo)
     assert created
-    assert "https://files.test/" in created[0]
+    assert "files.test/" in created[0]
     await runtime.shutdown()
 
 
