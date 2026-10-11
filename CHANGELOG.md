@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v2.0.0] - 2026-10-11
+
 ### Added
 
 - Local CLI capability surfacing (`/platform local` chats): `/commands`
@@ -38,6 +40,72 @@ and deployment update channels.
   the agent the file path, instead of being dropped with a "not sent"
   note. Files older than 7 days are swept on each save so the directory
   can't grow without bound.
+
+- `/platform <name>` — per-chat session placement (v3 only). Set an
+  outpost pool name or a hosted platform label (`linux`, `windows`,
+  `macos`) so new sessions in that chat run on your own machines;
+  `/platform default` resets to the org default. Also shown in the
+  `/settings` 🖥 Platform row, whose submenu lists every platform label
+  and outpost pool the org accepts (parsed from the create-session 400
+  body, same probe as `devin_modes()`), and `/platform` with no args
+  prints the same list.
+- `/model <slug>` + `/settings` → 🧠 Model — pick the model local CLI
+  sessions run (enumerated from the ACP `model` config option, applied at create and
+  to the running session; settings option submenus page 30 per screen when a list is longer).
+  `/mode` and the 🤖 Devin mode submenu enumerate the local ACP modes
+  (accept-edits/smart/ask/plan/bypass) instead of cloud modes and apply
+  immediately to the running session. Local sessions are now titled with
+  the conversation title instead of the ACP session id.
+- `/platform local` — prototype local-CLI backend: new sessions spawn a
+  `devin acp` subprocess on the bridge host itself (fully local execution,
+  the CLI's own model set, no cloud session URL). Shown as
+  `local (this host)` in the 🖥 Platform submenu. Cloud session options
+  (mode/repos/acu/secrets/…) don't apply, file attachments can't be
+  delivered, and sessions resume across bridge restarts via ACP
+  `session/load` (the CLI keeps them in its own DB). Overlong ACP output
+  lines no longer kill the session reader (a >64KB chunk used to silently
+  orphan every turn), and reply text streams into the topic every ~20s
+  while a turn runs instead of appearing only at stopReason. The edited
+  ⏳ Working status message also shows a live `→ …` line with the latest
+  local thought or tool call (cloud exposes no thought stream — it gets
+  the line only for free-text `status_detail` values).
+  Requires the Devin CLI on the host (`DEVIN_LOCAL_CLI`,
+  `DEVIN_LOCAL_CWD`); the service-user key is reused for `/login`.
+- `/mode [name]` — per-chat Devin mode for new sessions, validated
+  against the org's mode list (`/mode` no-args prints it,
+  `/mode default` resets). Mirrors the /settings 🤖 Devin mode submenu;
+  verified to combine with `platform` (outpost sessions accept
+  `devin_mode`).
+- `/repos` now validates names against the org's connected repos
+  (`GET /v3beta1/organizations/{org}/repositories`, cached 5 min) —
+  a typo replies `Not connected to this org: …` instead of silently
+  breaking future sessions. The `/settings` 📂 Repos submenu toggles
+  repos from the same list with ✓ marks; `/repos all` still resets.
+- `/acu [n]` — per-chat ACU limit for new sessions, plus preset buttons in
+  the `/settings` ⚡ ACU limit submenu; `/acu default` resets.
+- `/tags [a,b]` — extra tags on new sessions (`telegram-bridge` is always
+  sent); `/tags clear` resets.
+- `/secrets [KEY,KEY2]` — attach org secrets to new sessions by key,
+  resolved to IDs via `GET /v3/organizations/{org}/secrets` and toggleable
+  in the `/settings` 🔑 Secrets submenu; `/secrets clear` resets.
+- `/knowledge [id,id]` and `/snapshot [id]` — per-chat knowledge entries
+  and environment snapshot for new sessions (IDs are free-text; the API
+  has no list endpoint for them); `clear` resets.
+- `/settings` 👁 Unlisted and 🔁 Idempotent rows — per-chat tri-state
+  flags (inherit/on/off) passed to create-session when set.
+- Restart backlog digest — when a bridge restart leaves 3+ undelivered
+  Devin replies in a conversation, the recovery watcher sends one
+  `📥 While the bridge was restarting` digest instead of bursting every
+  reply individually. Below the threshold (and for `/resume`) replies
+  deliver one-by-one as before.
+- `CRAWL_SITES` + `/crawl` — bridge-wide opt-in URL pre-crawling. Set
+  `CRAWL_SITES=instagram,article` as the default and matching URLs in user
+  messages are fetched in the bridge; extracted text + media are attached
+  to the Devin prompt, so sessions skip the crawl work. The `/settings`
+  🔎 Pre-crawl submenu toggles the active set live (persisted in the DB,
+  "env default" reverts to `CRAWL_SITES`); `/crawl` reports the active set.
+  Ships with `instagram` (oEmbed: caption + cover image) and `article`
+  (generic page title/description/body) crawlers in `app/crawlers.py`.
 
 ### Fixed
 
@@ -110,74 +178,6 @@ and deployment update channels.
   processes between stop and start, so a stale supervisor's child can't
   keep `:8000` and wedge the service in an `EADDRINUSE` respawn loop.
   Recovery steps for already-stuck hosts are in `docs/operations.md`.
-
-### Added
-
-- `/platform <name>` — per-chat session placement (v3 only). Set an
-  outpost pool name or a hosted platform label (`linux`, `windows`,
-  `macos`) so new sessions in that chat run on your own machines;
-  `/platform default` resets to the org default. Also shown in the
-  `/settings` 🖥 Platform row, whose submenu lists every platform label
-  and outpost pool the org accepts (parsed from the create-session 400
-  body, same probe as `devin_modes()`), and `/platform` with no args
-  prints the same list.
-- `/model <slug>` + `/settings` → 🧠 Model — pick the model local CLI
-  sessions run (enumerated from the ACP `model` config option, applied at create and
-  to the running session; settings option submenus page 30 per screen when a list is longer).
-  `/mode` and the 🤖 Devin mode submenu enumerate the local ACP modes
-  (accept-edits/smart/ask/plan/bypass) instead of cloud modes and apply
-  immediately to the running session. Local sessions are now titled with
-  the conversation title instead of the ACP session id.
-- `/platform local` — prototype local-CLI backend: new sessions spawn a
-  `devin acp` subprocess on the bridge host itself (fully local execution,
-  the CLI's own model set, no cloud session URL). Shown as
-  `local (this host)` in the 🖥 Platform submenu. Cloud session options
-  (mode/repos/acu/secrets/…) don't apply, file attachments can't be
-  delivered, and sessions resume across bridge restarts via ACP
-  `session/load` (the CLI keeps them in its own DB). Overlong ACP output
-  lines no longer kill the session reader (a >64KB chunk used to silently
-  orphan every turn), and reply text streams into the topic every ~20s
-  while a turn runs instead of appearing only at stopReason. The edited
-  ⏳ Working status message also shows a live `→ …` line with the latest
-  local thought or tool call (cloud exposes no thought stream — it gets
-  the line only for free-text `status_detail` values).
-  Requires the Devin CLI on the host (`DEVIN_LOCAL_CLI`,
-  `DEVIN_LOCAL_CWD`); the service-user key is reused for `/login`.
-- `/mode [name]` — per-chat Devin mode for new sessions, validated
-  against the org's mode list (`/mode` no-args prints it,
-  `/mode default` resets). Mirrors the /settings 🤖 Devin mode submenu;
-  verified to combine with `platform` (outpost sessions accept
-  `devin_mode`).
-- `/repos` now validates names against the org's connected repos
-  (`GET /v3beta1/organizations/{org}/repositories`, cached 5 min) —
-  a typo replies `Not connected to this org: …` instead of silently
-  breaking future sessions. The `/settings` 📂 Repos submenu toggles
-  repos from the same list with ✓ marks; `/repos all` still resets.
-- `/acu [n]` — per-chat ACU limit for new sessions, plus preset buttons in
-  the `/settings` ⚡ ACU limit submenu; `/acu default` resets.
-- `/tags [a,b]` — extra tags on new sessions (`telegram-bridge` is always
-  sent); `/tags clear` resets.
-- `/secrets [KEY,KEY2]` — attach org secrets to new sessions by key,
-  resolved to IDs via `GET /v3/organizations/{org}/secrets` and toggleable
-  in the `/settings` 🔑 Secrets submenu; `/secrets clear` resets.
-- `/knowledge [id,id]` and `/snapshot [id]` — per-chat knowledge entries
-  and environment snapshot for new sessions (IDs are free-text; the API
-  has no list endpoint for them); `clear` resets.
-- `/settings` 👁 Unlisted and 🔁 Idempotent rows — per-chat tri-state
-  flags (inherit/on/off) passed to create-session when set.
-- Restart backlog digest — when a bridge restart leaves 3+ undelivered
-  Devin replies in a conversation, the recovery watcher sends one
-  `📥 While the bridge was restarting` digest instead of bursting every
-  reply individually. Below the threshold (and for `/resume`) replies
-  deliver one-by-one as before.
-- `CRAWL_SITES` + `/crawl` — bridge-wide opt-in URL pre-crawling. Set
-  `CRAWL_SITES=instagram,article` as the default and matching URLs in user
-  messages are fetched in the bridge; extracted text + media are attached
-  to the Devin prompt, so sessions skip the crawl work. The `/settings`
-  🔎 Pre-crawl submenu toggles the active set live (persisted in the DB,
-  "env default" reverts to `CRAWL_SITES`); `/crawl` reports the active set.
-  Ships with `instagram` (oEmbed: caption + cover image) and `article`
-  (generic page title/description/body) crawlers in `app/crawlers.py`.
 
 ### Changed
 
