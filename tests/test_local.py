@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from app.local import LocalClient, is_local
+from app.local import LocalClient, _scrub_command, is_local
 
 FAKE_ACP = textwrap.dedent(
     """
@@ -351,6 +351,21 @@ async def test_tool_call_prefers_raw_command_over_wrapper_title(
     await _wait_for(shell_client, session_id, "echo: hello")
     state = await shell_client.get_session(session_id)
     assert state.status_detail == "rtk pytest -q tests/x.py"
+
+
+def test_scrub_command_masks_credentials() -> None:
+    # the activity line is posted to the chat — a command that embeds a
+    # credential must not publish it
+    for raw in (
+        "curl -H 'Authorization: Bearer tok123' https://x",
+        "export API_KEY=sk-abc123 && pytest",
+        'rtk --token "secret value" run',
+        "gh auth login --with-token ghp_xyz",
+    ):
+        scrubbed = _scrub_command(raw)
+        for secret in ("tok123", "sk-abc123", "secret", "ghp_xyz"):
+            assert secret not in scrubbed, (raw, scrubbed)
+    assert _scrub_command("rtk pytest -q") == "rtk pytest -q"
 
 
 @pytest.mark.asyncio
