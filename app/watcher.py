@@ -975,9 +975,11 @@ class SessionWatcher:
             # instead of silently vanishing under the cursor advance.
             return set()
         title = self.conversation.title or "the session"
+        if len(title) > 60:
+            title = title[:60].rstrip() + "…"
         header = (
             f"📥 While the bridge was restarting — "
-            f"{len(messages)} replies from {title}:\n\n"
+            f"{len(parts)} replies from {title}:\n\n"
         )
         # Bound the whole digest under the 4096-char message cap: shrink
         # every reply to an equal share of the remaining budget.

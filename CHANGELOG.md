@@ -24,6 +24,13 @@ and deployment update channels.
 
 ### Fixed
 
+- `⚠ prompt failed` no longer relays raw ACP stderr into chat — the
+  agent's own structured log lines (skills discovery stats, SessionEnd
+  noise) and object reprs like `<WriteUnixTransport …>` are stripped so
+  only a single capped reason shows (`acp process exited`, `the handler
+  is closed`); the full tail still lands in the journal. The restart
+  digest header now counts only digested replies and caps the session
+  title at 60 chars.
 - Implicit topics no longer get renamed to the first line of the user's
   prompt — that rename raced the generated session title and could
   clobber it with unrelated prompt text. Untitled sessions now wait for

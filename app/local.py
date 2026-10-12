@@ -102,6 +102,9 @@ class _AcpSession:
     # child's stderr tail — included in 'acp process exited' errors so a
     # dead spawn isn't a silent black box
     stderr_tail: str = ""
+    # drain task handle — awaited at reader exit so the tail is complete
+    # before the error detail is built
+    stderr_task: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -118,6 +121,34 @@ _CONTROL_TIMEOUT = 30
 # on newlines manually because the default 64KB StreamReader limit used
 # to crash the reader and orphan every turn on that session
 _STREAM_CHUNK = 65536
+# structured agent logs ("2026-10-12T22:19:57Z INFO target: msg") are
+# journal material, not something to relay into the user's chat
+_LOG_LINE = re.compile(
+    r"^\S+\s+(?:INFO|DEBUG|TRACE|WARN(?:ING)?|ERROR)\s"
+)
+
+
+def _clean_reason(exc: BaseException) -> str:
+    # object reprs (<WriteUnixTransport ...>) and embedded newlines are
+    # debugging noise in chat — collapse to a single capped line
+    text = re.sub(r"<[^>\n]+>", "…", str(exc))
+    text = " ".join(text.split())
+    return text[:160].rstrip() + ("…" if len(text) > 160 else "")
+
+
+def _exit_detail(stderr_tail: str) -> str:
+    # the tail is mostly the agent's own structured logs — surface only
+    # non-log lines (panics, tracebacks); the first line can be a
+    # mid-line fragment of the -400 cut, so drop it when there is more
+    lines = stderr_tail[-400:].splitlines()
+    plain = [
+        line.strip()
+        for line in (lines[1:] or lines)
+        if line.strip() and not _LOG_LINE.match(line)
+    ]
+    return f": {plain[-1][-160:]}" if plain else ""
+
+
 # stream interim reply text during a turn — waiting for stopReason alone
 # leaves the topic silent for many minutes on long tasks
 _FLUSH_INTERVAL = 20
@@ -688,7 +719,8 @@ class LocalClient:
         except asyncio.CancelledError:
             exc = None
         if exc is not None:
-            self._emit(sess, f"⚠ prompt failed: {exc}")
+            logger.warning("local prompt failed for %s: %s", sess.acp_id, exc)
+            self._emit(sess, f"⚠ prompt failed: {_clean_reason(exc)}")
         elif fut.result().get("error"):
             self._emit(sess, f"⚠ {fut.result()['error'].get('message', 'error')}")
         text = "".join(sess.buffer).strip()
@@ -926,7 +958,7 @@ class LocalClient:
         )
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
-        asyncio.create_task(self._drain_stderr(sess))
+        sess.stderr_task = asyncio.create_task(self._drain_stderr(sess))
         try:
             await self._request(sess, "initialize", {
                 "protocolVersion": 1,
@@ -1131,7 +1163,18 @@ class LocalClient:
                     # pending turns would otherwise hang forever
                     logger.warning("bad acp update skipped: %.200s", raw)
         sess.dead = True
-        detail = f": {sess.stderr_tail[-400:].strip()}" if sess.stderr_tail else ""
+        # stdout can close before stderr finishes draining — give the
+        # drain a moment so the tail is complete for the detail and the
+        # journal line below
+        if sess.stderr_task is not None:
+            await asyncio.wait({sess.stderr_task}, timeout=5)
+        detail = _exit_detail(sess.stderr_tail)
+        if sess.stderr_tail.strip():
+            logger.warning(
+                "acp stderr tail for %s: %s",
+                sess.acp_id,
+                sess.stderr_tail.strip()[-400:],
+            )
         for fut in sess.pending.values():
             if not fut.done():
                 fut.set_exception(RuntimeError(f"acp process exited{detail}"))
