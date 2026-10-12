@@ -90,7 +90,12 @@ case "$PKG_MANAGER" in
         pacman -Sy --noconfirm python python-pip git tar
         ;;
     zypper)
-        zypper --non-interactive install python3 python3-pip git shadow tar
+        # openSUSE mirrors 403 transiently on refresh — retry before giving up
+        for i in 1 2 3; do
+            zypper --non-interactive install python3 python3-pip git shadow tar && break
+            [ "$i" -eq 3 ] && exit 1
+            sleep 15
+        done
         ;;
     unknown)
         printf '%s\n' 'install python3 (>=3.12), pip, git manually, then rerun this installer' >&2
