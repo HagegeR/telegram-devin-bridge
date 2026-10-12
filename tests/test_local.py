@@ -14,6 +14,7 @@ from app.local import (
     _split_runons,
     _terminate,
     is_local,
+    sort_models,
 )
 
 FAKE_ACP = textwrap.dedent(
@@ -752,8 +753,9 @@ async def test_model_costs_parses_cli_json_and_caches(tmp_path: Path) -> None:
     fake = tmp_path / "fake_devin.py"
     fake.write_text(
         "import json\n"
-        "print(json.dumps({'families': [{'variants': ["
-        "{'model_uid': 'free-m', 'cost_tier': 'Free'},"
+        "print(json.dumps({'families': ["
+        "{'variants': [{'model_uid': 'free-m', 'cost_tier': 'Free'}]},"
+        "{'variants': ["
         "{'model_uid': 'hi-m', 'cost_tier': 'High cost'},"
         "{'model_uid': 'no-tier'}]}]}))",
         encoding="utf-8",
@@ -761,9 +763,41 @@ async def test_model_costs_parses_cli_json_and_caches(tmp_path: Path) -> None:
     client = LocalClient(cli_command=[sys.executable, str(fake)], api_key=None)
     costs = await client.model_costs()
     assert costs == {"free-m": "Free", "hi-m": "High cost"}
+    # family index is captured from the same probe, tiered or not
+    assert client.model_rank() == {"free-m": 0, "hi-m": 1, "no-tier": 1}
     # the 5-min cache serves repeat calls — a now-broken fake must not run
     fake.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
     assert await client.model_costs() == costs
+    assert client.model_rank()["hi-m"] == 1
+
+
+def test_sort_models_orders_by_tier_then_family_rank() -> None:
+    models = ["hi-old", "free-b", "mid-a", "free-a", "unknown-x"]
+    costs = {
+        "free-a": "Free",
+        "free-b": "Free",
+        "mid-a": "Med cost",
+        "hi-old": "High cost",
+    }
+    rank = {"free-a": 0, "free-b": 1, "mid-a": 0, "hi-old": 0}
+    assert sort_models(models, costs, rank) == [
+        "unknown-x",  # untiered leads (adaptive, the recommended default)
+        "free-a",     # same tier: newer family (lower rank) first
+        "free-b",
+        "mid-a",
+        "hi-old",
+    ]
+
+
+def test_sort_models_keeps_untiered_input_order_and_sinks_unranked() -> None:
+    # a second untiered entry must not jump ahead of the leading one
+    assert sort_models(
+        ["adaptive", "other"], {}, {"adaptive": 2, "other": 0}
+    ) == ["adaptive", "other"]
+    # a tiered model missing from the rank map sorts after ranked ones
+    assert sort_models(
+        ["ghost", "known"], {"ghost": "Free", "known": "Free"}, {"known": 0}
+    ) == ["known", "ghost"]
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,7 @@ from app.formatting import (
     rich_text_code,
     rich_text_link,
 )
-from app.local import MODEL_TIER_ICONS, LocalClient, is_local
+from app.local import MODEL_TIER_ICONS, LocalClient, is_local, sort_models
 from app.store import Conversation, HistoryEntry, Store
 
 SYSTEM_PREAMBLE = (
@@ -68,10 +68,12 @@ _STATUS_DETAIL = {
 }
 
 
-def _model_list(models: list[str], costs: dict[str, str]) -> str:
+def _model_list(
+    models: list[str], costs: dict[str, str], rank: dict[str, int]
+) -> str:
     return ", ".join(
         f"{icon} {m}" if (icon := MODEL_TIER_ICONS.get(costs.get(m, ""))) else m
-        for m in models
+        for m in sort_models(models, costs, rank)
     )
 
 
@@ -537,7 +539,9 @@ async def handle_command(
             models = await runtime.local.models()
             costs = await runtime.local.model_costs()
             options_line = (
-                f"\nAvailable: {_model_list(models, costs)}" if models else ""
+                f"\nAvailable: {_model_list(models, costs, runtime.local.model_rank())}"
+                if models
+                else ""
             )
             await runtime.send_text(
                 message,
@@ -567,7 +571,8 @@ async def handle_command(
                 costs = await runtime.local.model_costs()
                 await runtime.send_text(
                     message,
-                    f"Unknown model: {value}\nAvailable: {_model_list(models, costs)}",
+                    f"Unknown model: {value}\n"
+                    f"Available: {_model_list(models, costs, runtime.local.model_rank())}",
                     ephemeral=True,
                 )
             else:

@@ -41,7 +41,7 @@ from app.formatting import (
     rich_paragraph,
     split_long_text,
 )
-from app.local import MODEL_TIER_ICONS, LocalClient, is_local
+from app.local import MODEL_TIER_ICONS, LocalClient, is_local, sort_models
 from app.notify import register_notify_route
 from app.polling import run_polling
 from app.set_webhook import chat_commands, configure_bot
@@ -2805,7 +2805,8 @@ class Bridge:
                 costs = await self.local.model_costs()
                 current_model = self.store.get_settings(conv_key).local_model
                 items = []
-                for model in models:
+                rank = self.local.model_rank()
+                for model in sort_models(models, costs, rank):
                     callback = f"cfg:model:{model}"
                     if len(callback) > 64:
                         continue

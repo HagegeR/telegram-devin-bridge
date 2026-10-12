@@ -8236,8 +8236,11 @@ async def test_model_settings_submenu_paginates(tmp_path: Path) -> None:
             "m001": "Med cost",
             "m002": "High cost",
             "m003": "Low cost",
+            "m004": "Med cost",
         }
     )
+    # m004 is a newer family than m001, so within Med cost it sorts first
+    runtime.local.model_rank = lambda: {"m001": 9, "m004": 0}  # type: ignore[method-assign]
 
     callback = {
         "from": {"id": 111, "is_bot": False},
@@ -8247,21 +8250,43 @@ async def test_model_settings_submenu_paginates(tmp_path: Path) -> None:
     rows = telegram.markup_edits[-1]["inline_keyboard"]
     callbacks = [b["callback_data"] for row in rows for b in row]
     assert "cfg:model:default" in callbacks
-    assert "cfg:model:m000" in callbacks
-    assert "cfg:model:m030" not in callbacks
+    # untiered models sort first, so the tiered ones move off page one
+    assert "cfg:model:m005" in callbacks
+    assert "cfg:model:m034" in callbacks
+    assert "cfg:model:m000" not in callbacks
     assert "cfg:modelpage:1" in callbacks
     texts = [b["text"] for row in rows for b in row]
-    assert "🎁 m000" in texts
-    assert "💰 m001" in texts
-    assert "💎 m002" in texts
-    assert "🏷️ m003" in texts
-    assert "m004" in texts  # unknown tier -> bare slug
+    assert "m005" in texts  # unknown tier -> bare slug
 
     await runtime.handle_callback({**callback, "id": "cfg-2", "data": "cfg:modelpage:2"})
     rows = telegram.markup_edits[-1]["inline_keyboard"]
     callbacks = [b["callback_data"] for row in rows for b in row]
-    assert "cfg:model:m060" in callbacks
-    assert "cfg:model:m030" not in callbacks
+    # the sorted tail holds the tiered models, cheapest first and
+    # newer families first within a tier
+    tail = [c for c in callbacks if c.startswith("cfg:model:m")]
+    assert tail == [
+        "cfg:model:m065",
+        "cfg:model:m066",
+        "cfg:model:m067",
+        "cfg:model:m068",
+        "cfg:model:m069",
+        "cfg:model:m070",
+        "cfg:model:m071",
+        "cfg:model:m072",
+        "cfg:model:m073",
+        "cfg:model:m074",
+        "cfg:model:m000",
+        "cfg:model:m003",
+        "cfg:model:m004",
+        "cfg:model:m001",
+        "cfg:model:m002",
+    ]
+    texts = [b["text"] for row in rows for b in row]
+    assert "🎁 m000" in texts
+    assert "🏷️ m003" in texts
+    assert "💰 m004" in texts
+    assert "💰 m001" in texts
+    assert "💎 m002" in texts
     assert "cfg:modelpage:1" in callbacks
     assert "cfg:modelpage:3" not in callbacks
     await runtime.shutdown()

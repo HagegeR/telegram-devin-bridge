@@ -25,13 +25,33 @@ logger = logging.getLogger(__name__)
 
 LOCAL_PREFIX = "local:"
 
-# cost_tier -> list icon, from `devin models list --format json`
+# cost_tier -> list icon, from `devin models list --format json`;
+# dict order doubles as the price sort order (cheapest first)
 MODEL_TIER_ICONS = {
     "Free": "🎁",
     "Low cost": "🏷️",
     "Med cost": "💰",
     "High cost": "💎",
 }
+_MODEL_TIER_RANK = {tier: i for i, tier in enumerate(MODEL_TIER_ICONS)}
+
+
+def sort_models(
+    models: list[str], costs: dict[str, str], rank: dict[str, int]
+) -> list[str]:
+    """Order by price then novelty: untiered entries lead in input order
+    (keeps adaptive, the recommended default, first), then Free -> High
+    cost; within a tier newer families first (`models list` emits
+    families newest-first, and model_rank() maps each uid to its
+    family's index)."""
+    unranked = max(rank.values(), default=-1) + 1
+    return sorted(
+        models,
+        key=lambda m: (
+            _MODEL_TIER_RANK.get(costs.get(m, ""), -1),
+            rank.get(m, unranked) if costs.get(m, "") else 0,
+        ),
+    )
 
 
 def is_local(session_id: str) -> bool:
@@ -209,6 +229,7 @@ class LocalClient:
         self._last_event_base = 0
         self._modes_cache: tuple[float, list[str]] | None = None
         self._costs_cache: tuple[float, dict[str, str]] | None = None
+        self._model_rank: dict[str, int] = {}
         self._mode_details: list[dict] = []
         self._think_options: list[str] | None = None
         self._default_thought: str | None = None
@@ -359,6 +380,13 @@ class LocalClient:
                 and v.get("model_uid")
                 and v.get("cost_tier")
             }
+            self._model_rank = {
+                str(v["model_uid"]): i
+                for i, f in enumerate(payload.get("families", []))
+                if isinstance(f, dict)
+                for v in f.get("variants", [])
+                if isinstance(v, dict) and v.get("model_uid")
+            }
         except (TimeoutError, ValueError):
             costs = {}
         finally:
@@ -370,6 +398,12 @@ class LocalClient:
         if costs:
             self._costs_cache = (time.monotonic(), costs)
         return costs
+
+    def model_rank(self) -> dict[str, int]:
+        """{model_uid: family index} captured by the model_costs() probe —
+        `models list` emits families newest-first, so lower means newer.
+        {} until the first successful probe."""
+        return self._model_rank
 
     async def mode_details(self) -> list[dict]:
         """[{id, name, description}] from the `mode` config option —
