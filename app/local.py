@@ -115,6 +115,28 @@ _SECRET_RE = re.compile(
     r")\s*(?:[\"'][^\"']*[\"']?|\S+)"
 )
 _USERINFO_RE = re.compile(r"(?<=://)[^\s/:]+:[^\s@]+@")
+# the CLI's chunk stream can drop line separators between streamed
+# progress updates — sentence punctuation immediately followed by a
+# capital letter or a status marker is a lost line break. Digits and
+# lowercase are excluded so versions ("v2.0.0") and "word.ext" survive.
+_RUNON_RE = re.compile(r"(?<=[.!?:;])(?=[A-Z⚠✓◆→#])")
+# reply markers the watcher parses line-wise (OPTIONS: labels, TABLE:/
+# DETAILS:/SUGGEST: bodies, control markers) break if a split lands
+# inside them — marker-prefixed lines are left alone
+_MARKER_LINE_RE = re.compile(r"^[A-Z][A-Z_]{2,}:")
+
+
+def _split_runons(text: str) -> str:
+    out: list[str] = []
+    in_fence = False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        if in_fence or "`" in line or _MARKER_LINE_RE.match(line):
+            out.append(line)
+        else:
+            out.append(_RUNON_RE.sub("\n", line))
+    return "\n".join(out)
 
 
 def _terminate(proc: asyncio.subprocess.Process) -> None:
@@ -638,6 +660,7 @@ class LocalClient:
             self._emit(sess, text)
 
     def _emit(self, sess: _AcpSession, text: str) -> None:
+        text = _split_runons(text)
         sess.next_event += 1
         msg = DevinMessage(
             message_type="devin_message",
@@ -1158,7 +1181,9 @@ class LocalClient:
         if kind == "agent_thought_chunk":
             text = update.get("content", {}).get("text", "")
             if text:
-                sess.thought = (sess.thought + text)[-4096:]
+                # thought chunks arrive one complete line per update —
+                # joining them raw would fuse the narration into run-ons
+                sess.thought = (sess.thought + "\n" + text if sess.thought else text)[-4096:]
                 lines = sess.thought.strip().splitlines()
                 if lines:
                     line = lines[-1]
