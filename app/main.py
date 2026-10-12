@@ -691,6 +691,13 @@ class Bridge:
         if replayed and message_id and sent_marker and message_id <= sent_marker:
             self._consume_pending_turns(uids)
             return
+        if not replayed and message_id:
+            # receipt mark — the second-checkmark stand-in
+            await self._react(
+                _int(_mapping(message.get("chat")).get("id")),
+                message_id,
+                "✅",
+            )
         pending = self.pending_turns.setdefault(conv_key, [])
         if attachment is not None and any(
             fragment_attachment is not None
@@ -1280,9 +1287,6 @@ class Bridge:
                 last_user_text=text,
                 last_user_message_id=message_id,
             )
-        # second checkmark stand-in: the turn is being handed to Devin now
-        for mid in turn_mids:
-            await self._react(chat_id, mid, "✅")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
         enabled_crawls = self.crawl_sites()
         if enabled_crawls:

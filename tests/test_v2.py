@@ -3779,11 +3779,11 @@ async def test_flush_pending_indexes_every_fragment(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_batched_turn_marks_every_message_on_start(
+async def test_batched_turn_marks_every_message(
     tmp_path: Path,
 ) -> None:
-    """Merged messages share the turn's marks: ✅ on every message the
-    moment processing starts, 👀 once the agent actually has the text."""
+    """Merged messages share the turn's marks: ✅ on receipt, 👀 once the
+    agent actually has the text."""
 
     class FinishedDevin(_FakeDevin):
         async def get_session(
@@ -3813,7 +3813,7 @@ async def test_batched_turn_marks_every_message_on_start(
     await runtime._flush_pending("222")
     await asyncio.gather(*runtime.watchers.values(), return_exceptions=True)
     marks = list(zip(telegram.reaction_targets, telegram.reactions))
-    # ✅ (processing started) lands before 👀 (agent has the text)
+    # ✅ (bridge receipt) lands before 👀 (agent has the text)
     assert marks.index((1, "✅")) < marks.index((1, "👀"))
     assert marks.index((2, "✅")) < marks.index((2, "👀"))
     await runtime.shutdown()
