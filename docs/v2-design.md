@@ -165,7 +165,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     trailing partial paragraph stays buffered, and a flush inside an
     unclosed code fence is deferred — so each interim event is a coherent
     message and markers/fences are never split), with the remainder
-    emitted at stopReason; `agent_thought_chunk` and `tool_call` updates
+    emitted at stopReason; the emitted text passes a run-on splitter
+    that reinserts a line break where sentence punctuation is
+    immediately followed by a capital or status marker (the CLI's chunk
+    stream can drop separators between streamed progress updates);
+    `agent_thought_chunk` updates arrive one line each and are joined
+    with newlines into the rolling thought tail —
+    `agent_thought_chunk` and `tool_call` updates
     set the session's activity, shown live as a `→ …` line in the edited
     ⏳ Working status message (cloud sessions get the same line from any
     non-enum `status_detail`). For tool calls the activity prefers

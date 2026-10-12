@@ -7,7 +7,14 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from app.local import LocalClient, _kill, _scrub_command, _terminate, is_local
+from app.local import (
+    LocalClient,
+    _kill,
+    _scrub_command,
+    _split_runons,
+    _terminate,
+    is_local,
+)
 
 FAKE_ACP = textwrap.dedent(
     """
@@ -327,7 +334,9 @@ async def test_reader_survives_overlong_lines(
     await _wait_for(shell_client, session_id, "echo: hello")
     state = await shell_client.get_session(session_id)
     assert state.status_enum != "expired"
-    assert any("big:" + "Z" * 100 in m.message for m in state.messages)
+    # "big:ZZZ…" hits the run-on splitter (": "→ ":\n") — assert on the
+    # payload itself; the point is the reader survived the huge line
+    assert any("Z" * 100 in m.message for m in state.messages)
 
 
 @pytest.mark.asyncio
@@ -797,3 +806,22 @@ def test_terminate_and_kill_reach_live_process() -> None:
     _terminate(alive)
     _kill(alive)
     assert alive.called == ["terminate", "kill"]
+
+
+def test_split_runons_restores_lost_line_breaks() -> None:
+    text = (
+        "resolving in worktrees per branch.The dropped items were done. "
+        "recompute mergeable:#2113 is clean. "
+        "retrying fetches:⚠ Disk full. "
+        "merge:✓ PR #2180 pushed. "
+        "staying on v2.0.0 and app.local.py files. "
+        "call re.compile(r'(x)') verbatim."
+    )
+    assert _split_runons(text) == (
+        "resolving in worktrees per branch.\nThe dropped items were done. "
+        "recompute mergeable:\n#2113 is clean. "
+        "retrying fetches:\n⚠ Disk full. "
+        "merge:\n✓ PR #2180 pushed. "
+        "staying on v2.0.0 and app.local.py files. "
+        "call re.compile(r'(x)') verbatim."
+    )

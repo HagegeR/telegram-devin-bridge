@@ -8,6 +8,16 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Fixed
+
+- Local sessions no longer fuse streamed progress updates into a
+  wall-of-text run-on: the CLI's chunk stream can drop line separators
+  between updates, so emitted replies now reinsert a break where
+  sentence punctuation is immediately followed by a capital or status
+  marker (`⚠`, `✓`, `◆`, `→`, `#`). Thought chunks (one line per
+  update) are also joined with newlines so the `→` activity tail shows
+  the real last line instead of a fused blob.
+
 ## [v2.0.0] - 2026-10-11
 
 ### Added
