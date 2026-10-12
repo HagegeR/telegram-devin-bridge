@@ -194,6 +194,9 @@ class Bridge:
         # queued_turns: their durable pending_updates row must survive until
         # the turn actually reaches Devin
         self._update_conv: dict[int, str] = {}
+        # update_id -> message_id: lets a finished turn mark every user
+        # message that fed it, not only the trigger
+        self._update_msg: dict[int, int] = {}
         self.draining: set[str] = set()
         self.rate_windows: dict[int, deque[float]] = {}
         self.rate_warnings: dict[int, float] = {}
@@ -399,6 +402,7 @@ class Bridge:
                         message,
                         text,
                         attachment=attachment,
+                        message_ids=self._turn_message_ids(uids),
                     )
                     self._consume_pending_turns(uids)
                 except Exception as exc:
@@ -672,19 +676,27 @@ class Bridge:
     ) -> None:
         conv_key = self._conversation_key(message)
         uids = [update_id] if update_id is not None else []
+        message_id = _int(message.get("message_id"))
         if update_id is not None:
             self._update_conv[update_id] = conv_key
+            if message_id:
+                self._update_msg[update_id] = message_id
         # replayed update for a turn Devin already received — message_ids
         # are monotone per chat so anything at or below the marker was
         # already delivered. Only safe during replay: live dispatch runs
         # on concurrent workers, so a slow message can legitimately arrive
         # at the queue behind a newer one
-        message_id = _int(message.get("message_id"))
         raw_marker = self.store.get_setting(f"sent_turn:{conv_key}")
         sent_marker = int(raw_marker) if raw_marker and raw_marker.isdigit() else 0
         if replayed and message_id and sent_marker and message_id <= sent_marker:
             self._consume_pending_turns(uids)
             return
+        if not replayed and message_id:
+            await self._react(
+                _int(_mapping(message.get("chat")).get("id")),
+                message_id,
+                "👀",
+            )
         pending = self.pending_turns.setdefault(conv_key, [])
         if attachment is not None and any(
             fragment_attachment is not None
@@ -768,7 +780,15 @@ class Bridge:
                     )
                 else:
                     queue.append(turn)
-                    await self.react(message, "🤔")
+                    for mid in self._turn_message_ids(turn[3]) or [
+                        _int(message.get("message_id"))
+                    ]:
+                        if mid:
+                            await self.telegram.react(
+                                _int(_mapping(message.get("chat")).get("id")),
+                                mid,
+                                "🤔",
+                            )
                 return
             queued = self.queued_turns.pop(conv_key, [])
             batches = self._coalesce_turns([*queued, turn])
@@ -784,6 +804,7 @@ class Bridge:
                         batch_message,
                         batch_text,
                         attachment=batch_attachment,
+                        message_ids=self._turn_message_ids(batch_uids),
                     )
                     self._consume_pending_turns(batch_uids)
                 except Exception as exc:
@@ -799,6 +820,7 @@ class Bridge:
                         {"message": batch_message},
                         exc,
                         retryable=True,
+                        message_ids=self._turn_message_ids(batch_uids),
                     )
                     return
                 batches = self._coalesce_turns(self.queued_turns.pop(conv_key, []))
@@ -808,6 +830,9 @@ class Bridge:
                 {"message": message},
                 exc,
                 retryable=True,
+                message_ids=self._turn_message_ids(
+                    [uid for *_, uid_list in fragments for uid in uid_list]
+                ),
             )
 
     def _conversation_busy(self, conv_key: str) -> bool:
@@ -832,6 +857,16 @@ class Bridge:
         for uid in uids:
             self.store.delete_pending_update(uid)
             self._update_conv.pop(uid, None)
+            self._update_msg.pop(uid, None)
+
+    def _turn_message_ids(self, uids: list[int]) -> list[int]:
+        # every user message that fed the turn gets the finish mark, not
+        # just the one that triggered it
+        return list(
+            dict.fromkeys(
+                self._update_msg[uid] for uid in uids if uid in self._update_msg
+            )
+        )
 
     def _coalesce_turns(self, turns: list[QueuedTurn]) -> list[QueuedTurn]:
         groups: list[list[QueuedTurn]] = []
@@ -893,7 +928,12 @@ class Bridge:
                     ]
                     return
                 try:
-                    await self.handle_user_turn(message, text, attachment=attachment)
+                    await self.handle_user_turn(
+                        message,
+                        text,
+                        attachment=attachment,
+                        message_ids=self._turn_message_ids(uids),
+                    )
                     self._consume_pending_turns(uids)
                 except Exception as exc:
                     self.queued_turns[conv_key] = [
@@ -908,6 +948,7 @@ class Bridge:
                         {"message": message},
                         exc,
                         retryable=True,
+                        message_ids=self._turn_message_ids(uids),
                     )
                     return
                 batches = self._coalesce_turns(self.queued_turns.pop(conv_key, []))
@@ -1209,16 +1250,21 @@ class Bridge:
         text: str,
         *,
         attachment: tuple[str, bytes, str] | None = None,
+        message_ids: list[int] | None = None,
     ) -> None:
         conv_key = self._conversation_key(message)
         async with self._lock(conv_key):
-            await self._handle_user_turn_locked(message, text, attachment)
+            await self._handle_user_turn_locked(
+                message, text, attachment, message_ids=message_ids
+            )
 
     async def _handle_user_turn_locked(
         self,
         message: Mapping[str, object],
         text: str,
         attachment: tuple[str, bytes, str] | None,
+        *,
+        message_ids: list[int] | None = None,
     ) -> None:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
@@ -1227,6 +1273,11 @@ class Bridge:
         message_id = _int(message.get("message_id"))
         if message_id:
             self.store.index_message(chat_id, message_id, conv_key)
+        turn_mids = list(
+            dict.fromkeys(
+                mid for mid in [*(message_ids or []), message_id] if mid
+            )
+        )
         conversation = self.store.get_conversation(conv_key)
         if conversation is not None:
             self.store.update_conversation(
@@ -1235,7 +1286,8 @@ class Bridge:
                 last_user_text=text,
                 last_user_message_id=message_id,
             )
-        await self._react(chat_id, message_id, "👀")
+        for mid in turn_mids:
+            await self._react(chat_id, mid, "👀")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
         enabled_crawls = self.crawl_sites()
         if enabled_crawls:
@@ -1336,7 +1388,10 @@ class Bridge:
         if message_id:
             self.store.set_setting(f"sent_turn:{conv_key}", str(message_id))
         await self.start_watcher(
-            conversation, trigger_message_id=message_id, trigger_at=sent_at
+            conversation,
+            trigger_message_id=message_id,
+            trigger_at=sent_at,
+            turn_message_ids=turn_mids,
         )
 
     async def _append_crawled_content(
@@ -1537,6 +1592,7 @@ class Bridge:
         poll_seconds: float | None = None,
         resume_from: float | None = None,
         trigger_at: float | None = None,
+        turn_message_ids: list[int] | None = None,
     ) -> None:
         if trigger_message_id is not None:
             # keep the persisted trigger current so a recovery watcher
@@ -1552,10 +1608,19 @@ class Bridge:
         if existing is not None and not existing.done():
             watcher = self.active_watchers.get(conversation.session_id)
             if watcher is not None and trigger_message_id is not None:
-                old_trigger = watcher.trigger_message_id
-                watcher.set_trigger(trigger_message_id, at=trigger_at)
-                if old_trigger is not None and old_trigger != trigger_message_id:
-                    await self._react(conversation.chat_id, old_trigger, "👍")
+                new_ids = set(turn_message_ids or [trigger_message_id])
+                old_ids = [
+                    mid
+                    for mid in watcher.turn_message_ids
+                    if mid not in new_ids
+                ]
+                watcher.set_trigger(
+                    trigger_message_id,
+                    at=trigger_at,
+                    message_ids=turn_message_ids,
+                )
+                for old_id in old_ids:
+                    await self._react(conversation.chat_id, old_id, "✅")
             return
         conv_settings = self._conversation_settings(conversation.conv_key)
         watcher = SessionWatcher(
@@ -1566,6 +1631,7 @@ class Bridge:
             self.settings,
             poll_seconds=poll_seconds,
             trigger_message_id=trigger_message_id,
+            turn_message_ids=turn_message_ids,
             transient_message_ids=self.transient_messages.pop(
                 conversation.conv_key,
                 [],
@@ -1872,6 +1938,7 @@ class Bridge:
             if update_id is not None:
                 uids = [*uids, update_id]
                 self._update_conv[update_id] = conv_key
+                self._update_msg[update_id] = message_id
             pending[index] = (
                 message,
                 self._contextualize_message(message, text),
@@ -3227,6 +3294,7 @@ class Bridge:
         exc: Exception,
         *,
         retryable: bool = False,
+        message_ids: list[int] | None = None,
     ) -> None:
         callback = _mapping(update.get("callback_query"))
         message = _mapping(update.get("message")) or _mapping(
@@ -3250,9 +3318,12 @@ class Bridge:
                 f"⚠ Couldn't process that message: {reason}. {suffix}",
                 thread_id=_thread_id(message),
             )
-            message_id = _int(message.get("message_id"))
-            if message_id:
-                await self.telegram.set_message_reaction(chat_id, message_id, "👎")
+            mids = message_ids or [
+                _int(message.get("message_id"))
+            ]
+            for mid in mids:
+                if mid:
+                    await self.telegram.set_message_reaction(chat_id, mid, "👎")
         except Exception:
             logger.exception("Failed to report update processing error")
 

@@ -14,6 +14,11 @@ and deployment update channels.
   sorted by price then novelty instead of the CLI's raw order: `adaptive`
   first, then 🎁 Free → 💎 High cost, newer families first inside a tier
   (the `models list` family order is the freshness signal).
+- Per-message status marks: every user message that feeds a turn now shows
+  its own lifecycle — 👀 on receipt, 🤔 while queued behind a busy session,
+  ✅ on every message once the turn finishes (previously only the
+  triggering message got 👍), 👎 on failure or expiry. The ✅ stands in for
+  the second checkmark the Bot API cannot send on the user's own messages.
 
 ### Fixed
 
