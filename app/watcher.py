@@ -83,6 +83,7 @@ class SessionWatcher:
         *,
         poll_seconds: float | None = None,
         trigger_message_id: int | None = None,
+        turn_message_ids: list[int] | None = None,
         transient_message_ids: list[int] | None = None,
         on_status_change: Callable[[str], Awaitable[None]] | None = None,
         has_queued: Callable[[], bool] | None = None,
@@ -106,6 +107,19 @@ class SessionWatcher:
         self.clock = clock
         self.sleep = sleep
         self.trigger_message_id = trigger_message_id
+        # every user message that fed this turn — expiry/failure marks land
+        # on all of them (🫡 was already set at receipt)
+        self.turn_message_ids = (
+            list(turn_message_ids)
+            if turn_message_ids
+            else ([trigger_message_id] if trigger_message_id is not None else [])
+        )
+        # persist so a restart can still finish marks for a merged turn —
+        # the recovery watcher is otherwise left with the trigger alone
+        self.store.set_setting(
+            f"turn_mids:{self.conversation.conv_key}",
+            ",".join(str(mid) for mid in self.turn_message_ids),
+        )
         self.transient_message_ids = transient_message_ids or []
         self.on_status_change = on_status_change
         self.has_queued = has_queued
@@ -147,8 +161,21 @@ class SessionWatcher:
         self.generation = 0
         self.topic_title_stale = False
 
-    def set_trigger(self, message_id: int, *, at: float | None = None) -> None:
+    def set_trigger(
+        self,
+        message_id: int,
+        *,
+        at: float | None = None,
+        message_ids: list[int] | None = None,
+    ) -> None:
         self.trigger_message_id = message_id
+        self.turn_message_ids = (
+            list(message_ids) if message_ids else [message_id]
+        )
+        self.store.set_setting(
+            f"turn_mids:{self.conversation.conv_key}",
+            ",".join(str(mid) for mid in self.turn_message_ids),
+        )
         self.trigger_at = (
             (time.time() if at is None else at)
             if self.conversation.last_event_id is not None
@@ -175,6 +202,7 @@ class SessionWatcher:
         try:
             while True:
                 turn_trigger = self.trigger_message_id
+                turn_mids = list(self.turn_message_ids)
                 turn_delivered = self.delivered
                 gen = self.generation
                 # A session still working past DEVIN_WATCH_TIMEOUT keeps its
@@ -193,7 +221,7 @@ class SessionWatcher:
                         await self._close_turn(
                             previous_status,
                             gen=gen,
-                            trigger=turn_trigger,
+                            mids=turn_mids,
                             detail=previous_detail,
                         )
                     elif not self.delivered:
@@ -355,7 +383,7 @@ class SessionWatcher:
                     await self._close_turn(
                         state.status_enum,
                         gen=gen,
-                        trigger=turn_trigger,
+                        mids=turn_mids,
                         detail=state.status_detail,
                     )
                     if self.generation != gen:
@@ -371,7 +399,7 @@ class SessionWatcher:
                         await self._close_turn(
                             state.status_enum,
                             gen=gen,
-                            trigger=turn_trigger,
+                            mids=turn_mids,
                             detail=state.status_detail,
                         )
                         if self.generation != gen:
@@ -398,7 +426,7 @@ class SessionWatcher:
                     thread_id=self.conversation.thread_id,
                 )
                 await self._finish_reaction(
-                    self.trigger_message_id, expired=True
+                    list(self.turn_message_ids), expired=True
                 )
             except Exception:
                 logger.exception("Failed to report watcher error")
@@ -1169,7 +1197,7 @@ class SessionWatcher:
         status: str,
         *,
         gen: int,
-        trigger: int | None,
+        mids: list[int],
         detail: str | None = None,
     ) -> None:
         fresh = self.delivered_count > 0 or status != self.first_status
@@ -1183,16 +1211,26 @@ class SessionWatcher:
         if self.generation != gen:
             return
         self._closed_gen = gen
-        await self._finish_reaction(trigger, expired=status == "expired")
+        await self._finish_reaction(mids, expired=status == "expired")
+        # the turn is terminal — keep no batch ids around for a later
+        # unrelated expiry to mark
+        self.store.delete_setting(
+            f"turn_mids:{self.conversation.conv_key}"
+        )
 
-    async def _finish_reaction(self, trigger: int | None, *, expired: bool) -> None:
+    async def _finish_reaction(self, mids: list[int], *, expired: bool) -> None:
         # The completion mark is a status signal, not a duplicate: a REACT:
         # ack earlier in the turn must not suppress the end-of-turn mark.
-        await self.telegram.react(
-            self.conversation.chat_id,
-            trigger,
-            "👎" if expired else "👍",
-        )
+        # 🫡 already landed at bridge receipt — only an
+        # expired/failed turn still needs a mark.
+        if not expired:
+            return
+        for mid in mids:
+            await self.telegram.react(
+                self.conversation.chat_id,
+                mid,
+                "👎",
+            )
 
     @staticmethod
     def _short_reason(exc: Exception) -> str:
