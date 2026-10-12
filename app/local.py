@@ -120,10 +120,23 @@ _USERINFO_RE = re.compile(r"(?<=://)[^\s/:]+:[^\s@]+@")
 # capital letter or a status marker is a lost line break. Digits and
 # lowercase are excluded so versions ("v2.0.0") and "word.ext" survive.
 _RUNON_RE = re.compile(r"(?<=[.!?:;])(?=[A-Z⚠✓◆→#])")
+# reply markers the watcher parses line-wise (OPTIONS: labels, TABLE:/
+# DETAILS:/SUGGEST: bodies, control markers) break if a split lands
+# inside them — marker-prefixed lines are left alone
+_MARKER_LINE_RE = re.compile(r"^[A-Z][A-Z_]{2,}:")
 
 
 def _split_runons(text: str) -> str:
-    return _RUNON_RE.sub("\n", text)
+    out: list[str] = []
+    in_fence = False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        if in_fence or "`" in line or _MARKER_LINE_RE.match(line):
+            out.append(line)
+        else:
+            out.append(_RUNON_RE.sub("\n", line))
+    return "\n".join(out)
 
 
 def _terminate(proc: asyncio.subprocess.Process) -> None:

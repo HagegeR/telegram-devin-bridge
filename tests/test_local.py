@@ -825,3 +825,18 @@ def test_split_runons_restores_lost_line_breaks() -> None:
         "staying on v2.0.0 and app.local.py files. "
         "call re.compile(r'(x)') verbatim."
     )
+
+
+def test_split_runons_preserves_markers_and_code() -> None:
+    text = (
+        "Choose:\nOPTIONS: Yes!Confirm | No\n"
+        "```py\nflag:True\nprint('A.B')\n```\n"
+        "inline `flag:True` stays. "
+        "TABLE: a.B | c.D"
+    )
+    out = _split_runons(text)
+    assert "OPTIONS: Yes!Confirm | No" in out
+    assert "flag:True" in out
+    assert "print('A.B')" in out
+    assert "`flag:True`" in out
+    assert "TABLE: a.B | c.D" in out
