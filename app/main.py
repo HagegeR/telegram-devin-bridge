@@ -1286,8 +1286,9 @@ class Bridge:
                 last_user_text=text,
                 last_user_message_id=message_id,
             )
+        # second checkmark stand-in: the turn is being handed to Devin now
         for mid in turn_mids:
-            await self._react(chat_id, mid, "👀")
+            await self._react(chat_id, mid, "✅")
         await self.telegram.send_chat_action(chat_id, thread_id=thread_id)
         enabled_crawls = self.crawl_sites()
         if enabled_crawls:
@@ -1608,19 +1609,11 @@ class Bridge:
         if existing is not None and not existing.done():
             watcher = self.active_watchers.get(conversation.session_id)
             if watcher is not None and trigger_message_id is not None:
-                new_ids = set(turn_message_ids or [trigger_message_id])
-                old_ids = [
-                    mid
-                    for mid in watcher.turn_message_ids
-                    if mid not in new_ids
-                ]
                 watcher.set_trigger(
                     trigger_message_id,
                     at=trigger_at,
                     message_ids=turn_message_ids,
                 )
-                for old_id in old_ids:
-                    await self._react(conversation.chat_id, old_id, "✅")
             return
         conv_settings = self._conversation_settings(conversation.conv_key)
         watcher = SessionWatcher(

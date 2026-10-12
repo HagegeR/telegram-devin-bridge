@@ -993,7 +993,7 @@ async def test_watcher_settles_stale_status_and_renders_options() -> None:
     keyboard = cast(list[list[dict[str, str]]], markup["inline_keyboard"])
     assert [row[0]["text"] for row in keyboard] == ["Yes", "No."]
     assert devin.calls == 4
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
 
 
 @pytest.mark.asyncio
@@ -1063,7 +1063,7 @@ async def test_watcher_finish_notice_detail_suffix(
         trigger_message_id=7,
     ).run()
     assert telegram.sent[-1]["text"] == expected
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
 
 
 @pytest.mark.asyncio
@@ -1137,7 +1137,7 @@ async def test_watcher_timeout_close_keeps_detail_suffix(tmp_path: Path) -> None
         trigger_at=now,
     ).run()
     assert telegram.sent[-1]["text"] == "✓ Finished · idle timeout"
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
 
 
 @pytest.mark.asyncio
@@ -1313,7 +1313,7 @@ async def test_watcher_skips_finish_notice_when_turns_queued(
     assert "Done" in texts
     assert "💬 Waiting for your reply" not in texts
     assert "✓ Finished" not in texts
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
 
 
 @pytest.mark.asyncio
@@ -1529,7 +1529,7 @@ async def test_start_watcher_acks_superseded_trigger(tmp_path: Path) -> None:
     )  # type: ignore[arg-type]
     await runtime.start_watcher(conversation, trigger_message_id=11)
     await runtime.start_watcher(conversation, trigger_message_id=22)
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
     await runtime.shutdown()
 
 
@@ -3313,7 +3313,7 @@ async def test_watcher_retries_title_past_finished_status(tmp_path: Path) -> Non
     assert stored.title == "A useful session title"
     assert stored.title_pending is False
     assert devin.calls == 2
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
 
 
 @pytest.mark.asyncio
@@ -3367,7 +3367,7 @@ async def test_watcher_exits_after_bounded_title_retries(tmp_path: Path) -> None
     assert stored is not None
     assert stored.title_pending is True
     assert devin.calls <= 4
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
 
 
 @pytest.mark.asyncio
@@ -3420,7 +3420,7 @@ async def test_watcher_terminal_cleanup_after_title_retry_deadline(
         sleep=sleep,
         trigger_message_id=7,
     ).run()
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
     assert not any(
         "still working" in str(item["text"]) for item in telegram.sent
     )
@@ -3779,11 +3779,11 @@ async def test_flush_pending_indexes_every_fragment(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_batched_turn_marks_every_message_on_finish(
+async def test_batched_turn_marks_every_message_on_start(
     tmp_path: Path,
 ) -> None:
-    """Merged messages share the turn's marks: 👀 on receipt and when the
-    turn starts, ✅ on every message once the turn finishes."""
+    """Merged messages share the turn's marks: 👀 on receipt, ✅ on every
+    message the moment the turn starts processing."""
 
     class FinishedDevin(_FakeDevin):
         async def get_session(
@@ -4796,7 +4796,7 @@ async def test_startup_resumes_watchers_for_recent_conversations(
     delivered = [str(item["text"]) for item in telegram.sent]
     assert sum("Done" in text for text in delivered) == 1
     assert not any("Old" in text for text in delivered)
-    assert telegram.reactions == ["✅"]
+    assert telegram.reactions == []
     await runtime.shutdown()
 
 
@@ -5581,7 +5581,7 @@ async def test_busy_turn_is_queued_and_drained(tmp_path: Path) -> None:
     runtime.active_watchers.pop("s1", None)
     await runtime._drain_queue("222")
     assert runtime.queued_count("222") == 0
-    assert telegram.reactions[-1] == "👀"
+    assert telegram.reactions[-1] == "✅"
     await runtime.shutdown()
 
 
@@ -8031,8 +8031,8 @@ async def test_watcher_delivers_control_markers(tmp_path: Path) -> None:
         silent=True,
     ).run()
     # REACT: acks the turn — the completion mark still lands on close.
-    assert telegram.reactions == ["👀", "✅"]
-    assert telegram.reaction_targets == [7, 7]
+    assert telegram.reactions == ["👀"]
+    assert telegram.reaction_targets == [7]
     assert telegram.sent[0]["text"] == "Result"
     assert telegram.sent[0]["disable_notification"] is False
     assert telegram.pinned == [(222, 1)]
@@ -8102,10 +8102,10 @@ async def test_watcher_progress_edits_previous_message(tmp_path: Path) -> None:
     assert telegram.edits == ["step 2"]
     # The edit clears any stale keyboard the replaced message carried.
     assert telegram.edit_kwargs[0]["reply_markup"] == {"inline_keyboard": []}
-    # A non-stale later reply can still react to the turn's trigger message,
-    # and the completion mark still lands on close.
-    assert telegram.reactions == ["🎉", "✅"]
-    assert telegram.reaction_targets == [7, 7]
+    # A non-stale later reply can still react to the turn's trigger message;
+    # a successful finish adds no further mark.
+    assert telegram.reactions == ["🎉"]
+    assert telegram.reaction_targets == [7]
 
 
 def test_markdown_v2_spoiler_and_expandable_quote() -> None:

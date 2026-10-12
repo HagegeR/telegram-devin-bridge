@@ -107,8 +107,8 @@ class SessionWatcher:
         self.clock = clock
         self.sleep = sleep
         self.trigger_message_id = trigger_message_id
-        # every user message that fed this turn — the finish mark lands on
-        # all of them, like a second ✓ per message
+        # every user message that fed this turn — expiry/failure marks land
+        # on all of them (✅ was already set when the turn started)
         self.turn_message_ids = (
             list(turn_message_ids)
             if turn_message_ids
@@ -1206,14 +1206,15 @@ class SessionWatcher:
     async def _finish_reaction(self, mids: list[int], *, expired: bool) -> None:
         # The completion mark is a status signal, not a duplicate: a REACT:
         # ack earlier in the turn must not suppress the end-of-turn mark.
-        # Every user message that fed the turn gets the mark — the ✅ reads
-        # as the second check the Bot API cannot send.
-        emoji = "👎" if expired else "✅"
+        # ✅ already landed when the turn started processing — only an
+        # expired/failed turn still needs a mark.
+        if not expired:
+            return
         for mid in mids:
             await self.telegram.react(
                 self.conversation.chat_id,
                 mid,
-                emoji,
+                "👎",
             )
 
     @staticmethod
