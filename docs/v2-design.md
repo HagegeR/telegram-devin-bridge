@@ -243,6 +243,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     A pricing icon prefixes each entry when `devin models list --format
     json` reports its `cost_tier`: 🎁 Free, 🏷️ Low cost, 💰 Med cost,
     💎 High cost; models with no reported tier show the bare slug.
+    Entries are sorted by price then novelty: untiered entries first
+    (`adaptive`, the recommended default), then Free → High cost, and
+    within a tier newer families first (`models list` emits families
+    newest-first, so the family index is the novelty key).
     `/think` + a 💭 Thinking settings row do the same for the
     `thought_level` configOption (`conversation_settings.thought_level`).
     `/commands` browses the CLI's `available_commands_update` slash-command

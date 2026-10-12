@@ -8,6 +8,13 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Changed
+
+- `/model`'s available-model list and the 🧠 Model settings picker are now
+  sorted by price then novelty instead of the CLI's raw order: `adaptive`
+  first, then 🎁 Free → 💎 High cost, newer families first inside a tier
+  (the `models list` family order is the freshness signal).
+
 ### Fixed
 
 - Implicit topics no longer get renamed to the first line of the user's
