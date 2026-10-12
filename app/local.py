@@ -82,6 +82,9 @@ class _AcpSession:
     # child's stderr tail — included in 'acp process exited' errors so a
     # dead spawn isn't a silent black box
     stderr_tail: str = ""
+    # drain task handle — awaited at reader exit so the tail is complete
+    # before the error detail is built
+    stderr_task: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -108,7 +111,7 @@ _LOG_LINE = re.compile(
 def _clean_reason(exc: BaseException) -> str:
     # object reprs (<WriteUnixTransport ...>) and embedded newlines are
     # debugging noise in chat — collapse to a single capped line
-    text = re.sub(r"<[^>\n]{0,160}>", "…", str(exc))
+    text = re.sub(r"<[^>\n]+>", "…", str(exc))
     text = " ".join(text.split())
     return text[:160].rstrip() + ("…" if len(text) > 160 else "")
 
@@ -116,10 +119,11 @@ def _clean_reason(exc: BaseException) -> str:
 def _exit_detail(stderr_tail: str) -> str:
     # the tail is mostly the agent's own structured logs — surface only
     # non-log lines (panics, tracebacks); the first line can be a
-    # mid-line fragment of the -400 cut, so drop it
+    # mid-line fragment of the -400 cut, so drop it when there is more
+    lines = stderr_tail[-400:].splitlines()
     plain = [
         line.strip()
-        for line in stderr_tail[-400:].splitlines()[1:]
+        for line in (lines[1:] or lines)
         if line.strip() and not _LOG_LINE.match(line)
     ]
     return f": {plain[-1][-160:]}" if plain else ""
@@ -920,7 +924,7 @@ class LocalClient:
         )
         sess = _AcpSession(proc=proc, acp_id="")
         asyncio.create_task(self._reader(sess))
-        asyncio.create_task(self._drain_stderr(sess))
+        sess.stderr_task = asyncio.create_task(self._drain_stderr(sess))
         try:
             await self._request(sess, "initialize", {
                 "protocolVersion": 1,
@@ -1125,6 +1129,11 @@ class LocalClient:
                     # pending turns would otherwise hang forever
                     logger.warning("bad acp update skipped: %.200s", raw)
         sess.dead = True
+        # stdout can close before stderr finishes draining — give the
+        # drain a moment so the tail is complete for the detail and the
+        # journal line below
+        if sess.stderr_task is not None:
+            await asyncio.wait({sess.stderr_task}, timeout=5)
         detail = _exit_detail(sess.stderr_tail)
         if sess.stderr_tail.strip():
             logger.warning(

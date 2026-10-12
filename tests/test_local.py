@@ -840,6 +840,8 @@ def test_exit_detail_drops_structured_log_tail() -> None:
     assert _exit_detail(panic) == (
         ": thread 'main' panicked at 'boom', src/main.rs:42"
     )
+    # a single-line tail is a complete line, not a fragment to drop
+    assert _exit_detail("panic: boom\n") == ": panic: boom"
 
 
 def test_split_runons_restores_lost_line_breaks() -> None:
