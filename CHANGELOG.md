@@ -14,6 +14,9 @@ and deployment update channels.
   CLI-generated title (`session_info_update`), so the Telegram topic
   gets renamed like cloud sessions do. An explicit title is never
   overwritten.
+- `deploy/vm/install.sh`: retry the zypper install up to 3 times —
+  openSUSE mirrors answer refresh with transient 403s (this flake red
+  the `linux-install (opensuse/tumbleweed)` cell on the v2.0.0 build).
 - Local sessions no longer fuse streamed progress updates into a
   wall-of-text run-on: the CLI's chunk stream can drop line separators
   between updates, so emitted replies now reinsert a break where
