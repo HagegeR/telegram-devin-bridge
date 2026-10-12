@@ -15,11 +15,11 @@ and deployment update channels.
   first, then 🎁 Free → 💎 High cost, newer families first inside a tier
   (the `models list` family order is the freshness signal).
 - Per-message status marks: every user message that feeds a turn now shows
-  its own lifecycle — 👀 on receipt, 🤔 while queued behind a busy session,
-  ✅ on every message the moment the bridge starts processing it (the ✅
-  stands in for the second checkmark the Bot API cannot send on the user's
-  own messages), 👎 on failure or expiry. Previously only the turn's
-  triggering message got a finish mark (👍).
+  its own lifecycle — 🤔 while queued behind a busy session, ✅ the moment
+  the bridge starts processing it (the ✅ stands in for the second
+  checkmark the Bot API cannot send on the user's own messages), 👀 once
+  the agent actually has the text, 👎 on failure or expiry. Previously
+  only the turn's triggering message got a finish mark (👍).
 
 ### Fixed
 

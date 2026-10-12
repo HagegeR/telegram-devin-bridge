@@ -691,12 +691,6 @@ class Bridge:
         if replayed and message_id and sent_marker and message_id <= sent_marker:
             self._consume_pending_turns(uids)
             return
-        if not replayed and message_id:
-            await self._react(
-                _int(_mapping(message.get("chat")).get("id")),
-                message_id,
-                "👀",
-            )
         pending = self.pending_turns.setdefault(conv_key, [])
         if attachment is not None and any(
             fragment_attachment is not None
@@ -1388,6 +1382,9 @@ class Bridge:
         # instead of sent twice
         if message_id:
             self.store.set_setting(f"sent_turn:{conv_key}", str(message_id))
+        # the agent actually has the text now — eyes per message
+        for mid in turn_mids:
+            await self._react(chat_id, mid, "👀")
         await self.start_watcher(
             conversation,
             trigger_message_id=message_id,

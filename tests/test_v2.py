@@ -3782,8 +3782,8 @@ async def test_flush_pending_indexes_every_fragment(tmp_path: Path) -> None:
 async def test_batched_turn_marks_every_message_on_start(
     tmp_path: Path,
 ) -> None:
-    """Merged messages share the turn's marks: 👀 on receipt, ✅ on every
-    message the moment the turn starts processing."""
+    """Merged messages share the turn's marks: ✅ on every message the
+    moment processing starts, 👀 once the agent actually has the text."""
 
     class FinishedDevin(_FakeDevin):
         async def get_session(
@@ -3813,10 +3813,9 @@ async def test_batched_turn_marks_every_message_on_start(
     await runtime._flush_pending("222")
     await asyncio.gather(*runtime.watchers.values(), return_exceptions=True)
     marks = list(zip(telegram.reaction_targets, telegram.reactions))
-    assert marks.count((1, "👀")) >= 1
-    assert marks.count((2, "👀")) >= 1
-    assert (1, "✅") in marks
-    assert (2, "✅") in marks
+    # ✅ (processing started) lands before 👀 (agent has the text)
+    assert marks.index((1, "✅")) < marks.index((1, "👀"))
+    assert marks.index((2, "✅")) < marks.index((2, "👀"))
     await runtime.shutdown()
 
 
@@ -5474,7 +5473,7 @@ async def test_debounce_joins_fragments_and_uses_last_message(tmp_path: Path) ->
     await asyncio.sleep(0.02)
     assert runtime.store.get_conversation("222") is not None
     assert runtime.store.get_conversation("222").last_user_text == "one\n\ntwo"  # type: ignore[union-attr]
-    assert telegram.reactions[0] == "👀"
+    assert telegram.reactions[0] == "✅"
     await runtime.shutdown()
 
 
@@ -5581,7 +5580,7 @@ async def test_busy_turn_is_queued_and_drained(tmp_path: Path) -> None:
     runtime.active_watchers.pop("s1", None)
     await runtime._drain_queue("222")
     assert runtime.queued_count("222") == 0
-    assert telegram.reactions[-1] == "✅"
+    assert telegram.reactions[-1] == "👀"
     await runtime.shutdown()
 
 
