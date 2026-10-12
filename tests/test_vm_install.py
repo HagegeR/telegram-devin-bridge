@@ -90,13 +90,21 @@ def run_install(tmp_path: Path, fails: int) -> subprocess.CompletedProcess:
     )
 
 
+def cleans(tmp_path: Path) -> int:
+    log = (tmp_path / "zypper.log").read_text()
+    return sum(1 for line in log.splitlines() if " clean " in line)
+
+
 def test_zypper_retries_past_a_transient_mirror_failure(tmp_path: Path) -> None:
     result = run_install(tmp_path, fails=1)
     assert result.returncode == 0, result.stderr + result.stdout
     assert (tmp_path / "count").read_text().strip() == "2"
+    # stale mirror metadata must be dropped between attempts
+    assert cleans(tmp_path) == 1
 
 
 def test_zypper_gives_up_after_five_failures(tmp_path: Path) -> None:
     result = run_install(tmp_path, fails=99)
     assert result.returncode != 0
     assert (tmp_path / "count").read_text().strip() == "5"
+    assert cleans(tmp_path) == 4
