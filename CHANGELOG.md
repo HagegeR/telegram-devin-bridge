@@ -10,6 +10,10 @@ and deployment update channels.
 
 ### Fixed
 
+- Local sessions opened without an explicit title now pick up the
+  CLI-generated title (`session_info_update`), so the Telegram topic
+  gets renamed like cloud sessions do. An explicit title is never
+  overwritten.
 - `deploy/vm/install.sh`: retry the zypper install up to 5 times with
   30s backoff and a metadata clean between attempts — openSUSE mirrors
   serve stale/forbidden repodata for minutes at a time (this flake red
@@ -21,7 +25,6 @@ and deployment update channels.
   marker (`⚠`, `✓`, `◆`, `→`, `#`). Thought chunks (one line per
   update) are also joined with newlines so the `→` activity tail shows
   the real last line instead of a fused blob.
-
 ## [v2.0.0] - 2026-10-11
 
 ### Added

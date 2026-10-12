@@ -67,6 +67,10 @@ FAKE_ACP = textwrap.dedent(
                                   ]}]}}), flush=True)
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
                               "params": {"sessionId": sid, "update": {
+                                  "sessionUpdate": "session_info_update",
+                                  "title": "Generated title"}}}), flush=True)
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                              "params": {"sessionId": sid, "update": {
                                   "sessionUpdate": "available_commands_update",
                                   "availableCommands": [
                                       {"name": "fast",
@@ -840,3 +844,16 @@ def test_split_runons_preserves_markers_and_code() -> None:
     assert "print('A.B')" in out
     assert "`flag:True`" in out
     assert "TABLE: a.B | c.D" in out
+
+
+@pytest.mark.asyncio
+async def test_session_info_update_sets_session_title(
+    shell_client: LocalClient,
+) -> None:
+    session_id, _ = await shell_client.create_session("hello")
+    for _ in range(50):
+        state = await shell_client.get_session(session_id)
+        if state.title:
+            break
+        await asyncio.sleep(0.1)
+    assert state.title == "Generated title"

@@ -491,7 +491,10 @@ class LocalClient:
             _terminate(sess.proc)
             raise
         sess.acp_id = str(created["sessionId"])
-        sess.title = title or ""
+        # don't default "" here — the CLI's generated title can already
+        # have arrived via session_info_update and would be clobbered
+        if title is not None:
+            sess.title = title
         session_id = f"{LOCAL_PREFIX}{sess.acp_id}"
         await self._evict()
         self.sessions[session_id] = sess
@@ -950,7 +953,9 @@ class LocalClient:
             if isinstance(opt, dict) and opt.get("currentValue") is not None:
                 sess.config[str(opt["id"])] = str(opt["currentValue"])
         sess.replaying = True
-        sess.title = await self._session_title(sess, acp_id)
+        # a replayed session_info_update may already have set the title —
+        # keep it when session/list has none instead of clobbering to ""
+        sess.title = await self._session_title(sess, acp_id) or sess.title
         await self._evict()
         self.sessions[session_id] = sess
         if self.event_store is not None:
@@ -1143,7 +1148,15 @@ class LocalClient:
             "config_option_update",
             "current_mode_update",
             "plan",
+            "session_info_update",
         ):
+            return
+        if kind == "session_info_update":
+            # the CLI generates the session title after session/new —
+            # without it an untitled topic never gets its rename
+            title = update.get("title")
+            if title and not sess.title:
+                sess.title = str(title)
             return
         if kind == "available_commands_update":
             commands = update.get("availableCommands")
