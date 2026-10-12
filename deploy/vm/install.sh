@@ -4,7 +4,7 @@ set -eu
 SERVICE_NAME=telegram-devin-bridge
 SERVICE_USER=telegram-devin
 BRIDGE_HOME=${BRIDGE_HOME:-/opt/telegram-devin-bridge}
-DATA_DIR=/var/lib/telegram-devin-bridge
+DATA_DIR=${DATA_DIR:-/var/lib/telegram-devin-bridge}
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 
