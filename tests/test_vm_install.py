@@ -28,10 +28,11 @@ TOOLS = [
 ]
 
 ZYPER_STUB = """#!/bin/sh
+echo "zypper $*" >> "$ZYPPER_LOG"
+[ "$2" = "install" ] || exit 0
 n=$(cat "$ZYPPER_COUNT" 2>/dev/null || echo 0)
 n=$((n + 1))
 echo "$n" > "$ZYPPER_COUNT"
-echo "zypper $*" >> "$ZYPPER_LOG"
 if [ "$n" -le "${ZYPPER_FAILS:-0}" ]; then exit 104; fi
 exit 0
 """
@@ -95,7 +96,7 @@ def test_zypper_retries_past_a_transient_mirror_failure(tmp_path: Path) -> None:
     assert (tmp_path / "count").read_text().strip() == "2"
 
 
-def test_zypper_gives_up_after_three_failures(tmp_path: Path) -> None:
+def test_zypper_gives_up_after_five_failures(tmp_path: Path) -> None:
     result = run_install(tmp_path, fails=99)
     assert result.returncode != 0
-    assert (tmp_path / "count").read_text().strip() == "3"
+    assert (tmp_path / "count").read_text().strip() == "5"
