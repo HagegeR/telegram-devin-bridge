@@ -9,6 +9,8 @@ import pytest_asyncio
 
 from app.local import (
     LocalClient,
+    _clean_reason,
+    _exit_detail,
     _kill,
     _scrub_command,
     _split_runons,
@@ -810,6 +812,34 @@ def test_terminate_and_kill_reach_live_process() -> None:
     _terminate(alive)
     _kill(alive)
     assert alive.called == ["terminate", "kill"]
+
+
+def test_clean_reason_strips_reprs_and_collapses() -> None:
+    exc = RuntimeError(
+        "unable to perform operation on "
+        "<WriteUnixTransport closed=True reading=False 0x7fe8d57732a0>; "
+        "the handler is closed"
+    )
+    assert _clean_reason(exc) == (
+        "unable to perform operation on …; the handler is closed"
+    )
+
+
+def test_exit_detail_drops_structured_log_tail() -> None:
+    tail = (
+        "erver: chisel_agent::skills_loading: skills discovery: "
+        "cwd=/root errors=133\n"
+        "2026-10-12T22:19:57.116036Z INFO run_acp_server: "
+        "chisel_agent::acp_server: Dispatched SessionEnd "
+        "for session parallel-spike\n"
+    )
+    # the partial first line and the structured INFO line are both noise
+    assert _exit_detail(tail) == ""
+    # a real crash line still surfaces
+    panic = tail + "thread 'main' panicked at 'boom', src/main.rs:42\n"
+    assert _exit_detail(panic) == (
+        ": thread 'main' panicked at 'boom', src/main.rs:42"
+    )
 
 
 def test_split_runons_restores_lost_line_breaks() -> None:
