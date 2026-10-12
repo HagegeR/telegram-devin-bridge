@@ -90,11 +90,14 @@ case "$PKG_MANAGER" in
         pacman -Sy --noconfirm python python-pip git tar
         ;;
     zypper)
-        # openSUSE mirrors 403 transiently on refresh — retry before giving up
-        for i in 1 2 3; do
+        # openSUSE mirrors serve stale/forbidden repodata for minutes at a
+        # time — clean cached metadata between retries so each attempt can
+        # land on a different mirror
+        for i in 1 2 3 4 5; do
             zypper --non-interactive install python3 python3-pip git shadow tar && break
-            [ "$i" -eq 3 ] && exit 1
-            sleep 15
+            [ "$i" -eq 5 ] && exit 1
+            zypper --non-interactive clean --all >/dev/null 2>&1 || true
+            sleep 30
         done
         ;;
     unknown)
