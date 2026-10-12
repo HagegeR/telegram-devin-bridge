@@ -2756,7 +2756,7 @@ async def test_private_watcher_draft_falls_back_to_typing(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_implicit_topic_is_renamed_but_explicit_topic_is_not(
+async def test_implicit_topic_waits_for_the_generated_title(
     tmp_path: Path,
 ) -> None:
     telegram = _FakeTelegram()
@@ -2776,12 +2776,44 @@ async def test_implicit_topic_is_renamed_but_explicit_topic_is_not(
             "is_topic_message": True,
         }
     )
-    assert telegram.edited_topics == [(222, 7, "First line")]
+    # an untitled session defers the rename — the generated session
+    # title is a better subject than the first line of a long prompt
+    assert telegram.edited_topics == []
     stored = runtime.store.get_conversation("222:7")
     assert stored is not None
     assert stored.title_pending is True
     await runtime.shutdown()
 
+
+@pytest.mark.asyncio
+async def test_implicit_topic_uses_the_explicit_title(
+    tmp_path: Path,
+) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    store.set_setting("pending_title:222:7", "My title")
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    service = {
+        **message(""),
+        "message_thread_id": 7,
+        "is_topic_message": True,
+        "forum_topic_created": {"is_name_implicit": True},
+    }
+    service.pop("text")
+    await runtime.handle_message(service)
+    await runtime.handle_message(
+        {
+            **message("prompt text", message_id=9),
+            "message_thread_id": 7,
+            "is_topic_message": True,
+        }
+    )
+    assert telegram.edited_topics == [(222, 7, "My title")]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_topic_is_not_renamed(tmp_path: Path) -> None:
     explicit_telegram = _FakeTelegram()
     explicit = Bridge(
         settings(tmp_path),
@@ -2831,6 +2863,43 @@ async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
     ).run()
     assert telegram.edited_topics == [(222, 7, "A useful session title")]
     assert store.get_conversation("222:7").title == "A useful session title"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_watcher_names_topic_from_prompt_when_title_never_arrives(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: fix the flaky test",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class SilentDevin(_FakeDevin):
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return SessionState("finished", "", None, [])
+
+    await SessionWatcher(
+        conversation,
+        store,
+        SilentDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, devin_watch_timeout_seconds=30),
+    ).run()
+    assert telegram.edited_topics == [(222, 7, "fix the flaky test")]
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title_pending is False
 
 
 @pytest.mark.asyncio

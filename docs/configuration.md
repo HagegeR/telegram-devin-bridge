@@ -157,8 +157,10 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 - Forum and private-chat topics use independent sessions whenever Telegram
   provides `message_thread_id` with either `chat.is_forum` or
   `is_topic_message`; ordinary DMs and groups use the chat ID.
-  `message_thread_id` is preserved for replies and notifications. The first
-  message in an implicitly named topic renames it from its first line.
+  `message_thread_id` is preserved for replies and notifications. An
+  implicitly named topic is renamed to the session title once it is
+  known — the generated title, or the explicit `/new` title — and falls
+  back to the prompt text if the session settles untitled.
 - `/help`, `/sessions`, `/status`, `/whoami` use ephemeral group replies when
   Telegram accepts them, retrying as normal messages if not.
 - Polling mode calls `deleteWebhook` without dropping pending updates, then

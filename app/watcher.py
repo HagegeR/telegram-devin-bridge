@@ -27,7 +27,7 @@ from app.formatting import (
     split_long_text,
 )
 from app.images import photo_fits_unchanged
-from app.store import Conversation, Store
+from app.store import PLACEHOLDER_TITLE_PREFIX, Conversation, Store
 from app.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -314,14 +314,29 @@ class SessionWatcher:
                         self.conversation.session_id,
                         last_pr_url=state.pr_url,
                     )
+                # a missing title is outstanding too — the generated
+                # title can land a poll after the session settles, so
+                # keep retrying; when it never arrives the topic falls
+                # back to the prompt-derived name below
+                title_missing = (
+                    self.conversation.title_pending
+                    and self.conversation.thread_id is not None
+                    and not state.title
+                )
                 if (
                     state.status_enum not in ACTIVE_STATUSES
-                    and self._topic_title_outstanding(state)
+                    and (self._topic_title_outstanding(state) or title_missing)
                     and title_retries_after_finish
                 ):
                     title_retries_after_finish -= 1
                     await self.sleep(max(interval, 0.001))
                     continue
+                if state.status_enum not in ACTIVE_STATUSES and title_missing:
+                    await self._apply_session_title(
+                        self.conversation.title.removeprefix(
+                            PLACEHOLDER_TITLE_PREFIX
+                        )
+                    )
                 settled = (
                     self.clock() - self.started_at
                     >= self.settings.devin_settle_seconds

@@ -1307,13 +1307,21 @@ class Bridge:
                 keep_queued=True,
             )
             if thread_id is not None and (chat_id, thread_id) in self.implicit_topics:
-                topic_name = text[:60].splitlines()[0] or "Devin"
+                # a pending generated title renames the topic itself once
+                # it arrives — naming it from the first prompt line would
+                # clobber that with unrelated prompt text
+                topic_name = (
+                    None
+                    if conversation.title_pending
+                    else conversation.title
+                )
                 try:
-                    await self.telegram.edit_forum_topic(
-                        chat_id,
-                        thread_id,
-                        topic_name,
-                    )
+                    if topic_name:
+                        await self.telegram.edit_forum_topic(
+                            chat_id,
+                            thread_id,
+                            topic_name[:128],
+                        )
                 except RuntimeError:
                     logger.warning(
                         "Failed to rename implicit topic chat=%s thread=%s",
