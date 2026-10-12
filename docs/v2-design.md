@@ -293,7 +293,9 @@ chat drafts while Devin works and falls back to typing on rejection. Implicit
 topics are renamed to the session title once it is known — the
 generated title (cloud or the local CLI's `session_info_update`) for an
 untitled session, the explicit `/new` title otherwise — rather than to
-the first line of the prompt. Option buttons include
+the first line of the prompt. When the session settles before any title
+arrives, the watcher waits a few more polls and then names the topic
+from the prompt anyway so it never keeps Telegram's generic name. Option buttons include
 `disabled: {}` after selection, while `/stop` uses `danger` and `primary`
 button styles. Group command replies support ephemeral delivery and retry
 normally when Telegram rejects the ephemeral parameters.

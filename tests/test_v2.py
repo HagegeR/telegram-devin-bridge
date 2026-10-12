@@ -2866,6 +2866,43 @@ async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_watcher_names_topic_from_prompt_when_title_never_arrives(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: fix the flaky test",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class SilentDevin(_FakeDevin):
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return SessionState("finished", "", None, [])
+
+    await SessionWatcher(
+        conversation,
+        store,
+        SilentDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, devin_watch_timeout_seconds=30),
+    ).run()
+    assert telegram.edited_topics == [(222, 7, "fix the flaky test")]
+    stored = store.get_conversation("222:7")
+    assert stored is not None
+    assert stored.title_pending is False
+
+
+@pytest.mark.asyncio
 async def test_watcher_keeps_manual_rename_during_auto_title(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
