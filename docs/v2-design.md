@@ -290,8 +290,10 @@ Rich Markdown is the primary Devin response path when `TELEGRAM_RICH_MESSAGES`
 is enabled; 4xx errors fall back to MarkdownV2 and unknown-method errors
 disable rich delivery for the process. `TELEGRAM_DRAFTS` sends empty private
 chat drafts while Devin works and falls back to typing on rejection. Implicit
-topics are renamed from the first user message — local sessions with
-no explicit title rename to the CLI-generated title instead. Option buttons include
+topics are renamed to the session title once it is known — the
+generated title (cloud or the local CLI's `session_info_update`) for an
+untitled session, the explicit `/new` title otherwise — rather than to
+the first line of the prompt. Option buttons include
 `disabled: {}` after selection, while `/stop` uses `danger` and `primary`
 button styles. Group command replies support ephemeral delivery and retry
 normally when Telegram rejects the ephemeral parameters.

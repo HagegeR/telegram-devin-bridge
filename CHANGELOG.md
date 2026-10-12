@@ -10,6 +10,11 @@ and deployment update channels.
 
 ### Fixed
 
+- Implicit topics no longer get renamed to the first line of the user's
+  prompt — that rename raced the generated session title and could
+  clobber it with unrelated prompt text. Untitled sessions now wait for
+  the generated title; sessions opened with an explicit `/new` title
+  rename the topic to that title instead.
 - Local sessions opened without an explicit title now pick up the
   CLI-generated title (`session_info_update`), so the Telegram topic
   gets renamed like cloud sessions do. An explicit title is never
