@@ -953,7 +953,9 @@ class LocalClient:
             if isinstance(opt, dict) and opt.get("currentValue") is not None:
                 sess.config[str(opt["id"])] = str(opt["currentValue"])
         sess.replaying = True
-        sess.title = await self._session_title(sess, acp_id)
+        # a replayed session_info_update may already have set the title —
+        # keep it when session/list has none instead of clobbering to ""
+        sess.title = await self._session_title(sess, acp_id) or sess.title
         await self._evict()
         self.sessions[session_id] = sess
         if self.event_store is not None:
