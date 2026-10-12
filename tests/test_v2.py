@@ -3782,7 +3782,7 @@ async def test_flush_pending_indexes_every_fragment(tmp_path: Path) -> None:
 async def test_batched_turn_marks_every_message(
     tmp_path: Path,
 ) -> None:
-    """Merged messages share the turn's marks: ✅ on receipt, 👀 once the
+    """Merged messages share the turn's marks: 🫡 on receipt, 👀 once the
     agent actually has the text."""
 
     class FinishedDevin(_FakeDevin):
@@ -3813,9 +3813,11 @@ async def test_batched_turn_marks_every_message(
     await runtime._flush_pending("222")
     await asyncio.gather(*runtime.watchers.values(), return_exceptions=True)
     marks = list(zip(telegram.reaction_targets, telegram.reactions))
-    # ✅ (bridge receipt) lands before 👀 (agent has the text)
-    assert marks.index((1, "✅")) < marks.index((1, "👀"))
-    assert marks.index((2, "✅")) < marks.index((2, "👀"))
+    # 🫡 (bridge receipt) lands before 👀 (agent has the text)
+    assert marks.index((1, "🫡")) < marks.index((1, "👀"))
+    assert marks.index((2, "🫡")) < marks.index((2, "👀"))
+    # turn mids were persisted for crash recovery, cleared at close
+    assert store.get_setting("turn_mids:222") is None
     await runtime.shutdown()
 
 
@@ -5473,7 +5475,7 @@ async def test_debounce_joins_fragments_and_uses_last_message(tmp_path: Path) ->
     await asyncio.sleep(0.02)
     assert runtime.store.get_conversation("222") is not None
     assert runtime.store.get_conversation("222").last_user_text == "one\n\ntwo"  # type: ignore[union-attr]
-    assert telegram.reactions[0] == "✅"
+    assert telegram.reactions[0] == "🫡"
     await runtime.shutdown()
 
 

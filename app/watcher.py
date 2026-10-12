@@ -108,11 +108,17 @@ class SessionWatcher:
         self.sleep = sleep
         self.trigger_message_id = trigger_message_id
         # every user message that fed this turn — expiry/failure marks land
-        # on all of them (✅ was already set when the turn started)
+        # on all of them (🫡 was already set at receipt)
         self.turn_message_ids = (
             list(turn_message_ids)
             if turn_message_ids
             else ([trigger_message_id] if trigger_message_id is not None else [])
+        )
+        # persist so a restart can still finish marks for a merged turn —
+        # the recovery watcher is otherwise left with the trigger alone
+        self.store.set_setting(
+            f"turn_mids:{self.conversation.conv_key}",
+            ",".join(str(mid) for mid in self.turn_message_ids),
         )
         self.transient_message_ids = transient_message_ids or []
         self.on_status_change = on_status_change
@@ -165,6 +171,10 @@ class SessionWatcher:
         self.trigger_message_id = message_id
         self.turn_message_ids = (
             list(message_ids) if message_ids else [message_id]
+        )
+        self.store.set_setting(
+            f"turn_mids:{self.conversation.conv_key}",
+            ",".join(str(mid) for mid in self.turn_message_ids),
         )
         self.trigger_at = (
             (time.time() if at is None else at)
@@ -1202,11 +1212,16 @@ class SessionWatcher:
             return
         self._closed_gen = gen
         await self._finish_reaction(mids, expired=status == "expired")
+        # the turn is terminal — keep no batch ids around for a later
+        # unrelated expiry to mark
+        self.store.delete_setting(
+            f"turn_mids:{self.conversation.conv_key}"
+        )
 
     async def _finish_reaction(self, mids: list[int], *, expired: bool) -> None:
         # The completion mark is a status signal, not a duplicate: a REACT:
         # ack earlier in the turn must not suppress the end-of-turn mark.
-        # ✅ already landed when the turn started processing — only an
+        # 🫡 already landed at bridge receipt — only an
         # expired/failed turn still needs a mark.
         if not expired:
             return

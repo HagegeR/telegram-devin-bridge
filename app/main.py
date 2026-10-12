@@ -285,11 +285,19 @@ class Bridge:
             self.settings.devin_watch_timeout_seconds,
         )
         for conversation in self.store.list_recent_conversations(since):
+            raw_mids = (
+                self.store.get_setting(f"turn_mids:{conversation.conv_key}")
+                or ""
+            )
+            turn_mids = [
+                int(part) for part in raw_mids.split(",") if part.isdigit()
+            ]
             await self.start_watcher(
                 conversation,
                 resume_from=conversation.created_at,
                 trigger_message_id=conversation.last_user_message_id,
                 trigger_at=conversation.updated_at,
+                turn_message_ids=turn_mids or None,
             )
 
     async def _replay_interrupted_turns(self) -> None:
@@ -691,13 +699,6 @@ class Bridge:
         if replayed and message_id and sent_marker and message_id <= sent_marker:
             self._consume_pending_turns(uids)
             return
-        if not replayed and message_id:
-            # receipt mark — the second-checkmark stand-in
-            await self._react(
-                _int(_mapping(message.get("chat")).get("id")),
-                message_id,
-                "✅",
-            )
         pending = self.pending_turns.setdefault(conv_key, [])
         if attachment is not None and any(
             fragment_attachment is not None
@@ -714,6 +715,16 @@ class Bridge:
             await self._flush_fragments(conv_key, overflow)
         else:
             pending.append((message, text, attachment, uids))
+        # receipt mark — the second-checkmark stand-in. The fragment is
+        # staged first so a stalled reaction cannot let a later update
+        # overtake this one in the turn order. No checkmark emoji exists
+        # in Telegram's reaction whitelist, so 🫡 carries the meaning.
+        if message_id:
+            await self._react(
+                _int(_mapping(message.get("chat")).get("id")),
+                message_id,
+                "🫡",
+            )
         # replayed turns wait for the startup flush so a following edit
         # update still lands on the staged fragment before anything sends
         if replayed:
@@ -3317,7 +3328,9 @@ class Bridge:
             ]
             for mid in mids:
                 if mid:
-                    await self.telegram.set_message_reaction(chat_id, mid, "👎")
+                    # best-effort per message — one rejection must not
+                    # strand the rest of the batch unmarked
+                    await self.telegram.react(chat_id, mid, "👎")
         except Exception:
             logger.exception("Failed to report update processing error")
 
