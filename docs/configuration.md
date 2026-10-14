@@ -166,6 +166,7 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 - Polling mode calls `deleteWebhook` without dropping pending updates, then
   uses 50-second long polling.
 - Retries: connection failures to the Telegram and Devin APIs are retried 5
-  times with exponential backoff (~15 s total); mid-flight failures retry only
+  times with exponential backoff (~15 s total), as are `5xx` responses on
+  idempotent calls; mid-flight failures retry only
   idempotent GETs so mutations are never duplicated. Longer outages drop the
   reply and log `Failed to process Telegram update`.
