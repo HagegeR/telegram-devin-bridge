@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 
 import httpx
 
@@ -11,6 +12,18 @@ from app.telegram import TelegramClient
 from app.telegram_updates import ALLOWED_UPDATES
 
 logger = logging.getLogger(__name__)
+
+# Touched once per poll iteration so a host watchdog can distinguish a live
+# polling loop from a wedged one (an exception escaping run_polling kills the
+# task silently — the HTTP server stays up and nothing polls Telegram again).
+POLL_ALIVE_PATH = Path("/tmp/telegram-devin-bridge.poll-alive")
+
+
+def _beat() -> None:
+    try:
+        POLL_ALIVE_PATH.touch()
+    except OSError as exc:
+        logger.warning("poll heartbeat write failed: %s", exc)
 
 
 async def run_polling(
@@ -22,6 +35,7 @@ async def run_polling(
     offset: int | None = None
     backoff = 1.0
     while True:
+        _beat()
         try:
             updates = await telegram.get_updates(
                 offset,
@@ -38,5 +52,12 @@ async def run_polling(
             raise
         except (httpx.HTTPError, RuntimeError) as exc:
             logger.warning("Telegram polling failed: %s", exc)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+        except Exception:
+            # Unexpected (e.g. a bug in handle_update): the update's offset was
+            # already advanced, so retrying skips the poisoned update instead
+            # of dying silently.
+            logger.exception("Telegram polling hit an unexpected error; continuing")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)

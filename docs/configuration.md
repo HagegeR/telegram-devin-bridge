@@ -164,7 +164,11 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 - `/help`, `/sessions`, `/status`, `/whoami` use ephemeral group replies when
   Telegram accepts them, retrying as normal messages if not.
 - Polling mode calls `deleteWebhook` without dropping pending updates, then
-  uses 50-second long polling.
+  uses 50-second long polling. The poll loop touches
+  `/tmp/telegram-devin-bridge.poll-alive` each iteration — a stale heartbeat
+  means the polling task is wedged (the HTTP server can stay up while it is
+  dead); the VM's `start-if-needed.sh` watchdog restarts the service on a
+  >10 min stale or missing heartbeat.
 - Retries: connection failures to the Telegram and Devin APIs are retried 5
   times with exponential backoff (~15 s total); mid-flight failures retry only
   idempotent GETs so mutations are never duplicated. Longer outages drop the

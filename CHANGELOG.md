@@ -24,6 +24,14 @@ and deployment update channels.
 
 ### Fixed
 
+- Telegram polling no longer dies silently: an unexpected error in update
+  handling (e.g. a handler bug) used to kill the polling task for good while
+  the HTTP side kept serving — the bridge looked alive but consumed nothing.
+  Such errors are now logged and the loop continues; the poisoned update is
+  skipped (its offset is already advanced) and batch siblings redeliver.
+  The loop also touches `/tmp/telegram-devin-bridge.poll-alive` every
+  iteration so the host watchdog (`start-if-needed.sh`) can detect a
+  wedged-but-running process and restart it.
 - `⚠ prompt failed` no longer relays raw ACP stderr into chat — the
   agent's own structured log lines (skills discovery stats, SessionEnd
   noise) and object reprs like `<WriteUnixTransport …>` are stripped so
