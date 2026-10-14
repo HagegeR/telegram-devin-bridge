@@ -63,6 +63,12 @@ class _AcpSession:
     proc: asyncio.subprocess.Process
     acp_id: str
     title: str = ""
+    # the prompt head the CLI derives its provisional session title from —
+    # a session_info_update title that prefixes it is not a real title
+    prompt_head: str = ""
+    # a title the user or /new set explicitly — later session_info_update
+    # titles must not replace it
+    title_explicit: bool = False
     events: list[DevinMessage] = field(default_factory=list)
     buffer: list[str] = field(default_factory=list)
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
@@ -123,6 +129,9 @@ _CONTROL_TIMEOUT = 30
 _STREAM_CHUNK = 65536
 # structured agent logs ("2026-10-12T22:19:57Z INFO target: msg") are
 # journal material, not something to relay into the user's chat
+# tool-call serializations like functions.execute:0{"command": …} are
+# provisional titles the CLI derives from its first activity, not titles
+_TOOL_TITLE = re.compile(r"^[\w.]+:\d+\s*\{")
 _LOG_LINE = re.compile(
     r"^\S+\s+(?:INFO|DEBUG|TRACE|WARN(?:ING)?|ERROR)\s"
 )
@@ -547,6 +556,10 @@ class LocalClient:
     ) -> tuple[str, str]:
         cwd = self._cwd()
         sess = await self._spawn()
+        # set before session/new: a session_info_update can be read before
+        # the response returns, and needs the prompt head for the
+        # provisional-title check
+        sess.prompt_head = prompt
         try:
             created = await self._request(sess, "session/new", {
                 "cwd": cwd,
@@ -560,6 +573,7 @@ class LocalClient:
         # have arrived via session_info_update and would be clobbered
         if title is not None:
             sess.title = title
+            sess.title_explicit = True
         session_id = f"{LOCAL_PREFIX}{sess.acp_id}"
         await self._evict()
         self.sessions[session_id] = sess
@@ -1021,7 +1035,13 @@ class LocalClient:
         sess.replaying = True
         # a replayed session_info_update may already have set the title —
         # keep it when session/list has none instead of clobbering to ""
-        sess.title = await self._session_title(sess, acp_id) or sess.title
+        listed_title = await self._session_title(sess, acp_id)
+        if listed_title:
+            sess.title = listed_title
+            # the persisted title is authoritative — replayed provisional
+            # updates (prompt_head is empty on a resumed session) must not
+            # replace it
+            sess.title_explicit = True
         await self._evict()
         self.sessions[session_id] = sess
         if self.event_store is not None:
@@ -1229,11 +1249,19 @@ class LocalClient:
         ):
             return
         if kind == "session_info_update":
-            # the CLI generates the session title after session/new —
-            # without it an untitled topic never gets its rename
+            # the CLI first reports a provisional title derived from the
+            # prompt (our preamble), then a generated one — ignore the
+            # former, let the latter replace it, and never clobber an
+            # explicit title
             title = update.get("title")
-            if title and not sess.title:
-                sess.title = str(title)
+            if not title:
+                return
+            title = str(title)
+            if not sess.title_explicit and (
+                (not sess.prompt_head or not sess.prompt_head.startswith(title))
+                and not _TOOL_TITLE.match(title)
+            ):
+                sess.title = title
             return
         if kind == "available_commands_update":
             commands = update.get("availableCommands")
