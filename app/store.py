@@ -1131,7 +1131,7 @@ class Store:
                 SELECT choice_id, option_text
                 FROM pending_choices
                 WHERE {where}
-                ORDER BY created_at, choice_id
+                ORDER BY rowid
                 """,
                 values,
             ).fetchall()
