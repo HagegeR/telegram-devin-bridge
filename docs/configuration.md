@@ -174,6 +174,7 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
   `deploy/openrc/telegram-devin-bridge-watchdog` into
   `/etc/periodic/15min/`, which also restarts a service left stopped.
 - Retries: connection failures to the Telegram and Devin APIs are retried 5
-  times with exponential backoff (~15 s total); mid-flight failures retry only
+  times with exponential backoff (~15 s total), as are `5xx` responses on
+  idempotent calls; mid-flight failures retry only
   idempotent GETs so mutations are never duplicated. Longer outages drop the
   reply and log `Failed to process Telegram update`.

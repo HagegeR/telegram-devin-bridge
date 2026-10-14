@@ -36,6 +36,9 @@ and deployment update channels.
   watchdogs (`deploy/openrc/telegram-devin-bridge-watchdog`, installed into
   `/etc/periodic/15min/` by `install.sh` and kept current by
   `self-update.sh`).
+- Transient `500`/`5xx` replies from the Devin API on idempotent calls
+  are retried like connection failures instead of surfacing to the chat
+  as `⚠ Couldn't reach Devin`.
 - Option buttons in the rebuilt disabled markup no longer scramble order when
   `pending_choices` rows share a `created_at` — the column is a float64 that
   ties routinely (systematic on Windows' coarse `time.time()`, possible
