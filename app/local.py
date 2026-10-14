@@ -129,6 +129,9 @@ _CONTROL_TIMEOUT = 30
 _STREAM_CHUNK = 65536
 # structured agent logs ("2026-10-12T22:19:57Z INFO target: msg") are
 # journal material, not something to relay into the user's chat
+# tool-call serializations like functions.execute:0{"command": …} are
+# provisional titles the CLI derives from its first activity, not titles
+_TOOL_TITLE = re.compile(r"^[\w.]+:\d+\s*\{")
 _LOG_LINE = re.compile(
     r"^\S+\s+(?:INFO|DEBUG|TRACE|WARN(?:ING)?|ERROR)\s"
 )
@@ -553,6 +556,10 @@ class LocalClient:
     ) -> tuple[str, str]:
         cwd = self._cwd()
         sess = await self._spawn()
+        # set before session/new: a session_info_update can be read before
+        # the response returns, and needs the prompt head for the
+        # provisional-title check
+        sess.prompt_head = prompt
         try:
             created = await self._request(sess, "session/new", {
                 "cwd": cwd,
@@ -562,7 +569,6 @@ class LocalClient:
             _terminate(sess.proc)
             raise
         sess.acp_id = str(created["sessionId"])
-        sess.prompt_head = prompt
         # don't default "" here — the CLI's generated title can already
         # have arrived via session_info_update and would be clobbered
         if title is not None:
@@ -1029,7 +1035,13 @@ class LocalClient:
         sess.replaying = True
         # a replayed session_info_update may already have set the title —
         # keep it when session/list has none instead of clobbering to ""
-        sess.title = await self._session_title(sess, acp_id) or sess.title
+        listed_title = await self._session_title(sess, acp_id)
+        if listed_title:
+            sess.title = listed_title
+            # the persisted title is authoritative — replayed provisional
+            # updates (prompt_head is empty on a resumed session) must not
+            # replace it
+            sess.title_explicit = True
         await self._evict()
         self.sessions[session_id] = sess
         if self.event_store is not None:
@@ -1245,9 +1257,9 @@ class LocalClient:
             if not title:
                 return
             title = str(title)
-            if (
-                not sess.title_explicit
-                and (not sess.prompt_head or not sess.prompt_head.startswith(title))
+            if not sess.title_explicit and (
+                (not sess.prompt_head or not sess.prompt_head.startswith(title))
+                and not _TOOL_TITLE.match(title)
             ):
                 sess.title = title
             return

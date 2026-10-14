@@ -205,8 +205,11 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     session, so an untitled topic still gets renamed (an explicit title
     is never overwritten). The CLI first reports a provisional title
     derived from the prompt itself — the bridge ignores any reported
-    title that is a prefix of the prompt it sent, so boilerplate
-    instructions never become the subject.
+    title that is a prefix of the prompt it sent or that looks like a
+    tool-call serialization (`name:N{…}`), so boilerplate instructions
+    and tool dumps never become the subject. On resume the
+    `session/list` title is authoritative: replayed provisional updates
+    (the sent prompt is not persisted) cannot replace it.
     Sessions have no cloud URL, and ignore
     the cloud
     session options — the CLI's own mode/model config applies instead

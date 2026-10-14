@@ -27,10 +27,12 @@ and deployment update channels.
 - Local session topics were renamed to a provisional title the CLI
   derives from the prompt itself — the first line was the bridge's own
   instructions boilerplate (or worse, serialized tool text). Reported
-  titles that prefix the sent prompt are now ignored, and later
+  titles that prefix the sent prompt, or look like a tool-call
+  serialization (`name:N{…}`), are now ignored, and later
   `session_info_update` titles replace provisional ones so the real
   generated title still lands; an explicit `/new` title is never
-  overwritten.
+  overwritten, and on resume the `session/list` title is authoritative
+  so a replayed provisional can't clobber it.
 - Option buttons in the rebuilt disabled markup no longer scramble order when
   `pending_choices` rows share a `created_at` — the column is a float64 that
   ties routinely (systematic on Windows' coarse `time.time()`, possible

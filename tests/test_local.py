@@ -68,6 +68,14 @@ FAKE_ACP = textwrap.dedent(
                                       {"value": "high"},
                                       {"value": "max"},
                                   ]}]}}), flush=True)
+            if os.environ.get("FAKE_TOOL_TITLE"):
+                # the first activity can also seed the provisional title
+                # with serialized tool text, not prompt characters
+                print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                                  "params": {"sessionId": sid, "update": {
+                                      "sessionUpdate": "session_info_update",
+                                      "title": 'functions.execute:0{"command": "ls"}'}}}),
+                      flush=True)
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
                               "params": {"sessionId": sid, "update": {
                                   "sessionUpdate": "session_info_update",
@@ -190,6 +198,12 @@ FAKE_ACP = textwrap.dedent(
                                   "sessionUpdate": "agent_message_chunk",
                                   "content": {"type": "text",
                                               "text": "replayed: old"}}}}),
+                      flush=True)
+            if os.environ.get("FAKE_REPLAY_TITLE"):
+                print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                                  "params": {"sessionId": sid, "update": {
+                                      "sessionUpdate": "session_info_update",
+                                      "title": "replayed provisional"}}}),
                       flush=True)
             print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
         elif meth == "session/list":
@@ -942,3 +956,32 @@ async def test_session_info_update_never_clobbers_an_explicit_title(
             break
         await asyncio.sleep(0.1)
     assert state.title == "Mine"
+
+
+@pytest.mark.asyncio
+async def test_tool_derived_provisional_title_is_ignored(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_TOOL_TITLE", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    for _ in range(50):
+        state = await shell_client.get_session(session_id)
+        if state.title:
+            break
+        await asyncio.sleep(0.1)
+    assert state.title == "Generated title"
+
+
+@pytest.mark.asyncio
+async def test_replayed_title_cannot_clobber_the_resumed_title(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_REPLAY_TITLE", "1")
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+    await shell_client.send_message(session_id, "second")
+    await _wait_for(shell_client, session_id, "echo: second")
+    state = await shell_client.get_session(session_id)
+    assert state.title == "resumed title"
