@@ -7,7 +7,10 @@
 > retry v1. v3-only features (devin_mode, repos, platform, `status_detail`,
 > `acus_consumed`, structured blocks) degrade quietly on v1 deployments.
 > `devin.py`/`telegram.py` are re-export shims — both clients live in
-> `clients.py`.
+> `clients.py`. `_with_transport_retry` retries connection failures 5x with
+> backoff on every call, mid-flight transport failures and `5xx` responses
+> only on `idempotent=True` (reads) calls — a 5xx'd mutation is never
+> repeated since it may have taken effect server-side.
 
 ## Grounded API facts (verified against api.devin.ai with the deployed key)
 

@@ -1211,3 +1211,49 @@ def test_every_handled_command_is_in_the_bot_menu() -> None:
     # scope sets must not name commands that were never registered
     assert EPHEMERAL_COMMANDS <= GROUP_COMMANDS
     assert GROUP_COMMANDS <= registered
+
+
+@pytest.mark.asyncio
+async def test_transport_retry_retries_5xx_on_idempotent_calls() -> None:
+    from app.clients import DevinClient
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"items": []})
+
+    client = DevinClient(
+        "apk_key",
+        "https://api.devin.ai",
+        1,
+        transport=httpx.MockTransport(handler),
+    )
+    payload = await client._json("GET", "/v1/playbooks")
+    assert payload == {"items": []}
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_transport_retry_does_not_retry_5xx_on_mutations() -> None:
+    from app.clients import DevinClient
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500, text="boom")
+
+    client = DevinClient(
+        "apk_key",
+        "https://api.devin.ai",
+        1,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await client._call("POST", "/v1/sessions/abc/message")
+    assert calls == 1

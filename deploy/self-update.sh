@@ -161,6 +161,12 @@ case "$(uname -s)" in
   *) KILL="kill -TERM $BRIDGE_PID" ;;
 esac
 if [ "$(id -u)" -eq 0 ] && command -v rc-service >/dev/null 2>&1; then
+  # keep the poll-loop watchdog cron entry current with the checkout;
+  # hosts installed before it existed gain it on their next update
+  if [ -d /etc/periodic/15min ] && [ -f deploy/openrc/telegram-devin-bridge-watchdog ]; then
+    install -m 0755 deploy/openrc/telegram-devin-bridge-watchdog \
+      /etc/periodic/15min/telegram-devin-bridge-watchdog
+  fi
   # rc-service only stops the pidfile-tracked supervise-daemon — orphans
   # from earlier races keep their child holding the port, so the new
   # process dies on EADDRINUSE forever (the "stuck update" loop). Sweep

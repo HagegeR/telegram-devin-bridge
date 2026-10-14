@@ -63,7 +63,18 @@ async def _with_transport_retry(
 ) -> T:
     for attempt in range(RETRY_ATTEMPTS):
         try:
-            return await send()
+            response = await send()
+            if (
+                isinstance(response, httpx.Response)
+                and response.status_code >= 500
+                and idempotent
+                and attempt < RETRY_ATTEMPTS - 1
+            ):
+                # safe to repeat on idempotent calls: a duplicate read
+                # changes nothing even if the server did honor the first
+                await sleep(RETRY_BACKOFF[attempt])
+                continue
+            return response
         except (httpx.ConnectError, httpx.ConnectTimeout):
             # failed before anything was transmitted — always safe to retry
             if attempt == RETRY_ATTEMPTS - 1:
@@ -828,17 +839,20 @@ class DevinClient:
         start: datetime,
         end: datetime,
     ) -> dict[str, object]:
-        response = await self.client.get(
-            f"/v3/organizations/{org_id}/consumption/daily/sessions/{session_id}",
-            params={
-                "time_after": int(start.astimezone(UTC).timestamp()),
-                "time_before": int(end.astimezone(UTC).timestamp()),
-            },
-            headers=(
-                {"Authorization": f"Bearer {self.service_user_api_key}"}
-                if self.service_user_api_key
-                else None
+        response = await _with_transport_retry(
+            lambda: self.client.get(
+                f"/v3/organizations/{org_id}/consumption/daily/sessions/{session_id}",
+                params={
+                    "time_after": int(start.astimezone(UTC).timestamp()),
+                    "time_before": int(end.astimezone(UTC).timestamp()),
+                },
+                headers=(
+                    {"Authorization": f"Bearer {self.service_user_api_key}"}
+                    if self.service_user_api_key
+                    else None
+                ),
             ),
+            idempotent=True,
         )
         response.raise_for_status()
         value = response.json()
