@@ -1284,16 +1284,24 @@ class LocalClient:
         ):
             return
         if kind == "session_info_update":
-            # the CLI first reports a provisional title derived from the
-            # prompt (our preamble), then a generated one — ignore the
-            # former, let the latter replace it, and never clobber an
-            # explicit title
+            # the CLI first reports a provisional title — the prompt head
+            # with whitespace collapsed, truncated to ~80 chars ending in
+            # "..." — then a generated one; ignore the former (compare
+            # against the normalized prompt head: a raw prefix check
+            # misses the ellipsis and the squashed newlines), let the
+            # latter replace it, and never clobber an explicit title
             title = update.get("title")
             if not title:
                 return
             title = str(title)
+            cand = " ".join(
+                title.removesuffix("...").removesuffix("…").split()
+            )
             if not sess.title_explicit and (
-                (not sess.prompt_head or not sess.prompt_head.startswith(title))
+                not (
+                    cand
+                    and " ".join(sess.prompt_head.split()).startswith(cand)
+                )
                 and not _TOOL_TITLE.match(title)
             ):
                 sess.title = title

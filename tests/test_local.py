@@ -81,11 +81,15 @@ FAKE_ACP = textwrap.dedent(
                                   "sessionUpdate": "session_info_update",
                                   # provisional title: the CLI derives it
                                   # from the prompt head — not a real title
-                                  "title": "hello"}}}), flush=True)
-            print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
-                              "params": {"sessionId": sid, "update": {
-                                  "sessionUpdate": "session_info_update",
-                                  "title": "Generated title"}}}), flush=True)
+                                  "title": os.environ.get(
+                                      "FAKE_PROVISIONAL", "hello")}}}),
+                  flush=True)
+            if "FAKE_PROVISIONAL" not in os.environ:
+                print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                                  "params": {"sessionId": sid, "update": {
+                                      "sessionUpdate": "session_info_update",
+                                      "title": "Generated title"}}}),
+                      flush=True)
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
                               "params": {"sessionId": sid, "update": {
                                   "sessionUpdate": "available_commands_update",
@@ -981,6 +985,22 @@ async def test_session_info_update_never_clobbers_an_explicit_title(
             break
         await asyncio.sleep(0.1)
     assert state.title == "Mine"
+
+
+@pytest.mark.asyncio
+async def test_ellipsis_truncated_provisional_title_is_ignored(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the real CLI's provisional title is the prompt head with whitespace
+    # collapsed, truncated to ~80 chars ending in "..." — it is not a
+    # strict prefix of the prompt, so the raw startswith check misses it
+    prompt = "boilerplate line one.\n" + "word " * 30
+    monkeypatch.setenv(
+        "FAKE_PROVISIONAL", " ".join(prompt.split())[:77] + "..."
+    )
+    session_id, _ = await shell_client.create_session(prompt)
+    await _wait_for(shell_client, session_id, "echo:")
+    assert (await shell_client.get_session(session_id)).title == ""
 
 
 @pytest.mark.asyncio
