@@ -24,6 +24,12 @@ and deployment update channels.
 
 ### Fixed
 
+- Streamed local progress could still arrive as one fused blob: any
+  line containing inline `code` was skipped entirely by the run-on
+  splitter, which is most progress text. The splitter now masks code
+  spans and splits the prose around them, so a line ending in an
+  inline-code span followed by a fused sentence (`.While it runs…`)
+  breaks correctly.
 - Telegram polling no longer dies silently: an unexpected error in update
   handling (e.g. a `mark_update_seen` sqlite failure or a handler bug) used
   to kill the polling task for good while the process kept running — the

@@ -186,16 +186,51 @@ _RUNON_RE = re.compile(r"(?<=[.!?:;])(?=[A-Z⚠✓◆→#])")
 _MARKER_LINE_RE = re.compile(r"^[A-Z][A-Z_]{2,}:")
 
 
+# code spans can use longer backtick runs (``code``) — capture the whole
+# span plus the delimiter length so lone backticks in content stay intact;
+# re.split yields [prose, span, delim, prose, …] so spans are every i%3!=0
+_INLINE_CODE_RE = re.compile(r"((`+)(?:(?!\2).)+\2)")
+_END_BLOCK_RE = re.compile(r"^END (TABLE|DETAILS|SUGGEST)$")
+
+
 def _split_runons(text: str) -> str:
     out: list[str] = []
     in_fence = False
+    in_block = False
     for line in text.split("\n"):
-        if line.lstrip().startswith("```"):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
             in_fence = not in_fence
-        if in_fence or "`" in line or _MARKER_LINE_RE.match(line):
+        if in_fence:
             out.append(line)
-        else:
-            out.append(_RUNON_RE.sub("\n", line))
+            continue
+        if _END_BLOCK_RE.match(line.strip()):
+            in_block = False
+            out.append(line)
+            continue
+        if in_block:
+            out.append(line)
+            continue
+        if (
+            stripped == "TABLE:"
+            or stripped.startswith(("DETAILS:", "SUGGEST:"))
+        ):
+            in_block = True
+            out.append(line)
+            continue
+        if _MARKER_LINE_RE.match(line):
+            out.append(line)
+            continue
+        # split only the prose segments — inline `code` spans keep
+        # punctuation like `flag:True` intact
+        out.append(
+            "".join(
+                _RUNON_RE.sub("\n", seg) if i % 3 == 0
+                else seg if i % 3 == 1
+                else ""
+                for i, seg in enumerate(_INLINE_CODE_RE.split(line))
+            )
+        )
     return "\n".join(out)
 
 

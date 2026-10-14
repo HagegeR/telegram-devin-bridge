@@ -172,6 +172,8 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     that reinserts a line break where sentence punctuation is
     immediately followed by a capital or status marker (the CLI's chunk
     stream can drop separators between streamed progress updates);
+    inline `code` spans are masked during the split so their punctuation
+    is left alone while the prose around them still splits;
     `agent_thought_chunk` updates arrive one line each and are joined
     with newlines into the rolling thought tail —
     `agent_thought_chunk` and `tool_call` updates
