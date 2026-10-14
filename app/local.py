@@ -63,6 +63,12 @@ class _AcpSession:
     proc: asyncio.subprocess.Process
     acp_id: str
     title: str = ""
+    # the prompt head the CLI derives its provisional session title from —
+    # a session_info_update title that prefixes it is not a real title
+    prompt_head: str = ""
+    # a title the user or /new set explicitly — later session_info_update
+    # titles must not replace it
+    title_explicit: bool = False
     events: list[DevinMessage] = field(default_factory=list)
     buffer: list[str] = field(default_factory=list)
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
@@ -556,10 +562,12 @@ class LocalClient:
             _terminate(sess.proc)
             raise
         sess.acp_id = str(created["sessionId"])
+        sess.prompt_head = prompt
         # don't default "" here — the CLI's generated title can already
         # have arrived via session_info_update and would be clobbered
         if title is not None:
             sess.title = title
+            sess.title_explicit = True
         session_id = f"{LOCAL_PREFIX}{sess.acp_id}"
         await self._evict()
         self.sessions[session_id] = sess
@@ -1229,11 +1237,19 @@ class LocalClient:
         ):
             return
         if kind == "session_info_update":
-            # the CLI generates the session title after session/new —
-            # without it an untitled topic never gets its rename
+            # the CLI first reports a provisional title derived from the
+            # prompt (our preamble), then a generated one — ignore the
+            # former, let the latter replace it, and never clobber an
+            # explicit title
             title = update.get("title")
-            if title and not sess.title:
-                sess.title = str(title)
+            if not title:
+                return
+            title = str(title)
+            if (
+                not sess.title_explicit
+                and (not sess.prompt_head or not sess.prompt_head.startswith(title))
+            ):
+                sess.title = title
             return
         if kind == "available_commands_update":
             commands = update.get("availableCommands")

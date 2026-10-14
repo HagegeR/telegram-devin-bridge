@@ -203,7 +203,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     explicit title was given, the CLI-generated title arrives after
     `session/new` as a `session_info_update` and is stored on the
     session, so an untitled topic still gets renamed (an explicit title
-    is never overwritten).
+    is never overwritten). The CLI first reports a provisional title
+    derived from the prompt itself — the bridge ignores any reported
+    title that is a prefix of the prompt it sent, so boilerplate
+    instructions never become the subject.
     Sessions have no cloud URL, and ignore
     the cloud
     session options — the CLI's own mode/model config applies instead
