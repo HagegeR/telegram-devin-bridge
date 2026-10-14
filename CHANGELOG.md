@@ -33,7 +33,9 @@ and deployment update channels.
   process if the loop has not iterated for 10 minutes so the supervisor
   respawns it, and the loop touches
   `/tmp/telegram-devin-bridge.poll-alive` every iteration for external
-  watchdogs (`deploy/openrc/telegram-devin-bridge-watchdog` under cron).
+  watchdogs (`deploy/openrc/telegram-devin-bridge-watchdog`, installed into
+  `/etc/periodic/15min/` by `install.sh` and kept current by
+  `self-update.sh`).
 - Option buttons in the rebuilt disabled markup no longer scramble order when
   `pending_choices` rows share a `created_at` — the column is a float64 that
   ties routinely (systematic on Windows' coarse `time.time()`, possible

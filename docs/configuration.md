@@ -168,9 +168,11 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
   iterated for 10 minutes it self-SIGTERMs so the service supervisor respawns
   it (a wedged task otherwise leaves the process alive but consuming
   nothing). It also touches `/tmp/telegram-devin-bridge.poll-alive` each
-  iteration so an external watchdog (e.g.
-  `deploy/openrc/telegram-devin-bridge-watchdog` under cron) can restart a
-  fully frozen process where the in-process watchdog cannot run.
+  iteration so an external watchdog can restart a fully frozen process
+  where the in-process watchdog cannot run. On OpenRC hosts `install.sh`
+  and `self-update.sh` install
+  `deploy/openrc/telegram-devin-bridge-watchdog` into
+  `/etc/periodic/15min/`, which also restarts a service left stopped.
 - Retries: connection failures to the Telegram and Devin APIs are retried 5
   times with exponential backoff (~15 s total); mid-flight failures retry only
   idempotent GETs so mutations are never duplicated. Longer outages drop the
