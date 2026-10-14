@@ -1,0 +1,51 @@
+#!/bin/sh
+# run-parts cron entry (no file extension — busybox run-parts skips files
+# with dots). Two jobs:
+#
+#  1. start the service if it is stopped (a racing stop+start pair during
+#     self-update has left it down with no start following);
+#  2. restart it when the poll loop is wedged: app.polling touches
+#     /tmp/telegram-devin-bridge.poll-alive once per iteration and
+#     self-SIGTERMs on a >10 min stall, but a fully frozen event loop never
+#     reaches that watchdog — this external check covers it via the file.
+#
+# The heartbeat only exists in polling mode on revisions that write it; both
+# gates below no-op the script elsewhere.
+set -eu
+
+home=${BRIDGE_HOME:-/root/telegram-devin-bridge}
+hb=/tmp/telegram-devin-bridge.poll-alive
+log=/var/log/telegram-devin-bridge-watchdog.log
+
+if ! rc-service telegram-devin-bridge status 2>/dev/null | grep -q "status: started"; then
+    echo "$(date -u +%FT%TZ) not started; starting" >> "$log"
+    rc-service telegram-devin-bridge start >> "$log" 2>&1
+    exit 0
+fi
+
+grep -q '^TELEGRAM_MODE=polling' "$home/.env" 2>/dev/null || exit 0
+grep -q "poll-alive" "$home/app/polling.py" 2>/dev/null || exit 0
+
+stale=
+if [ -f "$hb" ]; then
+    if [ -z "$(find "$hb" -mmin -10 2>/dev/null)" ]; then
+        stale="heartbeat stale >10m"
+    fi
+else
+    pid=$(pgrep -f "app.main:app" | head -1 || true)
+    if [ -z "$pid" ]; then
+        pid=$(pgrep -f "app\.poll" | head -1 || true)
+    fi
+    if [ -n "$pid" ]; then
+        proc_start=$(stat -c %Y "/proc/$pid" 2>/dev/null || echo 0)
+        if [ "$(( $(date +%s) - proc_start ))" -gt 600 ]; then
+            stale="no heartbeat file on a >10m-old process"
+        fi
+    fi
+fi
+
+if [ -n "$stale" ]; then
+    echo "$(date -u +%FT%TZ) wedged ($stale); restarting" >> "$log"
+    rc-service telegram-devin-bridge restart >> "$log" 2>&1
+fi
+exit 0

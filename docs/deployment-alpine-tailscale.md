@@ -182,8 +182,15 @@ Cron install (busybox run-parts requires NO file extension):
 
 ```sh
 cp deploy/openrc/telegram-devin-bridge-update /etc/periodic/15min/
-chmod +x /etc/periodic/15min/telegram-devin-bridge-update
+cp deploy/openrc/telegram-devin-bridge-watchdog /etc/periodic/15min/
+chmod +x /etc/periodic/15min/telegram-devin-bridge-update /etc/periodic/15min/telegram-devin-bridge-watchdog
 ```
+
+The watchdog restarts the service when it is stopped or the poll loop's
+`/tmp/telegram-devin-bridge.poll-alive` heartbeat is stale/missing — the
+in-process watchdog already self-SIGTERMs a stalled loop; this cron entry
+covers a fully frozen event loop. It no-ops unless `TELEGRAM_MODE=polling`
+is set in `.env` and the deployed code writes the heartbeat.
 
 The update channel is configured once in `/etc/conf.d/telegram-devin-bridge`
 (`SELF_UPDATE_CHANNEL="main"` — or `stable`, `v1`, `v1.2`, `vX.Y.Z`;

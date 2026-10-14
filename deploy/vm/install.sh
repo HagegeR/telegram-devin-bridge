@@ -210,6 +210,13 @@ case "$INIT_SYSTEM" in
         install_service_file \
             "$SOURCE_DIR/deploy/vm/telegram-devin-bridge.initd" \
             /etc/init.d/telegram-devin-bridge
+        # poll-loop watchdog: busybox run-parts runs every 15 min; skipped
+        # when the cron dir does not exist (non-Alpine OpenRC hosts)
+        if [ -d /etc/periodic/15min ]; then
+            install -m 0755 \
+                "$SOURCE_DIR/deploy/openrc/telegram-devin-bridge-watchdog" \
+                /etc/periodic/15min/telegram-devin-bridge-watchdog
+        fi
         rc-update add "$SERVICE_NAME" default
         rc-service "$SERVICE_NAME" start
         ;;

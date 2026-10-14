@@ -24,6 +24,18 @@ and deployment update channels.
 
 ### Fixed
 
+- Telegram polling no longer dies silently: an unexpected error in update
+  handling (e.g. a `mark_update_seen` sqlite failure or a handler bug) used
+  to kill the polling task for good while the process kept running — the
+  bridge looked alive but consumed nothing. Such errors are now logged and
+  the loop continues; the poisoned update is skipped (its offset is already
+  advanced) and batch siblings redeliver. A watchdog task self-SIGTERMs the
+  process if the loop has not iterated for 10 minutes so the supervisor
+  respawns it, and the loop touches
+  `/tmp/telegram-devin-bridge.poll-alive` every iteration for external
+  watchdogs (`deploy/openrc/telegram-devin-bridge-watchdog`, installed into
+  `/etc/periodic/15min/` by `install.sh` and kept current by
+  `self-update.sh`).
 - Transient `500`/`5xx` replies from the Devin API on idempotent calls
   are retried like connection failures instead of surfacing to the chat
   as `⚠ Couldn't reach Devin`.
