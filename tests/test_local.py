@@ -945,6 +945,18 @@ def test_split_runons_splits_prose_around_inline_code() -> None:
     )
 
 
+def test_split_runons_keeps_double_backtick_code() -> None:
+    text = "Run ``flag:True`` now.Done."
+    assert _split_runons(text) == "Run ``flag:True`` now.\nDone."
+
+
+def test_split_runons_keeps_table_body_rows() -> None:
+    text = "TABLE:\n| Name | Value |\n| `config` | a.B |\n| other | fine |\nEND TABLE\nAfter.The end."
+    out = _split_runons(text)
+    assert "| `config` | a.B |" in out
+    assert "After.\nThe end." in out
+
+
 @pytest.mark.asyncio
 async def test_session_info_update_sets_session_title(
     shell_client: LocalClient,
