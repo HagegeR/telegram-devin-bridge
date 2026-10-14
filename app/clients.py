@@ -63,7 +63,18 @@ async def _with_transport_retry(
 ) -> T:
     for attempt in range(RETRY_ATTEMPTS):
         try:
-            return await send()
+            response = await send()
+            if (
+                isinstance(response, httpx.Response)
+                and response.status_code >= 500
+                and idempotent
+                and attempt < RETRY_ATTEMPTS - 1
+            ):
+                # a completed request answered with 5xx is safe to repeat
+                # on idempotent calls — the server never honored it
+                await sleep(RETRY_BACKOFF[attempt])
+                continue
+            return response
         except (httpx.ConnectError, httpx.ConnectTimeout):
             # failed before anything was transmitted — always safe to retry
             if attempt == RETRY_ATTEMPTS - 1:
