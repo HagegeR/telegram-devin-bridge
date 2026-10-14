@@ -921,7 +921,7 @@ def test_split_runons_preserves_markers_and_code() -> None:
     text = (
         "Choose:\nOPTIONS: Yes!Confirm | No\n"
         "```py\nflag:True\nprint('A.B')\n```\n"
-        "inline `flag:True` stays. "
+        "inline `flag:True` stays.\n"
         "TABLE: a.B | c.D"
     )
     out = _split_runons(text)
@@ -930,6 +930,19 @@ def test_split_runons_preserves_markers_and_code() -> None:
     assert "print('A.B')" in out
     assert "`flag:True`" in out
     assert "TABLE: a.B | c.D" in out
+
+
+def test_split_runons_splits_prose_around_inline_code() -> None:
+    # a fused line that mentions code must still split — backticks used
+    # to skip the whole line, which is most progress text
+    text = (
+        "check — `codecov/project/app` — lands at `cross_module_ci`.While it runs, "
+        "verifying merges the old way:Only ci.yml consumes the lcovs."
+    )
+    assert _split_runons(text) == (
+        "check — `codecov/project/app` — lands at `cross_module_ci`.\nWhile it runs, "
+        "verifying merges the old way:\nOnly ci.yml consumes the lcovs."
+    )
 
 
 @pytest.mark.asyncio

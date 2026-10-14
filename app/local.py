@@ -186,16 +186,26 @@ _RUNON_RE = re.compile(r"(?<=[.!?:;])(?=[A-Z⚠✓◆→#])")
 _MARKER_LINE_RE = re.compile(r"^[A-Z][A-Z_]{2,}:")
 
 
+_INLINE_CODE_RE = re.compile(r"(`[^`]*`)")
+
+
 def _split_runons(text: str) -> str:
     out: list[str] = []
     in_fence = False
     for line in text.split("\n"):
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
-        if in_fence or "`" in line or _MARKER_LINE_RE.match(line):
+        if in_fence or _MARKER_LINE_RE.match(line):
             out.append(line)
-        else:
-            out.append(_RUNON_RE.sub("\n", line))
+            continue
+        # split only the prose segments — inline `code` spans keep
+        # punctuation like `flag:True` intact
+        out.append(
+            "".join(
+                seg if i % 2 else _RUNON_RE.sub("\n", seg)
+                for i, seg in enumerate(_INLINE_CODE_RE.split(line))
+            )
+        )
     return "\n".join(out)
 
 
