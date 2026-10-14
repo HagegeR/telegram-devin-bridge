@@ -24,6 +24,11 @@ and deployment update channels.
 
 ### Fixed
 
+- Option buttons in the rebuilt disabled markup no longer scramble order when
+  `pending_choices` rows share a `created_at` — the column is a float64 that
+  ties routinely (systematic on Windows' coarse `time.time()`, possible
+  everywhere). `list_choices` now orders by `rowid` (insertion order), which
+  can never tie.
 - `⚠ prompt failed` no longer relays raw ACP stderr into chat — the
   agent's own structured log lines (skills discovery stats, SessionEnd
   noise) and object reprs like `<WriteUnixTransport …>` are stripped so
