@@ -24,6 +24,15 @@ and deployment update channels.
 
 ### Fixed
 
+- Local session topics were still renamed to the prompt-derived
+  provisional title: the CLI truncates the prompt head to ~80 chars,
+  collapses newlines to spaces, and ends it in `...`, so it is not a
+  raw prefix of the prompt and slipped past the provisional-title
+  check — every topic got named after the bridge's own instructions
+  boilerplate, and the real generated title arriving after could no
+  longer replace it (`title_pending` was already cleared). The
+  provisional check now compares against the whitespace-normalized
+  prompt head with a trailing ellipsis stripped.
 - Streamed local progress could still arrive as one fused blob: any
   line containing inline `code` was skipped entirely by the run-on
   splitter, which is most progress text. The splitter now masks code
