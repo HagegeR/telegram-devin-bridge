@@ -111,6 +111,14 @@ class _AcpSession:
     # drain task handle — awaited at reader exit so the tail is complete
     # before the error detail is built
     stderr_task: asyncio.Task[None] | None = None
+    # last stdout byte — the wedge watchdog's liveness signal (stderr and
+    # silence don't count: a wedged CLI keeps logging internal RPC)
+    last_activity: float = field(default_factory=time.monotonic)
+    # in-flight session/list wedge probe — one at a time
+    wedge_probe: asyncio.Task | None = None
+    # the running turn is a watchdog auto-retry — if it wedges too it is
+    # left failed instead of looping; cleared when the turn ends
+    replay_turn: bool = False
 
     @property
     def running(self) -> bool:
@@ -123,10 +131,23 @@ _MAX_SESSIONS = 32
 # turns can run for a long time; prompts get no deadline (they end on
 # stopReason or terminate), everything else uses the control timeout
 _CONTROL_TIMEOUT = 30
+# a live acp process whose turn emits nothing AND that stops answering
+# control requests is wedged inside the CLI (observed: emit(ToolUpdate)
+# blocked 40+min on a stalled internal channel) — respawning and reloading
+# the persisted session recovers it, waiting recovers nothing. Silence
+# alone isn't proof (a quiet tool call can legitimately run for minutes),
+# so the probe disambiguates.
+_WEDGE_CHECK_SECONDS = 60
+_WEDGE_SILENCE_SECONDS = 300
+_WEDGE_PROBE_TIMEOUT = 30
+
+
 # ACP replies can carry whole files; stdout is read in chunks and split
 # on newlines manually because the default 64KB StreamReader limit used
 # to crash the reader and orphan every turn on that session
 _STREAM_CHUNK = 65536
+
+
 # structured agent logs ("2026-10-12T22:19:57Z INFO target: msg") are
 # journal material, not something to relay into the user's chat
 # tool-call serializations like functions.execute:0{"command": …} are
@@ -135,6 +156,11 @@ _TOOL_TITLE = re.compile(r"^[\w.]+:\d+\s*\{")
 _LOG_LINE = re.compile(
     r"^\S+\s+(?:INFO|DEBUG|TRACE|WARN(?:ING)?|ERROR)\s"
 )
+
+
+class _TurnRescheduledError(Exception):
+    """A queued turn's process died — its prompt moved to the resumed
+    process; the turn's own failure is not user-visible."""
 
 
 def _clean_reason(exc: BaseException) -> str:
@@ -300,6 +326,13 @@ class LocalClient:
         self.resume_config: Callable[[str], dict | None] | None = None
         self._terminated: set[str] = set()
         self._resuming: dict[str, asyncio.Task] = {}
+        self._wedge_task: asyncio.Task | None = None
+        # prompts owed to a session whose process died — replayed in send
+        # order on the next live process (wedge retry, queued-behind-dead
+        # turns, interrupted-turn replay on dead-session reload)
+        self._interrupted: dict[str, list[str]] = {}
+        # in-flight _drain_interrupted per session — keeps replays ordered
+        self._draining: dict[str, asyncio.Task] = {}
         self._next_id = 0
         self._last_event_base = 0
         self._modes_cache: tuple[float, list[str]] | None = None
@@ -686,6 +719,13 @@ class LocalClient:
             # replays it instead of losing the user's question
             sess.pending_prompt = None if sess.suppress_turn else message
             self._prompt_state(session_id, sess.pending_prompt)
+            if sess.dead:
+                # queued behind a turn whose process died — writing to a
+                # dead pipe would hang forever; the durable marker above
+                # keeps it safe and the resumed process replays it in
+                # send order via _deliver_interrupted
+                self._interrupted.setdefault(session_id, []).append(message)
+                raise _TurnRescheduledError(sess.acp_id)
             try:
                 result = await self._request(sess, "session/prompt", {
                     "sessionId": sess.acp_id,
@@ -708,6 +748,8 @@ class LocalClient:
         sess.tail.add_done_callback(lambda f: self._turn_done(sess, f))
         if sess.flusher is None:
             sess.flusher = asyncio.create_task(self._flusher(sess))
+        if self._wedge_task is None or self._wedge_task.done():
+            self._wedge_task = asyncio.create_task(self._wedge_watchdog())
 
     async def _flusher(self, sess: _AcpSession) -> None:
         try:
@@ -754,6 +796,7 @@ class LocalClient:
 
     def _turn_done(self, sess: _AcpSession, fut: asyncio.Future) -> None:
         sess.turns -= 1
+        sess.replay_turn = False
         if sess.suppress_turn:
             sess.suppress_turn = False
             if "".join(sess.buffer).strip():
@@ -767,6 +810,9 @@ class LocalClient:
             exc = fut.exception()
         except asyncio.CancelledError:
             exc = None
+        if isinstance(exc, _TurnRescheduledError):
+            # moved to the resumed process — not a user-visible failure
+            return
         if exc is not None:
             logger.warning("local prompt failed for %s: %s", sess.acp_id, exc)
             self._emit(sess, f"⚠ prompt failed: {_clean_reason(exc)}")
@@ -934,6 +980,8 @@ class LocalClient:
     async def aclose(self) -> None:
         # shutdown kills processes only — the CLI keeps the sessions so the
         # next bridge can resume them; session/delete is for explicit /stop
+        if self._wedge_task is not None:
+            self._wedge_task.cancel()
         for sess in list(self.sessions.values()):
             await self._reap(sess)
         self.sessions.clear()
@@ -942,6 +990,7 @@ class LocalClient:
     async def terminate(self, session_id: str) -> None:
         sess = self.sessions.pop(session_id, None)
         self._terminated.add(session_id)
+        self._interrupted.pop(session_id, None)
         if sess is None:
             # dormant session: /stop must still delete its persisted record,
             # else a later bridge could resume it
@@ -975,10 +1024,132 @@ class LocalClient:
         except TimeoutError:
             _kill(sess.proc)
 
+    async def _wedge_watchdog(self) -> None:
+        """Probe running turns that go silent; respawn the acp process
+        when the probe also goes unanswered — the session reloads from
+        the CLI's persisted DB on the fresh process."""
+        try:
+            while self.sessions:
+                await asyncio.sleep(_WEDGE_CHECK_SECONDS)
+                now = time.monotonic()
+                for session_id, sess in list(self.sessions.items()):
+                    if (
+                        sess.running
+                        and not sess.dead
+                        and sess.wedge_probe is None
+                        and now - sess.last_activity > _WEDGE_SILENCE_SECONDS
+                    ):
+                        sess.wedge_probe = asyncio.create_task(
+                            self._probe_wedge(session_id, sess)
+                        )
+        except asyncio.CancelledError:
+            pass
+
+    async def _probe_wedge(self, session_id: str, sess: _AcpSession) -> None:
+        try:
+            try:
+                await self._request(
+                    sess,
+                    "session/list",
+                    {"cwd": self._cwd()},
+                    timeout=_WEDGE_PROBE_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                raise
+            except (RuntimeError, TimeoutError, OSError):
+                pass
+            else:
+                # answered — a legitimately quiet long-running turn
+                sess.last_activity = time.monotonic()
+                return
+            if sess.dead or not sess.running:
+                return
+            logger.warning(
+                "local acp session %s wedged — respawning", sess.acp_id
+            )
+            # a prompt that already wedged a replayed process is not
+            # retried a second time — it stays failed
+            prompt = sess.pending_prompt
+            replay = prompt is not None and not sess.replay_turn
+            if replay:
+                # queued turns append theirs as their dead-guard fires
+                # during _reap — the list keeps the original send order
+                self._interrupted.setdefault(session_id, []).append(prompt)
+            self._emit(
+                sess,
+                "⚠ the local CLI stopped answering mid-turn — restarting"
+                " the session process"
+                + (" and retrying the prompt" if replay else ""),
+            )
+            # unmap so _get_or_resume spawns a fresh process — a dead
+            # session left in the map fails every send as 'gone'
+            self.sessions.pop(session_id, None)
+            await self._reap(sess)
+            try:
+                await self._deliver_interrupted(session_id)
+            except (RuntimeError, TimeoutError) as exc:
+                logger.warning(
+                    "wedge replay failed for %s: %s", session_id, exc
+                )
+        finally:
+            sess.wedge_probe = None
+
+    async def _deliver_interrupted(self, session_id: str) -> None:
+        """Dedupe entry to the per-session drain — concurrent callers
+        (watchdog, status poll, next send) share one drain so list order
+        stays send order."""
+        task = self._draining.get(session_id)
+        if task is asyncio.current_task():
+            return
+        if task is None or task.done():
+            task = asyncio.create_task(self._drain_interrupted(session_id))
+            self._draining[session_id] = task
+        await task
+
+    async def _drain_interrupted(self, session_id: str) -> None:
+        """Replay owed prompts in send order on a live process, marking
+        each as a replay turn so a second wedge doesn't loop."""
+        queue = self._interrupted.get(session_id)
+        while queue:
+            sess = self.sessions.get(session_id)
+            if sess is None:
+                if session_id in self._terminated:
+                    self._interrupted.pop(session_id, None)
+                    return
+                try:
+                    sess = await self._resume(session_id)
+                except (RuntimeError, TimeoutError, OSError) as exc:
+                    logger.warning(
+                        "interrupted-turn resume failed for %s: %s",
+                        session_id, exc,
+                    )
+                    return
+            if sess.dead:
+                return  # leave the queue for the next contact
+            sess.replay_turn = True
+            prompt = queue[0]
+            try:
+                await self.send_message(session_id, prompt)
+            except (RuntimeError, TimeoutError) as exc:
+                logger.warning(
+                    "interrupted-turn send failed for %s: %s",
+                    session_id, exc,
+                )
+                return
+            queue.pop(0)
+
     async def _evict(self) -> None:
         while len(self.sessions) >= _MAX_SESSIONS:
             # capacity eviction is lifecycle, not /stop — keep the record
-            await self._reap(self.sessions.pop(next(iter(self.sessions))))
+            key = next(iter(self.sessions))
+            victim = self.sessions.pop(key)
+            if victim.pending_prompt:
+                # evicting mid-turn — the prompt survives for replay
+                # on next contact, like a watchdog respawn
+                self._interrupted.setdefault(key, []).append(
+                    victim.pending_prompt
+                )
+            await self._reap(victim)
 
     async def upload_attachment(self, *_: object, **__: object) -> str:
         raise RuntimeError("attachments are not supported on local sessions")
@@ -1026,8 +1197,23 @@ class LocalClient:
 
     async def _get_or_resume(self, session_id: str) -> _AcpSession | None:
         sess = self.sessions.get(session_id)
+        if sess is not None and sess.dead:
+            # a process that died outside the watchdog stays mapped —
+            # unmap it so the session reloads on a fresh process instead
+            # of failing every send as 'gone' until a bridge restart
+            self.sessions.pop(session_id)
+            if sess.pending_prompt:
+                # the dead process was mid-turn — replay that prompt on
+                # the fresh process instead of letting the next send
+                # overwrite the durable marker silently
+                self._interrupted.setdefault(
+                    session_id, []
+                ).append(sess.pending_prompt)
+            sess = None
         if sess is None and session_id not in self._terminated:
             sess = await self._resume(session_id)
+        if sess is not None and not sess.dead:
+            await self._deliver_interrupted(session_id)
         return sess
 
     async def _resume(self, session_id: str) -> _AcpSession:
@@ -1048,7 +1234,7 @@ class LocalClient:
         Sessions outlive bridge restarts in the CLI's session DB — the
         in-memory map is only the live-process index."""
         existing = self.sessions.get(session_id)
-        if existing is not None:
+        if existing is not None and not existing.dead:
             return existing
         acp_id = session_id.removeprefix(LOCAL_PREFIX)
         sess = await self._spawn()
@@ -1169,7 +1355,9 @@ class LocalClient:
 
     # -- JSON-RPC plumbing -------------------------------------------------
 
-    def _send(self, sess: _AcpSession, method: str, params: dict) -> asyncio.Future:
+    def _send(
+        self, sess: _AcpSession, method: str, params: dict
+    ) -> tuple[int, asyncio.Future]:
         self._next_id += 1
         req_id = self._next_id
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -1179,7 +1367,7 @@ class LocalClient:
             json.dumps({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}).encode()
             + b"\n"
         )
-        return fut
+        return req_id, fut
 
     async def _request(
         self,
@@ -1189,8 +1377,14 @@ class LocalClient:
         *,
         timeout: float | None = _CONTROL_TIMEOUT,
     ) -> dict:
-        fut = self._send(sess, method, params)
-        result = await fut if timeout is None else await asyncio.wait_for(fut, timeout)
+        req_id, fut = self._send(sess, method, params)
+        try:
+            result = await fut if timeout is None else await asyncio.wait_for(fut, timeout)
+        except BaseException:
+            # drop the timed-out slot — a late reply must find no pending
+            # future to resolve, not a cancelled one to set_result over
+            sess.pending.pop(req_id, None)
+            raise
         if "error" in result:
             raise RuntimeError(f"{method}: {result['error']}")
         return result.get("result", {})
@@ -1202,6 +1396,7 @@ class LocalClient:
             chunk = await sess.proc.stdout.read(_STREAM_CHUNK)
             if not chunk:
                 break
+            sess.last_activity = time.monotonic()
             buf += chunk
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
@@ -1245,7 +1440,10 @@ class LocalClient:
     def _handle(self, sess: _AcpSession, msg: dict) -> None:
         req_id = msg.get("id")
         if req_id is not None and req_id in sess.pending:
-            sess.pending.pop(req_id).set_result(msg)
+            fut = sess.pending.pop(req_id)
+            # a cancelled waiter (timeout) must not raise into the reader
+            if not fut.done():
+                fut.set_result(msg)
             return
         if msg.get("method") == "session/request_permission":
             # ACP sends permission prompts as server->client requests;

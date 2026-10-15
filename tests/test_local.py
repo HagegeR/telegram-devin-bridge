@@ -117,6 +117,39 @@ FAKE_ACP = textwrap.dedent(
                                   }]}}}), flush=True)
         elif meth == "session/prompt":
             text = m["params"]["prompt"][0]["text"]
+            if os.environ.get("FAKE_WEDGE"):
+                once = os.environ.get("FAKE_WEDGE_ONCE")
+                if not once or not os.path.exists(once):
+                    if once:
+                        with open(once, "w") as fh:
+                            fh.write("x")
+                    # wedged CLI: no updates, and stdin is ignored so
+                    # control requests (the watchdog probe) never answer
+                    while True:
+                        time.sleep(3600)
+            if os.environ.get("FAKE_QUIET"):
+                # silent prompt whose control channel stays alive — the
+                # wedge probe gets answered, so the turn must not be killed
+                import select
+                deadline = time.time() + float(os.environ["FAKE_QUIET"])
+                while time.time() < deadline:
+                    r, _, _ = select.select(
+                        [sys.stdin], [], [],
+                        max(0, deadline - time.time()),
+                    )
+                    if not r:
+                        break
+                    qline = sys.stdin.readline()
+                    if not qline:
+                        break
+                    try:
+                        qm = json.loads(qline)
+                    except ValueError:
+                        continue
+                    if qm.get("method") == "session/list":
+                        print(json.dumps({"jsonrpc": "2.0", "id": qm["id"],
+                                          "result": {"sessions": []}}),
+                              flush=True)
             chunks = ["echo: ", text]
             if os.environ.get("FAKE_PERMISSION"):
                 print(json.dumps({"jsonrpc": "2.0", "id": 9000,
@@ -211,6 +244,9 @@ FAKE_ACP = textwrap.dedent(
                       flush=True)
             print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
         elif meth == "session/list":
+            delay = os.environ.get("FAKE_LIST_DELAY")
+            if delay:
+                time.sleep(float(delay))
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"sessions": [{
                                   "sessionId": sid,
@@ -697,6 +733,172 @@ async def test_reap_keeps_pending_prompt_for_replay(
     assert sess.pending_prompt == "second"
     # already reaped — terminate() in teardown would double-kill it
     shell_client.sessions.pop(session_id)
+
+
+def _wedge_constants(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.local._WEDGE_CHECK_SECONDS", 0.05)
+    monkeypatch.setattr("app.local._WEDGE_SILENCE_SECONDS", 0.2)
+    monkeypatch.setattr("app.local._WEDGE_PROBE_TIMEOUT", 0.3)
+
+
+@pytest.mark.asyncio
+async def test_wedged_session_respawns_and_replays_prompt(
+    shell_client: LocalClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a wedged acp (silent stdout, unanswered control requests) used to
+    # leave the session "working" forever — the watchdog probes, finds it
+    # dead, and respawns it; the in-flight prompt is retried once
+    _wedge_constants(monkeypatch)
+    monkeypatch.setenv("FAKE_WEDGE", "1")
+    monkeypatch.setenv("FAKE_WEDGE_ONCE", str(tmp_path / "wedged-once"))
+    session_id, _ = await shell_client.create_session("hello")
+    wedged = shell_client.sessions[session_id]
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_enum == "blocked"
+    # the resumed session runs on a fresh process
+    assert shell_client.sessions[session_id].proc is not wedged.proc
+    assert not shell_client.sessions[session_id].dead
+    # the kill surfaced on the dead incarnation's event list
+    assert any("stopped answering" in m.message for m in wedged.events)
+
+
+@pytest.mark.asyncio
+async def test_wedged_session_replay_is_not_repeated(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a prompt that wedges the fresh process too is reported failed, not
+    # retried forever — the second kill leaves the turn visibly dead
+    _wedge_constants(monkeypatch)
+    monkeypatch.setenv("FAKE_WEDGE", "1")
+    session_id, _ = await shell_client.create_session("hi")
+    wedged = shell_client.sessions[session_id]
+    # first wedge kill → prompt queued for replay on a fresh process
+    for _ in range(100):
+        sess2 = shell_client.sessions.get(session_id)
+        if sess2 is not None and sess2 is not wedged:
+            break
+        await asyncio.sleep(0.05)
+    replayed = shell_client.sessions.get(session_id)
+    assert replayed is not None and replayed is not wedged
+    # the replayed turn wedges again — killed, but not replayed a third
+    # time: the session is left unmapped with nothing owed
+    for _ in range(100):
+        if shell_client.sessions.get(session_id) is not replayed:
+            break
+        await asyncio.sleep(0.05)
+    assert shell_client.sessions.get(session_id) is None
+    assert not shell_client._interrupted.get(session_id)
+    # dormant session reloads on next contact; no echo ever arrived
+    state = await shell_client.get_session(session_id)
+    assert state.status_enum == "blocked"
+    assert not any("echo: hi" in m.message for m in state.messages)
+
+
+@pytest.mark.asyncio
+async def test_queued_turn_moves_to_replacement_process(
+    shell_client: LocalClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a turn queued behind a wedged one must not write to the reaped
+    # process — it transfers to the resumed process, in send order
+    _wedge_constants(monkeypatch)
+    monkeypatch.setenv("FAKE_WEDGE", "1")
+    monkeypatch.setenv("FAKE_WEDGE_ONCE", str(tmp_path / "wedged-once"))
+    session_id, _ = await shell_client.create_session("first")
+    await shell_client.send_message(session_id, "second")
+    await _wait_for(shell_client, session_id, "echo: second")
+    sess = shell_client.sessions[session_id]
+    messages = [m.message for m in sess.events]
+    assert messages.index("echo: first") < messages.index("echo: second")
+
+
+@pytest.mark.asyncio
+async def test_dead_session_replays_interrupted_prompt(
+    shell_client: LocalClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a process killed mid-turn outside the watchdog replays its pending
+    # prompt on the next contact — the durable marker is not overwritten
+    # silently by a later send
+    monkeypatch.setenv("FAKE_WEDGE", "1")
+    monkeypatch.setenv("FAKE_WEDGE_ONCE", str(tmp_path / "wedged-once"))
+    session_id, _ = await shell_client.create_session("hi")
+    wedged = shell_client.sessions[session_id]
+    for _ in range(50):
+        if wedged.pending_prompt == "hi":
+            break
+        await asyncio.sleep(0.05)
+    wedged.proc.kill()
+    for _ in range(50):
+        if wedged.dead:
+            break
+        await asyncio.sleep(0.05)
+    await _wait_for(shell_client, session_id, "echo: hi")
+    assert shell_client.sessions[session_id].proc is not wedged.proc
+
+
+@pytest.mark.asyncio
+async def test_dead_process_resumes_instead_of_staying_gone(
+    shell_client: LocalClient,
+) -> None:
+    # a session whose acp process died outside the watchdog stayed
+    # mapped — every send failed 'gone' until a bridge restart; now the
+    # next send reloads the persisted session on a fresh process
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    dead = shell_client.sessions[session_id]
+    dead.proc.kill()
+    for _ in range(50):
+        if dead.dead:
+            break
+        await asyncio.sleep(0.1)
+    assert dead.dead
+    await shell_client.send_message(session_id, "second")
+    await _wait_for(shell_client, session_id, "echo: second")
+    assert shell_client.sessions[session_id].proc is not dead.proc
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.name == "nt", reason="select on stdin is POSIX-only in the fake"
+)
+async def test_quiet_but_answerable_turn_is_not_killed(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # silence alone is not a wedge — a long quiet tool call whose process
+    # still answers control requests must survive to completion
+    _wedge_constants(monkeypatch)
+    monkeypatch.setenv("FAKE_QUIET", "0.6")
+    session_id, _ = await shell_client.create_session("hello")
+    proc = shell_client.sessions[session_id].proc
+    await _wait_for(shell_client, session_id, "echo: hello")
+    state = await shell_client.get_session(session_id)
+    assert state.status_enum == "blocked"
+    assert not any(
+        "stopped answering" in m.message for m in state.messages
+    )
+    assert shell_client.sessions[session_id].proc is proc
+
+
+@pytest.mark.asyncio
+async def test_late_reply_after_timeout_keeps_reader_alive(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a wait_for-cancelled request must drop its pending slot — a late
+    # reply resolving the cancelled future raised InvalidStateError out
+    # of _handle and killed the reader (dead session on the spot)
+    monkeypatch.setenv("FAKE_LIST_DELAY", "0.3")
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions[session_id]
+    with pytest.raises(TimeoutError):
+        await shell_client._request(
+            sess, "session/list", {"cwd": shell_client._cwd()}, timeout=0.05
+        )
+    assert not sess.pending
+    await asyncio.sleep(0.4)  # the late response lands while reading
+    assert not sess.dead
+    await shell_client.send_message(session_id, "second")
+    await _wait_for(shell_client, session_id, "echo: second")
 
 
 @pytest.mark.asyncio

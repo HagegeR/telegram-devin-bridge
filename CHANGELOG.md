@@ -8,6 +8,26 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Fixed
+
+- A local session whose `devin acp` subprocess stayed alive but stopped
+  answering mid-turn (the CLI's internal event channel can deadlock —
+  observed blocked for 40+min) showed `working` forever: a watchdog now
+  probes turns silent on stdout for ~5min with `session/list`, and a
+  process that doesn't answer is respawned — the session reloads from
+  the CLI's DB, the in-flight prompt is retried once (not looped), and
+  the user sees `⚠ the local CLI stopped answering mid-turn`.
+- Prompts queued behind a dead/wedged turn no longer write to the reaped
+  process (and hang): they transfer to the resumed process in send
+  order, and a pending prompt stranded by a mid-turn crash replays on
+  the next contact instead of being silently overwritten.
+- A local session whose acp process died outside the watchdog kept its
+  map entry — every send failed `gone` until a bridge restart; the next
+  send now reloads the persisted session on a fresh process.
+- A control request that timed out left its pending slot behind — a late
+  reply resolving the cancelled future killed the session's stdout
+  reader on the spot.
+
 ## [v2.1.0] - 2026-10-15
 
 ### Changed

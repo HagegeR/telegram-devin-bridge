@@ -204,7 +204,26 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     cleared when a live prompt call errors, and dropped atomically when
     `save_conversation` swaps the row to a different session. A resume
     that runs before its conversation is active (`/resume` of a history
-    entry) applies the chat config on the first prompt instead. When no
+    entry) applies the chat config on the first prompt instead. A wedge
+    watchdog guards live processes: while a turn is running, stdout
+    silence past ~5 minutes triggers a `session/list` probe (30s) —
+    silence alone proves nothing since a quiet tool call can legitimately
+    run for minutes, so a probe that answers just refreshes the liveness
+    clock. A probe that times out means the CLI's event loop is dead
+    (observed: `emit(ToolUpdate)` blocked 40+min on a stalled internal
+    channel while background RPC kept ticking): the process is reaped,
+    the session unmapped so the next message respawns it via
+    `session/load`, and the in-flight prompt is retried once — a replayed
+    turn that wedges the fresh process too is left failed rather than
+    looped, and the user sees `⚠ the local CLI stopped answering
+    mid-turn`. Prompts owed to a dead process (the wedged turn's prompt,
+    turns queued behind it — which never write to the reaped pipe — and
+    a pending prompt stranded when a process dies outside the watchdog)
+    collect in a per-session interrupted queue, replayed in send order on
+    the resumed process by the next contact — a deduped drain so a
+    status poll can't reorder them. A session whose process died outside
+    the watchdog is unmapped on next contact instead of failing every
+    send as `gone`. When no
     explicit title was given, the CLI-generated title arrives after
     `session/new` as a `session_info_update` and is stored on the
     session, so an untitled topic still gets renamed (an explicit title
