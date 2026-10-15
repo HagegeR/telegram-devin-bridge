@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v2.1.0] - 2026-10-15
+
 ### Changed
 
 - `/model`'s available-model list and the 🧠 Model settings picker are now
