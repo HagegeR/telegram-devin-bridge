@@ -131,7 +131,27 @@ def test_deleted_parent_branch_does_not_block_nested(deploy_clone):
     assert track_of(check(clone, "release/v2")) == "release/v2"
 
 
-def test_real_update_survives_branch_nesting_switch(deploy_clone):
+def _nonroot_id_stub(tmp_path: Path, name: str = "nonroot-bin") -> Path:
+    """A bin dir whose `id` reports a non-root uid.
+
+    On a root host with rc-service or systemctl present the script takes an
+    init branch instead of the supervisor-respawn/manual paths under test —
+    and would drive the host's real service manager. The stub keeps the
+    branch choice host-independent.
+    """
+    bin_dir = tmp_path / name
+    bin_dir.mkdir(exist_ok=True)
+    real_id = shutil.which("id") or "/usr/bin/id"
+    stub = bin_dir / "id"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-u" ]; then echo 1000; else exec ' + real_id + ' "$@"; fi\n'
+    )
+    stub.chmod(0o755)
+    return bin_dir
+
+
+def test_real_update_survives_branch_nesting_switch(deploy_clone, tmp_path: Path):
     # full update path incl. the checkout: a stale local refs/heads/release
     # (left by pre-channel checkouts) must not block release/v2
     clone, work = deploy_clone
@@ -139,11 +159,19 @@ def test_real_update_survives_branch_nesting_switch(deploy_clone):
     pip.parent.mkdir(parents=True)
     pip.write_text("#!/bin/sh\nexit 0\n")
     pip.chmod(0o755)
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{_nonroot_id_stub(tmp_path)}:{os.environ['PATH']}",
+    }
+    for var in ("INVOCATION_ID", "RC_SVCNAME", "BRIDGE_SUPERVISED", "BRIDGE_PID"):
+        env.pop(var, None)
 
     def run(channel: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             ["sh", "deploy/self-update.sh", channel],
             cwd=clone,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -183,12 +211,15 @@ def test_supervised_caller_gets_termed(deploy_clone, tmp_path: Path):
         "ps -o ppid= -p $(ps -o ppid= -p $PPID | tr -d ' ') | tr -d ' '\n"
     )
     stub.chmod(0o755)
+    nonroot = _nonroot_id_stub(tmp_path)
     env = {
         **os.environ,
         **GIT_ENV,
-        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "PATH": f"{nonroot}:{bin_dir}:{os.environ['PATH']}",
         "INVOCATION_ID": "test",
     }
+    for var in ("RC_SVCNAME", "BRIDGE_SUPERVISED", "BRIDGE_PID"):
+        env.pop(var, None)
     result = subprocess.run(
         # `exec` makes the sleep itself the TERM target's child that gets
         # killed; a plain `; sleep 30` would leave an orphaned sleep
@@ -316,7 +347,7 @@ def test_update_without_flock_uses_windows_venv(deploy_clone, tmp_path: Path):
     assert not (clone / ".self-update.lock.d").exists()
 
 
-def test_bridge_supervised_caller_gets_termed(deploy_clone):
+def test_bridge_supervised_caller_gets_termed(deploy_clone, tmp_path: Path):
     # launchd and deploy/windows/run.ps1 set BRIDGE_SUPERVISED: exiting is the
     # restart, whatever init system the host has
     import signal
@@ -326,9 +357,15 @@ def test_bridge_supervised_caller_gets_termed(deploy_clone):
     pip.parent.mkdir(parents=True)
     pip.write_text("#!/bin/sh\nexit 0\n")
     pip.chmod(0o755)
-    env = {**os.environ, **GIT_ENV, "BRIDGE_SUPERVISED": "1"}
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{_nonroot_id_stub(tmp_path)}:{os.environ['PATH']}",
+        "BRIDGE_SUPERVISED": "1",
+    }
     env.pop("INVOCATION_ID", None)
     env.pop("BRIDGE_PID", None)
+    env.pop("RC_SVCNAME", None)
     result = subprocess.run(
         ["sh", "-c", "sh deploy/self-update.sh release; exec sleep 30"],
         cwd=clone,
