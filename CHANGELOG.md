@@ -10,6 +10,11 @@ and deployment update channels.
 
 ### Fixed
 
+- One local session that can't be respawned at startup (e.g. an `OSError`
+  from the acp subprocess) no longer aborts `_replay_interrupted_turns`:
+  its pending prompt is dropped like a "gone" session's and later
+  conversations still get their replay instead of every boot dying on
+  the same conversation.
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now
