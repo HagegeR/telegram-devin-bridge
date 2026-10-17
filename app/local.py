@@ -58,6 +58,12 @@ def is_local(session_id: str) -> bool:
     return session_id.startswith(LOCAL_PREFIX)
 
 
+# Modes that approve tool calls without ever emitting
+# session/request_permission — picking one hands out unattended host
+# access, so selecting one is an admin decision.
+APPROVAL_SKIPPING_MODES = frozenset({"bypass", "smart"})
+
+
 @dataclass
 class _AcpSession:
     proc: asyncio.subprocess.Process
@@ -146,6 +152,12 @@ _WEDGE_PROBE_TIMEOUT = 30
 # on newlines manually because the default 64KB StreamReader limit used
 # to crash the reader and orphan every turn on that session
 _STREAM_CHUNK = 65536
+# ...but one boundless JSON-RPC line would still stall the loop (parse
+# cost, memory) — drop lines past 16MB; real updates are nowhere near
+# that size, and a dropped line that carried a pending response settles
+# its turn with an error instead of leaving it waiting
+_ACP_MAX_LINE = 1 << 24
+_PENDING_ID_RE = re.compile(rb'"id"\s*:\s*(\d+)')
 
 
 # structured agent logs ("2026-10-12T22:19:57Z INFO target: msg") are
@@ -191,15 +203,13 @@ _FLUSH_INTERVAL = 20
 # it anyway rather than holding the turn's whole output back
 _STREAM_MAX_BUFFER = 3072
 # the activity line posts rawInput.command to Telegram — blank anything
-# that looks like a credential before it can leak to the chat
-_SECRET_RE = re.compile(
-    r"(?i)("
-    r"(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]"
-    r"\s*(?:(?:bearer|basic)\s+)?"
-    r"|(?:bearer|basic)\s+"
-    r"|--?[\w-]*(?:key|token|secret|passw(?:or)?d|auth)[\w-]*\s*[= ]"
-    r")\s*(?:[\"'][^\"']*[\"']?|\S+)"
-)
+# that looks like a credential before it can leak to the chat. Each token
+# is a single greedy run and the keyword test happens on the token in
+# Python — the old one-regex approach with adjacent unbounded [\w-]*
+# quantifiers backtracked cubically on inputs like "-key-key-…"
+_KEYWORD_RE = re.compile(r"(?i)key|token|secret|passw(?:or)?d|credential|auth")
+_TOKEN_RE = re.compile(r"--?[\w-]+|[\w-]+")
+_SECRET_VALUE_RE = re.compile(r"(?:[\"'][^\"']*[\"']?|\S+)")
 _USERINFO_RE = re.compile(r"(?<=://)[^\s/:]+:[^\s@]+@")
 # the CLI's chunk stream can drop line separators between streamed
 # progress updates — sentence punctuation immediately followed by a
@@ -275,8 +285,47 @@ def _kill(proc: asyncio.subprocess.Process) -> None:
 
 
 def _scrub_command(cmd: str) -> str:
-    scrubbed = _SECRET_RE.sub(lambda m: m.group(1) + "***", cmd)
-    return _USERINFO_RE.sub("***@", scrubbed)
+    # mask the value after `name=`, `name:`, `--name `, and after a
+    # bearer/basic scheme word — for any name that contains a credential
+    # keyword, however long the name is
+    out: list[str] = []
+    pos = 0
+    for m in _TOKEN_RE.finditer(cmd):
+        if m.start() < pos:
+            continue  # inside an already-masked value
+        name, bare = m.group(0), m.group(0).lstrip("-")
+        scheme = bare.lower() in ("bearer", "basic")
+        if not (scheme or _KEYWORD_RE.search(bare)):
+            continue
+        j = m.end()
+        while j < len(cmd) and cmd[j].isspace():
+            j += 1
+        if j < len(cmd) and cmd[j] in "=:":
+            j += 1
+            while j < len(cmd) and cmd[j].isspace():
+                j += 1
+            v = _SECRET_VALUE_RE.match(cmd, j)
+            if v is not None and v.group(0).lower() in ("bearer", "basic"):
+                # "Authorization: Bearer x" — the scheme word goes too
+                j2 = v.end()
+                while j2 < len(cmd) and cmd[j2].isspace():
+                    j2 += 1
+                tail = _SECRET_VALUE_RE.match(cmd, j2)
+                if tail is not None:
+                    out += [cmd[pos : v.start()], "***"]
+                    pos = tail.end()
+                    continue
+        elif name.startswith("-") or scheme:
+            # flag or scheme word separated by whitespace (`--token x`,
+            # `Bearer x`) — a bare `NAME x` is not treated as a secret
+            v = _SECRET_VALUE_RE.match(cmd, j) if j > m.end() else None
+        else:
+            continue
+        if v is not None:
+            out += [cmd[pos : v.start()], "***"]
+            pos = v.end()
+    out.append(cmd[pos:])
+    return _USERINFO_RE.sub("***@", "".join(out))
 
 
 class LocalClient:
@@ -869,6 +918,25 @@ class LocalClient:
         return str(opt) if opt is not None else None
 
     @staticmethod
+    def _pick_reject(msg: dict) -> str | None:
+        options = msg.get("params", {}).get("options") or []
+        pick = next(
+            (
+                o for o in options
+                if any(
+                    word
+                    in str(o.get("kind", "") + o.get("name", "")).lower()
+                    for word in ("reject", "deny")
+                )
+            ),
+            None,
+        )
+        if pick is None:
+            return None
+        opt = pick.get("optionId", pick.get("id"))
+        return str(opt) if opt is not None else None
+
+    @staticmethod
     def permission_options(msg: dict) -> list[tuple[str, str]]:
         """(optionId, label) pairs for the Telegram approval keyboard."""
         out = []
@@ -921,6 +989,34 @@ class LocalClient:
             ),
             option_id,
         )
+
+    def _deny_permission(
+        self, sess: _AcpSession, req_id: int | str, msg: dict
+    ) -> None:
+        """Fail closed: answer with the reject option, or the ACP
+        cancelled outcome when the request offers none — used when the
+        approval prompt cannot reach a decider."""
+        option_id = self._pick_reject(msg)
+        if option_id is not None:
+            self._answer_permission(sess, req_id, option_id)
+        elif sess.proc.stdin is not None:
+            sess.proc.stdin.write(
+                json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"outcome": {"outcome": "cancelled"}},
+                }).encode() + b"\n"
+            )
+
+    def reject_permission(self, session_id: str, req_id: int | str) -> None:
+        """Deny a pending session/request_permission (fail-closed path).
+        No-op when the request or session is already gone."""
+        sess = self.sessions.get(session_id)
+        if sess is None:
+            return
+        msg = sess.permissions.pop(req_id, None)
+        if msg is not None:
+            self._deny_permission(sess, req_id, msg)
 
     def save_attachment(self, filename: str, content: bytes) -> Path:
         """Persist a Telegram file on the host — ACP has no file-transfer
@@ -986,6 +1082,14 @@ class LocalClient:
             await self._reap(sess)
         self.sessions.clear()
         self._resuming.clear()
+
+    async def suspend(self, session_id: str) -> None:
+        """Stop the acp process without deleting the persisted session —
+        a detached session stops acting on the host but stays
+        resumable, unlike terminate which removes its record."""
+        sess = self.sessions.pop(session_id, None)
+        if sess is not None:
+            await self._reap(sess)
 
     async def terminate(self, session_id: str) -> None:
         sess = self.sessions.pop(session_id, None)
@@ -1402,6 +1506,9 @@ class LocalClient:
                 raw, buf = buf.split(b"\n", 1)
                 if not raw:
                     continue
+                if len(raw) > _ACP_MAX_LINE:
+                    self._drop_line(sess, raw)
+                    continue
                 try:
                     msg = json.loads(raw)
                 except ValueError:
@@ -1412,6 +1519,11 @@ class LocalClient:
                     # a malformed update must not kill the reader — its
                     # pending turns would otherwise hang forever
                     logger.warning("bad acp update skipped: %.200s", raw)
+            if len(buf) > _ACP_MAX_LINE:
+                # an unterminated oversized line: drop it chunk-by-chunk
+                # so memory and downstream scrub cost stay bounded
+                self._drop_line(sess, buf)
+                buf = b""
         sess.dead = True
         # stdout can close before stderr finishes draining — give the
         # drain a moment so the tail is complete for the detail and the
@@ -1428,6 +1540,19 @@ class LocalClient:
         for fut in sess.pending.values():
             if not fut.done():
                 fut.set_exception(RuntimeError(f"acp process exited{detail}"))
+
+    def _drop_line(self, sess: _AcpSession, data: bytes) -> None:
+        logger.warning("dropping oversized acp line (%d bytes)", len(data))
+        # the line may carry the only response a pending request waits
+        # on — settle that turn instead of letting it hang
+        m = _PENDING_ID_RE.search(data[:4096])
+        if m is None:
+            return
+        fut = sess.pending.pop(int(m.group(1)), None)
+        if fut is not None and not fut.done():
+            fut.set_exception(
+                RuntimeError("acp reply exceeded the line limit and was dropped")
+            )
 
     async def _drain_stderr(self, sess: _AcpSession) -> None:
         if sess.proc.stderr is None:
@@ -1460,11 +1585,11 @@ class LocalClient:
                         self.on_permission(f"{LOCAL_PREFIX}{sess.acp_id}", msg)
                     except Exception:
                         logger.exception(
-                            "on_permission hook failed for %s — auto-allowing",
+                            "on_permission hook failed for %s — denying",
                             sess.acp_id,
                         )
                         sess.permissions.pop(req_id, None)
-                        self._answer_permission(sess, req_id, self._pick_allow(msg))
+                        self._deny_permission(sess, req_id, msg)
             return
         if msg.get("method") != "session/update":
             return
@@ -1565,4 +1690,6 @@ class LocalClient:
             cmd = raw.get("command") if isinstance(raw, dict) else None
             title = cmd or update.get("title") or update.get("kind")
             if title:
-                sess.activity = _scrub_command(str(title))[:120]
+                # truncate before scrubbing — credential scrubbing on a
+                # huge command would stall the event loop
+                sess.activity = _scrub_command(str(title)[:512])[:120]
