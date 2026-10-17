@@ -3063,6 +3063,105 @@ async def test_watcher_retries_topic_rename_on_terminal_poll(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_watcher_survives_transient_poll_error(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+
+    class FlakyDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ReadTimeout("temporary failure")
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [DevinMessage("devin_message", "e1", "Done", None)],
+            )
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = _FakeTelegram()
+    devin = FlakyDevin()
+    await SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    texts = [str(item["text"]) for item in telegram.sent]
+    assert any("Done" in text for text in texts)
+    assert not any("Couldn't reach Devin" in text for text in texts)
+
+
+@pytest.mark.asyncio
+async def test_watcher_gives_up_after_poll_error_budget(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+
+    class DownDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            raise httpx.ReadTimeout("always down")
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = _FakeTelegram()
+    devin = DownDevin()
+    await SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    assert devin.calls == 5
+    texts = [str(item["text"]) for item in telegram.sent]
+    assert any("Couldn't reach Devin" in text for text in texts)
+
+
+@pytest.mark.asyncio
 async def test_resume_keeps_title_pending(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "resume.sqlite3"))
     store.add_history(
