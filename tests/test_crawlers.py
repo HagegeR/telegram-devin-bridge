@@ -11,9 +11,27 @@ from app.store import Store
 from tests.test_v2 import _FakeDevin, _FakeTelegram, message, settings
 
 
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never touch real DNS: public names resolve to a stub public IP,
+    localhost names and numeric IPv4 spellings resolve to loopback."""
+
+    async def _fake_resolve(hostname: str) -> list[str]:
+        host = hostname.casefold()
+        numericish = all(c in "0123456789abcdefx." for c in host) and any(
+            c.isdigit() for c in host
+        )
+        if host in {"localhost", "localhost.localdomain"} or numericish:
+            return ["127.0.0.1"]
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr("app.crawlers._resolve_ips", _fake_resolve)
+
+
 def _crawl_transport() -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
+        host = request.headers.get("host", "").split(":")[0].strip("[]")
         if "oembed" in url:
             return httpx.Response(
                 200,
@@ -23,19 +41,19 @@ def _crawl_transport() -> httpx.MockTransport:
                     "thumbnail_url": "https://img.test/thumb.jpg",
                 },
             )
-        if url == "https://img.test/thumb.jpg":
+        if host == "img.test" and url.endswith("/thumb.jpg"):
             return httpx.Response(
                 200,
                 content=b"jpeg-bytes",
                 headers={"content-type": "image/jpeg"},
             )
-        if request.url.host in {"instagram.com", "www.instagram.com"}:
+        if host in {"instagram.com", "www.instagram.com"}:
             return httpx.Response(
                 200,
                 text="<html><head><title>IG page</title></head><body>x</body></html>",
                 headers={"content-type": "text/html"},
             )
-        if "example.test" in url:
+        if host == "example.test":
             return httpx.Response(
                 200,
                 text=(
@@ -119,6 +137,84 @@ async def test_private_urls_are_not_crawled() -> None:
         "http://localhost:8080/",
     ):
         assert await crawl_text(url, {"article"}, client) == []
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_numeric_hosts_are_not_crawled() -> None:
+    from app.crawlers import crawl_text
+
+    client = httpx.AsyncClient(transport=_crawl_transport())
+    for url in (
+        "http://2130706433/",
+        "http://127.1/admin",
+        "http://0x7f.0.0.1/",
+        "http://0177.0.0.1/",
+    ):
+        assert await crawl_text(url, {"article"}, client) == []
+
+
+@pytest.mark.asyncio
+async def test_dns_resolving_to_private_ip_is_not_crawled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.crawlers import crawl_text
+
+    async def _private(_hostname: str) -> list[str]:
+        return ["10.0.0.1"]
+
+    monkeypatch.setattr("app.crawlers._resolve_ips", _private)
+    client = httpx.AsyncClient(transport=_crawl_transport())
+    assert await crawl_text("http://internal.attacker.test/", {"article"}, client) == []
+
+
+@pytest.mark.asyncio
+async def test_redirect_to_internal_target_is_not_crawled() -> None:
+    from app.crawlers import crawl_text
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("host") == "public.test":
+            return httpx.Response(
+                302, headers={"location": "http://2130706433:8080/admin"}
+            )
+        return httpx.Response(200, text="internal")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert await crawl_text("http://public.test/page", {"article"}, client) == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_pins_connection_to_vetted_ip() -> None:
+    from app.crawlers import _pinned_request, crawl_text
+
+    pinned = await _pinned_request("https://alice:secret@public.test:8443/p?q=1")
+    assert pinned == (
+        "https://alice:secret@93.184.216.34:8443/p?q=1",
+        "public.test:8443",
+        "public.test",
+    )
+
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url_host"] = request.url.host
+        seen["host_header"] = request.headers.get("host")
+        seen["sni"] = request.extensions.get("sni_hostname")
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200,
+            text="<html><body>ok</body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    results = await crawl_text(
+        "https://alice:secret@public.test:8443/p", {"article"}, client
+    )
+    assert [r.site for r in results] == ["article"]
+    assert seen["url_host"] == "93.184.216.34"
+    assert seen["host_header"] == "public.test:8443"
+    assert seen["sni"] == "public.test"
+    assert str(seen["auth"]).startswith("Basic ")
 
 
 @pytest.mark.asyncio

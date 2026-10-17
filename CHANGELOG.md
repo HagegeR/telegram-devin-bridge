@@ -26,6 +26,12 @@ and deployment update channels.
 
 ### Fixed
 
+- The `/crawl` SSRF guard no longer trusts hostnames: crawler fetches now
+  resolve the host, require every address to be global, connect to the
+  vetted IP (SNI/Host keep the original name, so DNS rebinding can't
+  reroute the fetch), and re-vet every redirect hop and `og:image`
+  download — non-canonical numeric IPv4 spellings like `2130706433` or
+  `0x7f.1` resolve to private addresses and are rejected.
 - A subprocess that exits in the same instant `_run_command`'s 300s
   timeout fires no longer crashes the bridge: `process.kill()` on the
   already-reaped child raised `ProcessLookupError`, which escaped the
@@ -47,6 +53,7 @@ and deployment update channels.
   1 MB of HTML on the event loop; article extraction now parses the
   first 200 KB in a single pass via `html.parser`, off the event loop
   in `asyncio.to_thread` with a 5s timeout.
+>>>>>>> origin/main
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now
