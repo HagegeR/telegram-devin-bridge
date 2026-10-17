@@ -503,6 +503,15 @@ async def handle_command(
                 + v3_hint,
                 ephemeral=True,
             )
+        elif local and sender_id not in runtime.settings.admin_user_ids:
+            # every mode mutation steers the host session — not just the
+            # approval-skipping ones (a flip to ask/plan still reconfigures
+            # an admin's running agent)
+            await runtime.send_text(
+                message,
+                "⛔ This chat's session runs on the bridge host — admins only.",
+                ephemeral=True,
+            )
         elif value.casefold() in {"default", "off", "reset"}:
             runtime.store.update_chat_settings(conv_key, devin_mode=None)
             applied = ""
@@ -579,6 +588,12 @@ async def handle_command(
                 + "\n/model <slug> to set · /model default to reset",
                 ephemeral=True,
             )
+        elif sender_id not in runtime.settings.admin_user_ids:
+            await runtime.send_text(
+                message,
+                "⛔ This chat's session runs on the bridge host — admins only.",
+                ephemeral=True,
+            )
         elif value.casefold() in {"default", "off", "reset"}:
             runtime.store.update_chat_settings(conv_key, local_model=None)
             applied = ""
@@ -641,6 +656,12 @@ async def handle_command(
                 f"Thinking: {current or 'cli default'}"
                 + options_line
                 + "\n/think <level> to set · /think default to reset",
+                ephemeral=True,
+            )
+        elif sender_id not in runtime.settings.admin_user_ids:
+            await runtime.send_text(
+                message,
+                "⛔ This chat's session runs on the bridge host — admins only.",
                 ephemeral=True,
             )
         elif value.casefold() in {"default", "off", "reset"}:

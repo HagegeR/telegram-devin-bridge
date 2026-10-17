@@ -9584,15 +9584,29 @@ async def test_local_session_denied_for_non_admin(tmp_path: Path) -> None:
     await runtime.handle_user_turn(message("more"), "more")
     assert not sent
     assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    # an OPTIONS: button tap drives the session just like a typed turn
+    store.add_choice("c1", "222", "local:s1", 222, "yes", 50)
+    await runtime.handle_callback({
+        "id": "cb-opt",
+        "from": {"id": 111, "is_bot": False},
+        "message": {
+            "message_id": 50,
+            "chat": {"id": 222, "type": "private"},
+        },
+        "data": "c1",
+    })
+    assert not sent
+    assert "Admins only" in telegram.answers[-1]
     await runtime.handle_user_turn(message("more", user_id=900), "more")
     assert sent
     await runtime.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_detach_terminates_local_session(tmp_path: Path) -> None:
+async def test_detach_suspends_local_session(tmp_path: Path) -> None:
     # /new must not leave a detached agent running on the host — its
-    # permission prompts would have no conversation to surface in
+    # permission prompts would have no conversation to surface in; the
+    # process stops but the persisted session stays /resume-able
     store = Store(":memory:")
     store.save_conversation(
         conv_key="222",
@@ -9605,7 +9619,7 @@ async def test_detach_terminates_local_session(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
     killed: list[str] = []
-    runtime.local.terminate = (  # type: ignore[method-assign]
+    runtime.local.suspend = (  # type: ignore[method-assign]
         lambda sid: killed.append(sid) or _async(None)
     )
     conv = store.get_conversation("222")

@@ -1829,6 +1829,17 @@ class Bridge:
                     else "This permission request already expired."
                 )
             else:
+                if (
+                    is_local(session_id)
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    # option taps drive the session like a typed turn —
+                    # same host-access gate as messages
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — this session runs on the bridge host.",
+                    )
+                    return
                 self.store.update_conversation(
                     conv_key,
                     session_id,
@@ -2067,13 +2078,13 @@ class Bridge:
         self.clear_queued_turns(conversation.conv_key)
         if is_local(conversation.session_id):
             # a detached local session must not keep acting on the host —
-            # its permission prompts would have no conversation to
-            # surface in (and now fail closed, stalling the turn)
+            # suspend kills the process but keeps the CLI-persisted
+            # session so /resume can still load it
             try:
-                await self.local.terminate(conversation.session_id)
+                await self.local.suspend(conversation.session_id)
             except Exception:
                 logger.exception(
-                    "local terminate on detach failed for %s",
+                    "local suspend on detach failed for %s",
                     conversation.session_id,
                 )
         self.store.clear_conversation(
@@ -3045,13 +3056,15 @@ class Bridge:
                     default_playbook=None if value == "none" else value,
                 )
             elif field == "mode":
-                if (
+                if user_id not in self.settings.admin_user_ids and (
                     value in APPROVAL_SKIPPING_MODES
-                    and user_id not in self.settings.admin_user_ids
+                    or self.store.get_settings(conv_key).platform == "local"
                 ):
+                    # modes steer the host session — approval-skipping
+                    # ones even on cloud chats (they set for later)
                     await self.telegram.answer_callback_query(
                         callback_id,
-                        "Admins only — this mode skips permission prompts.",
+                        "Admins only — modes steer the local host session.",
                     )
                     return
                 self.store.update_chat_settings(
@@ -3068,6 +3081,15 @@ class Bridge:
                     except (KeyError, RuntimeError):
                         pass
             elif field == "model":
+                if (
+                    self.store.get_settings(conv_key).platform == "local"
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — models steer the local host session.",
+                    )
+                    return
                 self.store.update_chat_settings(
                     conv_key,
                     local_model=None if value == "default" else value,
@@ -3082,6 +3104,15 @@ class Bridge:
                     except (KeyError, RuntimeError):
                         pass
             elif field == "think":
+                if (
+                    self.store.get_settings(conv_key).platform == "local"
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — thinking levels steer the local host session.",
+                    )
+                    return
                 self.store.update_chat_settings(
                     conv_key,
                     thought_level=None if value == "default" else value,

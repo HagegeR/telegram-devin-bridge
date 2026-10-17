@@ -250,10 +250,12 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     `platform=local`, creating or messaging a local session (message
     turns, `/steer`, `/retry`, forwarded slash commands), and picking an
     approval-skipping mode (`bypass`, `smart`) all require the sender to
-    be in `TELEGRAM_ADMIN_USER_IDS` — a deployment with no admins
-    configured cannot use local sessions at all. `/new` terminates the
-    running local session rather than leaving a detached agent on the
-    host.
+    be in `TELEGRAM_ADMIN_USER_IDS` (that includes OPTIONS: button
+    taps and mode/model/thinking-level changes, which steer the host
+    session) — a deployment with no admins configured cannot use local
+    sessions at all. `/new` suspends the running local session's
+    process rather than leaving a detached agent on the host; the
+    persisted session stays resumable.
     `session/request_permission` prompts are surfaced as inline-keyboard
     buttons (`__cmd:perm:<b64url-json-request-id>:<option>` choices —
     the request id may be an int or any string, so it is encoded
@@ -277,9 +279,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     exits, even on cancellation, so probes never accumulate in
     `devin list`) and apply live via
     `session/set_mode` (reset maps to the CLI default `accept-edits`);
-    modes that skip permission prompts (`bypass`, `smart`) are
-    admin-only, in `/mode`, the `cfg:mode` submenu, and at session
-    create;
+    mode changes on a `platform=local` chat are admin-only in `/mode`
+    and the `cfg:mode` submenu, and approval-skipping modes (`bypass`,
+    `smart`) are admin-only everywhere;
     the submenu and `/mode` listing show the CLI's display names and
     descriptions (`mode` configOption options, e.g. `Smart — auto-approves
     safe actions`).

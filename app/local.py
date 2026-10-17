@@ -1040,6 +1040,14 @@ class LocalClient:
         self.sessions.clear()
         self._resuming.clear()
 
+    async def suspend(self, session_id: str) -> None:
+        """Stop the acp process without deleting the persisted session —
+        a detached session stops acting on the host but stays
+        resumable, unlike terminate which removes its record."""
+        sess = self.sessions.pop(session_id, None)
+        if sess is not None:
+            await self._reap(sess)
+
     async def terminate(self, session_id: str) -> None:
         sess = self.sessions.pop(session_id, None)
         self._terminated.add(session_id)
