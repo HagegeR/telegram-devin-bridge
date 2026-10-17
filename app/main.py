@@ -117,7 +117,10 @@ async def _run_command(
     try:
         stdout, _ = await asyncio.wait_for(process.communicate(), 300)
     except TimeoutError:
-        process.kill()
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass  # exited in the same instant the timeout fired
         await process.wait()
         return 124, "timed out after 300s"
     return process.returncode or 0, stdout.decode(errors="replace")

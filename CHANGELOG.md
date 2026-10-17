@@ -10,6 +10,11 @@ and deployment update channels.
 
 ### Fixed
 
+- A subprocess that exits in the same instant `_run_command`'s 300s
+  timeout fires no longer crashes the bridge: `process.kill()` on the
+  already-reaped child raised `ProcessLookupError`, which escaped the
+  `/update` handler and killed the app (supervisor respawned it; seen in
+  the production log as an unhandled traceback).
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now
