@@ -72,14 +72,15 @@ def extract_urls(text: str) -> list[str]:
     return urls
 
 
-_NONCANONICAL_NUMERIC_RE = re.compile(r"[0-9a-fx.]+")
+async def _resolve_ips(hostname: str) -> list[str]:
+    infos = await asyncio.get_running_loop().getaddrinfo(hostname, None)
+    return [info[4][0] for info in infos]
 
 
 async def _vetted_ip(hostname: str) -> str | None:
     """Resolve a hostname and return an IP only when every address is global."""
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(hostname, None)
-        ips = [ipaddress.ip_address(info[4][0]) for info in infos]
+        ips = [ipaddress.ip_address(addr) for addr in await _resolve_ips(hostname)]
     except (OSError, UnicodeError, ValueError):
         return None
     if not ips or not all(ip.is_global for ip in ips):
@@ -113,21 +114,19 @@ async def _pinned_request(url: str) -> tuple[str, str, str] | None:
             return None
         ip = str(literal)
     else:
-        host_cf = host.casefold()
-        # Reject OS-resolver numeric forms ipaddress won't parse
-        # (2130706433, 127.1, 0x7f.1, ...): they would connect to IPv4s.
-        if (
-            host_cf in {"localhost", "localhost.localdomain"}
-            or (
-                _NONCANONICAL_NUMERIC_RE.fullmatch(host_cf) is not None
-                and any(c.isdigit() for c in host_cf)
-            )
-        ):
-            return None
+        # getaddrinfo also parses the OS-resolver numeric forms
+        # (2130706433, 127.1, 0x7f.1), so private spellings of IPv4
+        # and names resolving to private addresses are caught here.
         ip = await _vetted_ip(host)
         if ip is None:
             return None
-    netloc = f"[{ip}]" if ":" in ip else ip
+    userinfo = ""
+    if parsed.username is not None:
+        userinfo = parsed.username
+        if parsed.password is not None:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    netloc = f"{userinfo}{f'[{ip}]' if ':' in ip else ip}"
     if port is not None:
         netloc += f":{port}"
     default_port = 443 if parsed.scheme == "https" else 80
