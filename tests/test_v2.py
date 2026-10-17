@@ -744,6 +744,9 @@ async def test_secrets_acu_and_flag_settings_submenus(tmp_path: Path) -> None:
     assert store.get_settings("222").acu_limit is None
     await runtime.handle_callback({**callback, "id": "c5d", "data": "cfg:acu:0"})
     assert store.get_settings("222").acu_limit is None
+    # superscript ² passes isdigit() but not isdecimal()/int()
+    await runtime.handle_callback({**callback, "id": "c5e", "data": "cfg:acu:²"})
+    assert store.get_settings("222").acu_limit is None
     await runtime.handle_callback({**callback, "id": "c6", "data": "cfg:unlisted:on"})
     assert store.get_settings("222").unlisted is True
     await runtime.handle_callback({**callback, "id": "c7", "data": "cfg:idempotent:off"})
@@ -841,6 +844,18 @@ async def test_devin_client_create_session_clamps_acu_limit() -> None:
     await devin.create_session("p", None, acu_limit=0)
     assert bodies[0]["max_acu_limit"] == MAX_ACU_LIMIT
     assert bodies[1]["max_acu_limit"] == 1
+    await devin.close()
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        5000,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    await devin.create_session("p", None)
+    assert bodies[2]["max_acu_limit"] == MAX_ACU_LIMIT
     await devin.close()
 
 

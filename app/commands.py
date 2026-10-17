@@ -684,7 +684,7 @@ async def handle_command(
                 "ACU limit reset — new sessions use the org default.",
                 ephemeral=True,
             )
-        elif value.isdigit() and 0 < int(value) <= MAX_ACU_LIMIT:
+        elif value.isdecimal() and 0 < int(value) <= MAX_ACU_LIMIT:
             runtime.store.update_chat_settings(conv_key, acu_limit=int(value))
             await runtime.send_text(
                 message,

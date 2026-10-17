@@ -3067,7 +3067,7 @@ class Bridge:
             elif field == "acu":
                 if value == "default":
                     acu_limit = None
-                elif value.isdigit() and 0 < int(value) <= MAX_ACU_LIMIT:
+                elif value.isdecimal() and 0 < int(value) <= MAX_ACU_LIMIT:
                     acu_limit = int(value)
                 else:
                     await self.telegram.answer_callback_query(
