@@ -158,7 +158,8 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 - `/retry` – resend the last user text stored on the conversation (add column `last_user_text`).
 - `/repos [a/b,c/d]` – per-chat repo restriction for new sessions (`/repos all` resets). Names are validated against `DevinClient.repos()` — the org's connected repos from `GET /v3beta1/organizations/{org}/repositories`, cached 5 min; an empty fetch means "couldn't verify" and is accepted. The `/settings` 📂 Repos submenu toggles repos from that same list (✓ marks selected, "all repos" resets; names whose callback would exceed Telegram's 64-byte `callback_data` cap are skipped).
 - `/platform [name]` – per-chat session placement for new sessions: an outpost pool name or a hosted platform label, passed as `platform` to the v3 create-session call (`/platform default` resets to the org default; v1 deployments warn-and-ignore). Also surfaced as the 🖥 Platform row in `/settings`, whose submenu lists every platform label + outpost pool the org accepts — enumerated by `DevinClient.platforms()` by parsing the create-session 400 body once (same trick as `devin_modes()`'s 422 probe).
-  - `/platform local` (prototype) routes new sessions to a **local-CLI
+  - `/platform local` (prototype, **admins only**) routes new sessions to
+    a **local-CLI
     backend** (`app/local.py`): each session is a `devin acp` subprocess on
     the bridge host speaking ACP JSON-RPC over stdio (`initialize` +
     `session/new`, prompts via `session/prompt`, replies collected from
@@ -245,15 +246,25 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     storage — ACP has no file channel — so photos/documents are saved
     under `DEVIN_LOCAL_CWD/attachments/` and the prompt hands the agent
     the host path (`Attached file: <path> — saved on the bridge host`).
+    The whole backend is an admin privilege tier: setting
+    `platform=local`, creating or messaging a local session (message
+    turns, `/steer`, `/retry`, forwarded slash commands), and picking an
+    approval-skipping mode (`bypass`, `smart`) all require the sender to
+    be in `TELEGRAM_ADMIN_USER_IDS` — a deployment with no admins
+    configured cannot use local sessions at all. `/new` terminates the
+    running local session rather than leaving a detached agent on the
+    host.
     `session/request_permission` prompts are surfaced as inline-keyboard
     buttons (`__cmd:perm:<b64url-json-request-id>:<option>` choices —
     the request id may be an int or any string, so it is encoded
     verbatim — restricted to
     `TELEGRAM_ADMIN_USER_IDS` when configured) and the picked option
     is written back to the acp process; when the prompt can't be sent
-    (no conversation, send failure) the allow option is auto-picked so the
-    turn never stalls, the same answer used for every request when no
-    approval hook is installed. Choice cleanup is scoped to the tapped
+    (no conversation, send failure) the request **fails closed** — the
+    reject option is picked, or the ACP `cancelled` outcome when no
+    reject exists — so an unreviewable host action never runs. When no
+    approval hook is installed at all, every request is still
+    auto-allowed (the no-hook prototype path). Choice cleanup is scoped to the tapped
     message (and `delete_choices` skips `__cmd:perm:` rows), so answering
     one prompt never expires another still-pending request. The
     service-user key is sent as a
@@ -266,6 +277,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     exits, even on cancellation, so probes never accumulate in
     `devin list`) and apply live via
     `session/set_mode` (reset maps to the CLI default `accept-edits`);
+    modes that skip permission prompts (`bypass`, `smart`) are
+    admin-only, in `/mode`, the `cfg:mode` submenu, and at session
+    create;
     the submenu and `/mode` listing show the CLI's display names and
     descriptions (`mode` configOption options, e.g. `Smart — auto-approves
     safe actions`).

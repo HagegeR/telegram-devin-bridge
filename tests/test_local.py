@@ -1,4 +1,6 @@
 import asyncio
+import io
+import json
 import os
 import sys
 import textwrap
@@ -9,6 +11,7 @@ import pytest_asyncio
 
 from app.local import (
     LocalClient,
+    _AcpSession,
     _clean_reason,
     _exit_detail,
     _kill,
@@ -592,6 +595,44 @@ async def test_permission_routed_to_hook(
     await _wait_for(shell_client, session_id, "granted: reject")
     # answered once — a second answer reports the request is gone
     assert shell_client.answer_permission(session_id, 9000, "allow") is None
+
+
+@pytest.mark.asyncio
+async def test_reject_permission_fails_closed(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the bridge's fail-closed path picks the reject option — the CLI
+    # sees a real denial, not an implicit allow
+    monkeypatch.setenv("FAKE_PERMISSION", "1")
+    seen: list[tuple[str, dict]] = []
+    shell_client.on_permission = lambda sid, msg: seen.append((sid, msg))
+    session_id, _ = await shell_client.create_session("hello")
+    for _ in range(50):
+        if seen:
+            break
+        await asyncio.sleep(0.1)
+    assert seen
+    shell_client.reject_permission(session_id, 9000)
+    await _wait_for(shell_client, session_id, "granted: reject")
+    # consumed once — a second reject is a no-op
+    shell_client.reject_permission(session_id, 9000)
+
+
+def test_deny_permission_without_reject_option_cancels(tmp_path: Path) -> None:
+    # a request whose options carry no reject choice must still fail
+    # closed: answer with the ACP cancelled outcome
+    proc = type("P", (), {"stdin": io.BytesIO()})()
+    sess = _AcpSession(proc=proc, acp_id="x")  # type: ignore[arg-type]
+    client = LocalClient(cli_command="devin", cwd=str(tmp_path))
+    client._deny_permission(
+        sess,
+        7,
+        {"params": {"options": [{"optionId": "allow", "name": "Allow"}]}},
+    )
+    proc.stdin.seek(0)
+    written = json.loads(proc.stdin.readline())
+    assert written["id"] == 7
+    assert written["result"]["outcome"] == {"outcome": "cancelled"}
 
 
 def test_save_attachment_writes_on_host(tmp_path: Path) -> None:

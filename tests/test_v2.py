@@ -9476,6 +9476,189 @@ async def test_permission_prompt_non_admin_tap_preserves_buttons(
 
 
 @pytest.mark.asyncio
+async def test_platform_local_is_admin_only(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_admin_user_ids="900",
+            telegram_allowed_users="111,900",
+        ),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    # command and settings-button paths both refuse non-admins
+    await handle_command(runtime, message("/platform local"), "/platform local")
+    assert store.get_settings("222").platform is None
+    assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    await runtime.handle_callback({
+        "id": "cfg-p",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+        "data": "cfg:platform:local",
+    })
+    assert store.get_settings("222").platform is None
+    assert "Admins only" in telegram.answers[-1]
+    await handle_command(
+        runtime,
+        message("/platform local", user_id=900),
+        "/platform local",
+    )
+    assert store.get_settings("222").platform == "local"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_approval_skipping_modes_are_admin_only(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_admin_user_ids="900",
+            telegram_allowed_users="111,900",
+        ),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    await handle_command(runtime, message("/mode bypass"), "/mode bypass")
+    assert store.get_settings("222").devin_mode is None
+    assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    await runtime.handle_callback({
+        "id": "cfg-m",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+        "data": "cfg:mode:smart",
+    })
+    assert store.get_settings("222").devin_mode is None
+    assert "Admins only" in telegram.answers[-1]
+    # prompting modes stay open to everyone
+    await handle_command(runtime, message("/mode fast"), "/mode fast")
+    assert store.get_settings("222").devin_mode == "fast"
+    await runtime.handle_callback({
+        "id": "cfg-m2",
+        "from": {"id": 900, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+        "data": "cfg:mode:bypass",
+    })
+    assert store.get_settings("222").devin_mode == "bypass"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_local_session_denied_for_non_admin(tmp_path: Path) -> None:
+    # even when an admin set platform=local, only admins may create or
+    # drive a host session — otherwise any chat member gets host access
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_admin_user_ids="900",
+            telegram_allowed_users="111,900",
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    runtime._is_finished = lambda _sid: _async(False)  # type: ignore[method-assign]
+    runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+    store.update_settings("222", platform="local")
+    created: list[object] = []
+    runtime.local.create_session = (  # type: ignore[method-assign]
+        lambda *a, **k: created.append(a) or _async(("local:s1", "local"))
+    )
+    sent: list[tuple[str, str]] = []
+    runtime.local.send_message = (  # type: ignore[method-assign]
+        lambda s, t: sent.append((s, t)) or _async(None)
+    )
+    await runtime.handle_user_turn(message("hi"), "hi")
+    assert not created
+    assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    await runtime.handle_user_turn(message("hi", user_id=900), "hi")
+    assert created
+    await runtime.handle_user_turn(message("more"), "more")
+    assert not sent
+    assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    await runtime.handle_user_turn(message("more", user_id=900), "more")
+    assert sent
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_detach_terminates_local_session(tmp_path: Path) -> None:
+    # /new must not leave a detached agent running on the host — its
+    # permission prompts would have no conversation to surface in
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    killed: list[str] = []
+    runtime.local.terminate = (  # type: ignore[method-assign]
+        lambda sid: killed.append(sid) or _async(None)
+    )
+    conv = store.get_conversation("222")
+    assert conv is not None
+    await runtime.detach_conversation(conv)
+    assert killed == ["local:s1"]
+    assert store.get_conversation("222") is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_permission_prompt_fails_closed(tmp_path: Path) -> None:
+    # no mapped conversation, or a failed prompt delivery -> the request
+    # is rejected, never auto-allowed
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    rejected: list[tuple[str, object]] = []
+    runtime.local.reject_permission = (  # type: ignore[method-assign]
+        lambda s, r: rejected.append((s, r))
+    )
+    msg = {
+        "id": 9,
+        "params": {
+            "toolCall": {"title": "Run rm -rf"},
+            "options": [
+                {"optionId": "allow", "name": "Allow"},
+                {"optionId": "reject", "name": "Reject"},
+            ],
+        },
+    }
+    await runtime._send_permission_prompt("local:detached", msg)
+    assert rejected == [("local:detached", 9)]
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+
+    async def boom(*_a: object, **_k: object) -> list[dict[str, object]]:
+        raise RuntimeError("blocked")
+
+    runtime.telegram.send_markdown = boom  # type: ignore[method-assign]
+    rejected.clear()
+    await runtime._send_permission_prompt("local:s1", msg)
+    assert rejected == [("local:s1", 9)]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_sessions_merges_cli_session_db(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.add_history(

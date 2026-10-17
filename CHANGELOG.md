@@ -8,6 +8,20 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Security
+
+- The local-CLI backend is now an admin-only privilege tier: setting
+  `/platform local` (command or `cfg:platform` settings button),
+  creating or messaging a local session (turns, `/steer`, `/retry`,
+  forwarded slash commands), and selecting an approval-skipping mode
+  (`bypass`, `smart`) all require `TELEGRAM_ADMIN_USER_IDS` membership.
+  Deployments with no admins configured cannot run local sessions.
+- Local ACP permission prompts now fail closed: when no conversation is
+  mapped or the Telegram prompt can't be delivered, the request is
+  answered with the reject option (or the ACP cancelled outcome)
+  instead of being auto-allowed. `/new` also terminates the running
+  local session, so a detached agent can't keep acting on the host.
+
 ### Fixed
 
 - A local session whose `devin acp` subprocess stayed alive but stopped
