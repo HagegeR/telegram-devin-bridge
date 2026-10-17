@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v3.0.0] - 2026-10-17
+
 ### Security
 
 - The local-CLI backend is now an admin-only privilege tier: setting
