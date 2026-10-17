@@ -10,6 +10,24 @@ and deployment update channels.
 
 ## [v3.0.0] - 2026-10-18
 
+### Breaking
+
+- **The local-CLI backend is an admin-only privilege tier now.** Setting
+  `/platform local`, creating or messaging a local session,
+  OPTIONS:/`cfg:platform` button taps, `/steer`, `/retry`, forwarded
+  slash commands, and local mode/model/thinking changes all check the
+  admin list; `bypass`/`smart` modes are admin-only on every chat.
+  **Upgrade action:** set `TELEGRAM_ADMIN_USER_IDS` to the
+  comma-separated Telegram user IDs allowed to run local sessions. If it
+  stays empty the admin list falls back to `TELEGRAM_ALLOWED_USERS`, so
+  every allowed user keeps local access — the tier only restricts once
+  you name it.
+- **Local permission prompts fail closed.** A prompt that can't be
+  delivered to a chat is rejected instead of auto-allowed — unattended
+  local turns can now stop where they previously proceeded.
+- **`/new` suspends the running local session's process** instead of
+  leaving it detached (the session stays resumable).
+
 ### Security
 
 - The local-CLI backend is now an admin-only privilege tier: setting
@@ -18,7 +36,9 @@ and deployment update channels.
   `/steer`, `/retry`, forwarded slash commands), and changing its
   mode/model/thinking level all require `TELEGRAM_ADMIN_USER_IDS`
   membership (`bypass`/`smart` modes are admin-only on every chat).
-  Deployments with no admins configured cannot run local sessions.
+  `TELEGRAM_ADMIN_USER_IDS` left empty falls back to
+  `TELEGRAM_ALLOWED_USERS` — every allowed user keeps local access, so
+  the tier only restricts once the admin list is named.
 - Local ACP permission prompts now fail closed: when no conversation is
   mapped or the Telegram prompt can't be delivered, the request is
   answered with the reject option (or the ACP cancelled outcome)
