@@ -17,6 +17,15 @@ and deployment update channels.
   past 16MB are dropped (settling any pending turn they answered), and
   the scrubbing regex is replaced by a linear token scan so credential
   names of any length still mask (200KB input: ~105s → ~2ms).
+- A forged `cfg:acu:<n>` settings callback could store any integer (or crash
+  on non-numeric input), bypassing the `/acu` 1-1000 bound and lifting the
+  per-session ACU cap; the callback now validates like `/acu` and
+  `DevinClient.create_session` clamps the value to 1-1000 before sending.
+- A crafted page of unclosed tags could stall the whole bridge for
+  minutes when the `article` crawler ran quadratic regexes over up to
+  1 MB of HTML on the event loop; article extraction now parses the
+  first 200 KB in a single pass via `html.parser`, off the event loop
+  in `asyncio.to_thread` with a 5s timeout.
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now
