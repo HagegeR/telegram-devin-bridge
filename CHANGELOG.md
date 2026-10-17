@@ -57,6 +57,12 @@ and deployment update channels.
   after a restart) no longer takes the callback handler's error path:
   Telegram's `query is too old` rejection of the cosmetic ack is now a
   warning instead of a "Failed to process Telegram update" traceback.
+- One transient error (a timed-out Telegram edit, a Devin API flap) no
+  longer kills a session watcher mid-turn — previously the conversation
+  stopped streaming replies until the janitor's 10-minute backlog probe
+  or the user's next message, and a bogus "Couldn't reach Devin" plus a
+  👎 expired mark landed on the turn. The poll loop now retries up to 5
+  consecutive failures before reporting.
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now
