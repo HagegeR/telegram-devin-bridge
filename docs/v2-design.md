@@ -158,7 +158,8 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 - `/retry` – resend the last user text stored on the conversation (add column `last_user_text`).
 - `/repos [a/b,c/d]` – per-chat repo restriction for new sessions (`/repos all` resets). Names are validated against `DevinClient.repos()` — the org's connected repos from `GET /v3beta1/organizations/{org}/repositories`, cached 5 min; an empty fetch means "couldn't verify" and is accepted. The `/settings` 📂 Repos submenu toggles repos from that same list (✓ marks selected, "all repos" resets; names whose callback would exceed Telegram's 64-byte `callback_data` cap are skipped).
 - `/platform [name]` – per-chat session placement for new sessions: an outpost pool name or a hosted platform label, passed as `platform` to the v3 create-session call (`/platform default` resets to the org default; v1 deployments warn-and-ignore). Also surfaced as the 🖥 Platform row in `/settings`, whose submenu lists every platform label + outpost pool the org accepts — enumerated by `DevinClient.platforms()` by parsing the create-session 400 body once (same trick as `devin_modes()`'s 422 probe).
-  - `/platform local` (prototype) routes new sessions to a **local-CLI
+  - `/platform local` (prototype, **admins only**) routes new sessions to
+    a **local-CLI
     backend** (`app/local.py`): each session is a `devin acp` subprocess on
     the bridge host speaking ACP JSON-RPC over stdio (`initialize` +
     `session/new`, prompts via `session/prompt`, replies collected from
@@ -245,15 +246,27 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     storage — ACP has no file channel — so photos/documents are saved
     under `DEVIN_LOCAL_CWD/attachments/` and the prompt hands the agent
     the host path (`Attached file: <path> — saved on the bridge host`).
+    The whole backend is an admin privilege tier: setting
+    `platform=local`, creating or messaging a local session (message
+    turns, `/steer`, `/retry`, forwarded slash commands), and picking an
+    approval-skipping mode (`bypass`, `smart`) all require the sender to
+    be in `TELEGRAM_ADMIN_USER_IDS` (that includes OPTIONS: button
+    taps and mode/model/thinking-level changes, which steer the host
+    session) — a deployment with no admins configured cannot use local
+    sessions at all. `/new` suspends the running local session's
+    process rather than leaving a detached agent on the host; the
+    persisted session stays resumable.
     `session/request_permission` prompts are surfaced as inline-keyboard
     buttons (`__cmd:perm:<b64url-json-request-id>:<option>` choices —
     the request id may be an int or any string, so it is encoded
     verbatim — restricted to
     `TELEGRAM_ADMIN_USER_IDS` when configured) and the picked option
     is written back to the acp process; when the prompt can't be sent
-    (no conversation, send failure) the allow option is auto-picked so the
-    turn never stalls, the same answer used for every request when no
-    approval hook is installed. Choice cleanup is scoped to the tapped
+    (no conversation, send failure) the request **fails closed** — the
+    reject option is picked, or the ACP `cancelled` outcome when no
+    reject exists — so an unreviewable host action never runs. When no
+    approval hook is installed at all, every request is still
+    auto-allowed (the no-hook prototype path). Choice cleanup is scoped to the tapped
     message (and `delete_choices` skips `__cmd:perm:` rows), so answering
     one prompt never expires another still-pending request. The
     service-user key is sent as a
@@ -266,6 +279,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     exits, even on cancellation, so probes never accumulate in
     `devin list`) and apply live via
     `session/set_mode` (reset maps to the CLI default `accept-edits`);
+    mode changes on a `platform=local` chat are admin-only in `/mode`
+    and the `cfg:mode` submenu, and approval-skipping modes (`bypass`,
+    `smart`) are admin-only everywhere;
     the submenu and `/mode` listing show the CLI's display names and
     descriptions (`mode` configOption options, e.g. `Smart — auto-approves
     safe actions`).
@@ -291,13 +307,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     `current_mode_update` tracked per session, rendered as
     `local: mode X · model Y · thought_level Z`).
 - `/mode [name]` – per-chat Devin mode for new sessions (`/mode default` resets). No-arg prints the current mode plus `Available: …` from `DevinClient.devin_modes()`; a name not in that list is rejected with `Unknown mode` (empty probe = accepted, Devin arbitrates). Same option list as the /settings 🤖 Devin mode submenu.
-- `/acu [n]` – per-chat `max_acu_limit` for new sessions (`/acu default` resets). `/settings` ⚡ ACU limit submenu offers preset values.
+- `/acu [n]` – per-chat `max_acu_limit` for new sessions, 1-1000 (`/acu default` resets). `/settings` ⚡ ACU limit submenu offers preset values; the value is clamped to 1-1000 before it is sent.
 - `/tags [a,b]` – extra tags merged into `tags` on create (`telegram-bridge` is always included; `/tags clear` resets).
 - `/secrets [KEY,KEY2]` – per-chat secrets for new sessions, given as secret *keys*; resolved to IDs via `DevinClient.secrets()` (`GET /v3/organizations/{org}/secrets`, cached 5 min) and stored as `secret_ids`. `/settings` 🔑 Secrets submenu toggles them (✓ marks selected; ids whose callback would exceed the 64-byte `callback_data` cap are skipped). Unknown keys are rejected; `/secrets clear` resets.
 - `/knowledge [id,id]` – per-chat `knowledge_ids` for new sessions (free-text IDs; no list endpoint exists, so no validation or submenu; `/knowledge clear` resets).
 - `/snapshot [id]` – per-chat `snapshot_id` (environment snapshot) for new sessions (same free-text caveat; `/snapshot clear` resets).
 - `unlisted` / `idempotent` – tri-state (inherit/on/off) per-chat flags toggled in `/settings` (👁 Unlisted, 🔁 Idempotent rows), passed through to create-session when set.
-- `/crawl` – show which site crawlers are active (read-only). The active set is bridge-wide: `CRAWL_SITES` env is the default, and the `/settings` 🔎 Pre-crawl submenu overrides it live via the `settings` table key `crawl_sites` (a csv; empty = off; deleting the key reverts to env; toggles are admin-only — `TELEGRAM_ADMIN_USER_IDS`, falling back to all allowed users when unset). When enabled, URLs in a user message matching an enabled crawler (`app/crawlers.py`: `instagram` via the oEmbed API — caption + cover image; `article` — generic HTML title/description/body, preferring `<article>`/`<main>`) are fetched in the bridge before the turn reaches Devin: extracted text is appended to the prompt as `[Crawled <site>: <url>]` blocks and media is uploaded as session attachments. Up to 3 crawler-owned URLs per message; fetches stream with a body cap and re-vet the host on every redirect hop (DNS-resolved, all addresses required global, non-canonical numeric hosts rejected) and connect to the resolved IP with the original name kept as SNI/Host; failures are skipped silently.
+- `/crawl` – show which site crawlers are active (read-only). The active set is bridge-wide: `CRAWL_SITES` env is the default, and the `/settings` 🔎 Pre-crawl submenu overrides it live via the `settings` table key `crawl_sites` (a csv; empty = off; deleting the key reverts to env; toggles are admin-only — `TELEGRAM_ADMIN_USER_IDS`, falling back to all allowed users when unset). When enabled, URLs in a user message matching an enabled crawler (`app/crawlers.py`: `instagram` via the oEmbed API — caption + cover image; `article` — generic HTML title/description/body, preferring `<article>`/`<main>`) are fetched in the bridge before the turn reaches Devin: extracted text is appended to the prompt as `[Crawled <site>: <url>]` blocks and media is uploaded as session attachments. Up to 3 crawler-owned URLs per message; fetches stream with a body cap and re-vet the host on every redirect hop (DNS-resolved, all addresses required global) and connect to the resolved IP with the original name kept as SNI/Host; article HTML is parsed single-pass (`html.parser`) off the event loop in `asyncio.to_thread` — first 200 KB only, 5s timeout — so a hostile page can't stall the bridge; failures are skipped silently.
 - `/whoami` – user id, chat id, thread id, allowed yes/no, is-home yes/no.
 - `/sethome` – store chat/thread as home (allowed users only). Reply confirms.
 - `/commands` – category → command browser for local CLI slash commands (tap-to-run needs an active local session; browsing works on any chat).

@@ -32,7 +32,7 @@ from app.admin import _sanitize_update_output, drain_tasks, register_admin_route
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.crawlers import CRAWLER_NAMES, crawl_text
-from app.devin import DevinClient, Playbook, SessionState
+from app.devin import MAX_ACU_LIMIT, DevinClient, Playbook, SessionState
 from app.doctor import register_doctor_route
 from app.formatting import (
     chunk,
@@ -41,7 +41,13 @@ from app.formatting import (
     rich_paragraph,
     split_long_text,
 )
-from app.local import MODEL_TIER_ICONS, LocalClient, is_local, sort_models
+from app.local import (
+    APPROVAL_SKIPPING_MODES,
+    MODEL_TIER_ICONS,
+    LocalClient,
+    is_local,
+    sort_models,
+)
 from app.notify import register_notify_route
 from app.polling import run_polling
 from app.set_webhook import chat_commands, configure_bot
@@ -117,7 +123,10 @@ async def _run_command(
     try:
         stdout, _ = await asyncio.wait_for(process.communicate(), 300)
     except TimeoutError:
-        process.kill()
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass  # exited in the same instant the timeout fired
         await process.wait()
         return 124, "timed out after 300s"
     return process.returncode or 0, stdout.decode(errors="replace")
@@ -1045,7 +1054,7 @@ class Bridge:
 
     def _on_local_permission(self, session_id: str, msg: dict) -> None:
         if self.shutting_down:
-            self.local.answer_permission(session_id, msg.get("id"), None)
+            self.local.reject_permission(session_id, msg.get("id"))
             return
         task = asyncio.create_task(self._send_permission_prompt(session_id, msg))
         self.background_tasks.add(task)
@@ -1053,14 +1062,15 @@ class Bridge:
 
     async def _send_permission_prompt(self, session_id: str, msg: dict) -> None:
         """Surface an ACP session/request_permission as approve/reject
-        buttons; falls back to auto-allow when no conv or the send fails
-        so the turn never stalls on an invisible prompt."""
+        buttons; fails closed (reject/cancel) when no conversation is
+        mapped or the prompt can't be delivered — an unreviewable host
+        action must never be auto-allowed."""
         # ACP request ids may be UUID strings, not ints — echo verbatim
         req_id = msg.get("id")
         conv = self.store.get_conversation_for_session(session_id)
         options = self.local.permission_options(msg)
         if conv is None or not options:
-            self.local.answer_permission(session_id, req_id, None)
+            self.local.reject_permission(session_id, req_id)
             return
         tool = _mapping(_mapping(msg.get("params")).get("toolCall"))
         what = str(tool.get("title") or tool.get("kind") or "an action")
@@ -1080,7 +1090,7 @@ class Bridge:
                 reply_markup=markup,
             )
         except (httpx.HTTPError, RuntimeError):
-            self.local.answer_permission(session_id, req_id, None)
+            self.local.reject_permission(session_id, req_id)
             return
         message_id = _sent_message_id(results)
         # b64url(JSON) keeps any JSON id type verbatim through callback_data
@@ -1307,6 +1317,20 @@ class Bridge:
         # cloud must upload, not save a host path the cloud can't read
         if conversation is not None and await self._is_finished(conversation.session_id):
             conversation = None
+        if (
+            conversation is not None
+            and is_local(conversation.session_id)
+            and _int(_mapping(message.get("from")).get("id"))
+            not in self.settings.admin_user_ids
+        ):
+            # a local session executes agent turns on the bridge host —
+            # only admins may drive one, whoever owns the chat
+            await self.send_text(
+                message,
+                "⛔ This chat's session runs on the bridge host — admins only.",
+                silent=True,
+            )
+            return
         if attachment is not None:
             filename, content, content_type = attachment
             # sender-controlled filenames go straight into the prompt —
@@ -1368,6 +1392,8 @@ class Bridge:
                 start_watcher=False,
                 keep_queued=True,
             )
+            if conversation is None:
+                return
             if thread_id is not None and (chat_id, thread_id) in self.implicit_topics:
                 # a pending generated title renames the topic itself once
                 # it arrives — naming it from the first prompt line would
@@ -1445,7 +1471,7 @@ class Bridge:
         last_user_text: str | None = None,
         start_watcher: bool = True,
         keep_queued: bool = False,
-    ) -> Conversation:
+    ) -> Conversation | None:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
         thread_id = _thread_id(message)
@@ -1459,6 +1485,16 @@ class Bridge:
             prompt = f"{extra}\n\n{prompt}"
         conv_settings = self.store.get_settings(conv_key)
         if conv_settings.platform == "local":
+            sender_id = _int(_mapping(message.get("from")).get("id"))
+            if sender_id not in self.settings.admin_user_ids:
+                # the local backend runs devin acp on the bridge host —
+                # admin-only, regardless of who configured the chat
+                await self.send_text(
+                    message,
+                    "⛔ Local sessions run on the bridge host — admins only.",
+                    silent=True,
+                )
+                return None
             # local CLI sessions don't take the cloud session options
             ignored = [
                 name
@@ -1796,6 +1832,17 @@ class Bridge:
                     else "This permission request already expired."
                 )
             else:
+                if (
+                    is_local(session_id)
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    # option taps drive the session like a typed turn —
+                    # same host-access gate as messages
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — this session runs on the bridge host.",
+                    )
+                    return
                 self.store.update_conversation(
                     conv_key,
                     session_id,
@@ -2032,6 +2079,17 @@ class Bridge:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         self.clear_queued_turns(conversation.conv_key)
+        if is_local(conversation.session_id):
+            # a detached local session must not keep acting on the host —
+            # suspend kills the process but keeps the CLI-persisted
+            # session so /resume can still load it
+            try:
+                await self.local.suspend(conversation.session_id)
+            except Exception:
+                logger.exception(
+                    "local suspend on detach failed for %s",
+                    conversation.session_id,
+                )
         self.store.clear_conversation(
             conversation.conv_key,
             conversation.session_id,
@@ -3001,6 +3059,17 @@ class Bridge:
                     default_playbook=None if value == "none" else value,
                 )
             elif field == "mode":
+                if user_id not in self.settings.admin_user_ids and (
+                    value in APPROVAL_SKIPPING_MODES
+                    or self.store.get_settings(conv_key).platform == "local"
+                ):
+                    # modes steer the host session — approval-skipping
+                    # ones even on cloud chats (they set for later)
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — modes steer the local host session.",
+                    )
+                    return
                 self.store.update_chat_settings(
                     conv_key,
                     devin_mode=None if value == "default" else value,
@@ -3015,6 +3084,15 @@ class Bridge:
                     except (KeyError, RuntimeError):
                         pass
             elif field == "model":
+                if (
+                    self.store.get_settings(conv_key).platform == "local"
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — models steer the local host session.",
+                    )
+                    return
                 self.store.update_chat_settings(
                     conv_key,
                     local_model=None if value == "default" else value,
@@ -3029,6 +3107,15 @@ class Bridge:
                     except (KeyError, RuntimeError):
                         pass
             elif field == "think":
+                if (
+                    self.store.get_settings(conv_key).platform == "local"
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — thinking levels steer the local host session.",
+                    )
+                    return
                 self.store.update_chat_settings(
                     conv_key,
                     thought_level=None if value == "default" else value,
@@ -3059,16 +3146,31 @@ class Bridge:
                         repos=",".join(sorted(selected)) or None,
                     )
             elif field == "platform":
+                if (
+                    value == "local"
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — local runs on the bridge host.",
+                    )
+                    return
                 self.store.update_chat_settings(
                     conv_key,
                     platform=None if value == "default" else value,
                 )
                 await self.push_chat_menu(chat_id)
             elif field == "acu":
-                self.store.update_chat_settings(
-                    conv_key,
-                    acu_limit=None if value == "default" else int(value),
-                )
+                if value == "default":
+                    acu_limit = None
+                elif value.isdecimal() and 0 < int(value) <= MAX_ACU_LIMIT:
+                    acu_limit = int(value)
+                else:
+                    await self.telegram.answer_callback_query(
+                        callback_id, f"ACU limit must be 1-{MAX_ACU_LIMIT}"
+                    )
+                    return
+                self.store.update_chat_settings(conv_key, acu_limit=acu_limit)
             elif field == "secrets":
                 # Attaching org secrets exposes them to the session —
                 # same admin gate as pre-crawl toggles.

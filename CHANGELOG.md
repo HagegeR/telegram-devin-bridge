@@ -8,13 +8,52 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Security
+
+- The local-CLI backend is now an admin-only privilege tier: setting
+  `/platform local` (command or `cfg:platform` settings button),
+  creating or messaging a local session (turns, OPTIONS: button taps,
+  `/steer`, `/retry`, forwarded slash commands), and changing its
+  mode/model/thinking level all require `TELEGRAM_ADMIN_USER_IDS`
+  membership (`bypass`/`smart` modes are admin-only on every chat).
+  Deployments with no admins configured cannot run local sessions.
+- Local ACP permission prompts now fail closed: when no conversation is
+  mapped or the Telegram prompt can't be delivered, the request is
+  answered with the reject option (or the ACP cancelled outcome)
+  instead of being auto-allowed. `/new` also suspends the running local
+  session's process, so a detached agent can't keep acting on the host
+  (the session stays resumable).
+
 ### Fixed
 
 - The `/crawl` SSRF guard no longer trusts hostnames: crawler fetches now
   resolve the host, require every address to be global, connect to the
   vetted IP (SNI/Host keep the original name, so DNS rebinding can't
-  reroute the fetch), re-vet every redirect hop and `og:image` download,
-  and reject non-canonical numeric hosts like `2130706433` or `0x7f.1`.
+  reroute the fetch), and re-vet every redirect hop and `og:image`
+  download — non-canonical numeric IPv4 spellings like `2130706433` or
+  `0x7f.1` resolve to private addresses and are rejected.
+- A subprocess that exits in the same instant `_run_command`'s 300s
+  timeout fires no longer crashes the bridge: `process.kill()` on the
+  already-reaped child raised `ProcessLookupError`, which escaped the
+  `/update` handler and killed the app (supervisor respawned it; seen in
+  the production log as an unhandled traceback).
+- A single oversized `tool_call` command from `devin acp` could stall the
+  whole bridge: the credential-scrubbing regex backtracked catastrophically
+  on inputs like `-key-key-…` and ran on the uncapped command string on
+  the event loop. Commands are now truncated before scrubbing, ACP lines
+  past 16MB are dropped (settling any pending turn they answered), and
+  the scrubbing regex is replaced by a linear token scan so credential
+  names of any length still mask (200KB input: ~105s → ~2ms).
+- A forged `cfg:acu:<n>` settings callback could store any integer (or crash
+  on non-numeric input), bypassing the `/acu` 1-1000 bound and lifting the
+  per-session ACU cap; the callback now validates like `/acu` and
+  `DevinClient.create_session` clamps the value to 1-1000 before sending.
+- A crafted page of unclosed tags could stall the whole bridge for
+  minutes when the `article` crawler ran quadratic regexes over up to
+  1 MB of HTML on the event loop; article extraction now parses the
+  first 200 KB in a single pass via `html.parser`, off the event loop
+  in `asyncio.to_thread` with a 5s timeout.
+>>>>>>> origin/main
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now
