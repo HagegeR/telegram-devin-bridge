@@ -3116,6 +3116,61 @@ async def test_watcher_survives_transient_poll_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_watcher_error_budget_resets_between_successful_polls(
+    tmp_path: Path,
+) -> None:
+    # five failures spread between working polls must not add up: each
+    # success resets the budget even when the poll exits through the
+    # typing-refresh `continue` (which skips try/else)
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+
+    class AlternatingDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls += 1
+            if self.calls % 2 == 1:
+                raise httpx.ReadTimeout("flap")
+            if self.calls < 10:
+                return SessionState("working", "title", None, [])
+            return SessionState("finished", "title", None, [])
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    telegram = _FakeTelegram()
+    devin = AlternatingDevin()
+    await SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        sleep=no_sleep,
+    ).run()
+    assert devin.calls == 10
+    texts = [str(item["text"]) for item in telegram.sent]
+    assert not any("Couldn't reach Devin" in text for text in texts)
+
+
+@pytest.mark.asyncio
 async def test_watcher_gives_up_after_poll_error_budget(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(

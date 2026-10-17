@@ -205,8 +205,16 @@ class SessionWatcher:
         previous_detail: str | None = None
         title_retries_after_finish = 3
         consecutive_errors = 0
+        # The reset lives at the top of the next iteration, not in try/else:
+        # `continue` inside the body skips `else`, and every successful
+        # working poll continues via the typing-refresh path — an else-only
+        # reset would let spread-out flaps exhaust the budget.
+        poll_failed = False
         try:
             while True:
+                if not poll_failed:
+                    consecutive_errors = 0
+                poll_failed = False
                 try:
                     turn_trigger = self.trigger_message_id
                     turn_mids = list(self.turn_message_ids)
@@ -434,9 +442,8 @@ class SessionWatcher:
                         _POLL_ERROR_BUDGET,
                         self._short_reason(exc),
                     )
+                    poll_failed = True
                     await self.sleep(max(interval, 0.001))
-                else:
-                    consecutive_errors = 0
         except Exception as exc:
             logger.exception("Session watcher failed for conversation %s", self.conversation.conv_key)
             await self._cleanup_transients()
