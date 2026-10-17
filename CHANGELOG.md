@@ -26,6 +26,11 @@ and deployment update channels.
 
 ### Fixed
 
+- A subprocess that exits in the same instant `_run_command`'s 300s
+  timeout fires no longer crashes the bridge: `process.kill()` on the
+  already-reaped child raised `ProcessLookupError`, which escaped the
+  `/update` handler and killed the app (supervisor respawned it; seen in
+  the production log as an unhandled traceback).
 - A single oversized `tool_call` command from `devin acp` could stall the
   whole bridge: the credential-scrubbing regex backtracked catastrophically
   on inputs like `-key-key-…` and ran on the uncapped command string on

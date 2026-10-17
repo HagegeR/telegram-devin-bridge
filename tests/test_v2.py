@@ -3220,6 +3220,36 @@ async def test_watcher_preserves_manual_topic_title(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_command_tolerates_process_exiting_at_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class VanishedProcess:
+        returncode = 0
+
+        def communicate(self) -> bytes:
+            return b""
+
+        def kill(self) -> None:
+            raise ProcessLookupError
+
+        async def wait(self) -> int:
+            return 0
+
+    async def fake_spawn(*_args: object, **_kwargs: object) -> VanishedProcess:
+        return VanishedProcess()
+
+    async def timed_out(_awaitable: object, _seconds: float) -> object:
+        raise TimeoutError
+
+    monkeypatch.setattr(main_module.asyncio, "create_subprocess_exec", fake_spawn)
+    monkeypatch.setattr(main_module.asyncio, "wait_for", timed_out)
+    assert await main_module._run_command(["true"], tmp_path) == (
+        124,
+        "timed out after 300s",
+    )
+
+
+@pytest.mark.asyncio
 async def test_watcher_persists_session_title_without_topic(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
