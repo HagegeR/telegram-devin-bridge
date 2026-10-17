@@ -47,6 +47,10 @@ and deployment update channels.
   1 MB of HTML on the event loop; article extraction now parses the
   first 200 KB in a single pass via `html.parser`, off the event loop
   in `asyncio.to_thread` with a 5s timeout.
+- A tap on a stale inline button (older than ~1min, or an update replayed
+  after a restart) no longer takes the callback handler's error path:
+  Telegram's `query is too old` rejection of the cosmetic ack is now a
+  warning instead of a "Failed to process Telegram update" traceback.
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now
