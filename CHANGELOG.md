@@ -8,7 +8,7 @@ and deployment update channels.
 
 ## [Unreleased]
 
-## [v3.0.0] - 2026-10-17
+## [v3.0.0] - 2026-10-18
 
 ### Security
 
