@@ -25,8 +25,8 @@ _IG_SHORTCODE_RE = re.compile(
 )
 _IMG_MAX_BYTES = 10 * 1024 * 1024
 _TEXT_MAX_BYTES = 1024 * 1024
-# Fed to the HTML parser: capped far below _TEXT_MAX_BYTES and parsed
-# off-loop with a timeout so a hostile page can't stall the event loop.
+# Characters fed to the HTML parser: capped far below _TEXT_MAX_BYTES and
+# parsed off-loop with a timeout so a hostile page can't stall the event loop.
 _PARSE_MAX_CHARS = 200 * 1024
 _PARSE_TIMEOUT = 5.0
 _TEXT_MAX_CHARS = 4000
@@ -201,7 +201,9 @@ class _ArticleParser(HTMLParser):
         self.body_parts: list[str] = []
         self._skip_depth = 0
         self._main_depth = 0
+        self._main_done = False
         self._in_title = False
+        self._title_done = False
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
@@ -209,8 +211,12 @@ class _ArticleParser(HTMLParser):
         if tag in _SKIP_TAGS:
             self._skip_depth += 1
         elif tag in _MAIN_TAGS:
-            self._main_depth += 1
-        elif tag == "title":
+            # Only the first article/main block: later blocks would crowd
+            # the actual story out of the character cap.
+            if not self._main_done:
+                self._main_depth += 1
+        elif tag == "title" and not self._title_done:
+            # First <title> only — body SVG titles are icon labels.
             self._in_title = True
         elif tag == "meta":
             values = dict(attrs)
@@ -223,15 +229,18 @@ class _ArticleParser(HTMLParser):
             self._skip_depth -= 1
         elif tag in _MAIN_TAGS and self._main_depth:
             self._main_depth -= 1
+            if not self._main_depth:
+                self._main_done = True
         elif tag == "title":
             self._in_title = False
+            self._title_done = True
 
     def handle_data(self, data: str) -> None:
         if self._skip_depth:
             return
         if self._in_title:
             self.title_parts.append(data)
-        elif self._main_depth:
+        elif self._main_depth and not self._main_done:
             self.main_parts.append(data)
         else:
             self.body_parts.append(data)
