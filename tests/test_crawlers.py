@@ -11,6 +11,16 @@ from app.store import Store
 from tests.test_v2 import _FakeDevin, _FakeTelegram, message, settings
 
 
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never touch real DNS: resolution echoes the hostname back."""
+
+    async def _fake_vetted_ip(hostname: str) -> str:
+        return hostname
+
+    monkeypatch.setattr("app.crawlers._vetted_ip", _fake_vetted_ip)
+
+
 def _crawl_transport() -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -119,6 +129,49 @@ async def test_private_urls_are_not_crawled() -> None:
         "http://localhost:8080/",
     ):
         assert await crawl_text(url, {"article"}, client) == []
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_numeric_hosts_are_not_crawled() -> None:
+    from app.crawlers import crawl_text
+
+    client = httpx.AsyncClient(transport=_crawl_transport())
+    for url in (
+        "http://2130706433/",
+        "http://127.1/admin",
+        "http://0x7f.0.0.1/",
+        "http://0177.0.0.1/",
+    ):
+        assert await crawl_text(url, {"article"}, client) == []
+
+
+@pytest.mark.asyncio
+async def test_dns_resolving_to_private_ip_is_not_crawled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.crawlers import crawl_text
+
+    async def _private(_hostname: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.crawlers._vetted_ip", _private)
+    client = httpx.AsyncClient(transport=_crawl_transport())
+    assert await crawl_text("http://internal.attacker.test/", {"article"}, client) == []
+
+
+@pytest.mark.asyncio
+async def test_redirect_to_internal_target_is_not_crawled() -> None:
+    from app.crawlers import crawl_text
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "public.test":
+            return httpx.Response(
+                302, headers={"location": "http://2130706433:8080/admin"}
+            )
+        return httpx.Response(200, text="internal")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert await crawl_text("http://public.test/page", {"article"}, client) == []
 
 
 @pytest.mark.asyncio

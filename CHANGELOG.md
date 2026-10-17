@@ -10,6 +10,11 @@ and deployment update channels.
 
 ### Fixed
 
+- The `/crawl` SSRF guard no longer trusts hostnames: crawler fetches now
+  resolve the host, require every address to be global, connect to the
+  vetted IP (SNI/Host keep the original name, so DNS rebinding can't
+  reroute the fetch), re-vet every redirect hop and `og:image` download,
+  and reject non-canonical numeric hosts like `2130706433` or `0x7f.1`.
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now
