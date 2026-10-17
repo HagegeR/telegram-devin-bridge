@@ -10,6 +10,11 @@ and deployment update channels.
 
 ### Fixed
 
+- A forged `cfg:acu:<n>` settings callback could store any integer (or crash
+  on non-numeric input), bypassing the `/acu` 1-1000 bound and lifting the
+  per-session ACU cap; the callback now validates like `/acu` and
+  `DevinClient.create_session` clamps the value to 1-1000 before sending.
+
 - A crafted page of unclosed tags could stall the whole bridge for
   minutes when the `article` crawler ran quadratic regexes over up to
   1 MB of HTML on the event loop; article extraction now parses the
