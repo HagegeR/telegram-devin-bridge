@@ -70,22 +70,71 @@ def extract_urls(text: str) -> list[str]:
     return urls
 
 
-def _is_public_url(url: str) -> bool:
-    """Reject loopback/private/link-local hosts (SSRF guard).
+async def _resolve_ips(hostname: str) -> list[str]:
+    infos = await asyncio.get_running_loop().getaddrinfo(hostname, None)
+    return [info[4][0] for info in infos]
 
-    Hostnames that *resolve* to private IPs are not caught — the bridge runs
-    on the user's own network and only allowlisted senders can enable this.
-    """
-    host = urlparse(url).hostname
-    if host is None:
-        return False
-    if host.casefold() in {"localhost", "localhost.localdomain"}:
-        return False
+
+async def _vetted_ip(hostname: str) -> str | None:
+    """Resolve a hostname and return an IP only when every address is global."""
     try:
-        ip = ipaddress.ip_address(host)
+        ips = [ipaddress.ip_address(addr) for addr in await _resolve_ips(hostname)]
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not ips or not all(ip.is_global for ip in ips):
+        return None
+    return str(ips[0])
+
+
+async def _pinned_request(url: str) -> tuple[str, str, str] | None:
+    """SSRF guard: return (ip-pinned URL, Host header, SNI name) for a public URL.
+
+    The request connects to the resolved IP while SNI/Host keep the original
+    name, so DNS rebinding between the check and the connect cannot redirect
+    the fetch to an internal address.
+    """
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
     except ValueError:
-        return True
-    return ip.is_global
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    host = parsed.hostname
+    if host is None:
+        return None
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if not literal.is_global:
+            return None
+        ip = str(literal)
+    else:
+        # getaddrinfo also parses the OS-resolver numeric forms
+        # (2130706433, 127.1, 0x7f.1), so private spellings of IPv4
+        # and names resolving to private addresses are caught here.
+        ip = await _vetted_ip(host)
+        if ip is None:
+            return None
+    userinfo = ""
+    if parsed.username is not None:
+        userinfo = parsed.username
+        if parsed.password is not None:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    netloc = f"{userinfo}{f'[{ip}]' if ':' in ip else ip}"
+    if port is not None:
+        netloc += f":{port}"
+    default_port = 443 if parsed.scheme == "https" else 80
+    host_display = f"[{host}]" if ":" in host else host
+    host_header = (
+        host_display
+        if (port or default_port) == default_port
+        else f"{host_display}:{port}"
+    )
+    return parsed._replace(netloc=netloc).geturl(), host_header, host
 
 
 async def _fetch(
@@ -96,18 +145,23 @@ async def _fetch(
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
 ) -> httpx.Response | None:
-    """GET with manual redirects (host-validated per hop) + a body cap."""
+    """GET with manual redirects (host re-vetted and IP-pinned per hop) + a body cap."""
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
-        if not _is_public_url(current):
+        pinned = await _pinned_request(current)
+        if pinned is None:
             return None
+        pinned_url, host_header, sni_hostname = pinned
+        hop_headers = dict(headers or {})
+        hop_headers["Host"] = host_header
         try:
             async with client.stream(
                 "GET",
-                current,
-                headers=headers,
+                pinned_url,
+                headers=hop_headers,
                 params=params,
                 follow_redirects=False,
+                extensions={"sni_hostname": sni_hostname},
             ) as response:
                 if response.is_redirect:
                     location = response.headers.get("location")
