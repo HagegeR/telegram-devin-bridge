@@ -146,6 +146,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 ### Callback (`handle_callback`)
 - Authorization: same `is_allowed` on `callback_query.from`.
 - Look up `pending_choices[data]`; if missing -> `answer_callback_query("This choice expired")`. Else `send_message(session_id, option_text)`, delete the other choices for that conv, `edit_message_reply_markup` to remove buttons and append `\n\n✅ <option_text>` via `edit_message_text` (plain fallback), `answer_callback_query`, start watcher.
+- `answer_callback_query` is best-effort on stale taps: Telegram's `query is too old` rejection (queries older than ~1min, or updates replayed after a restart) is logged as a warning instead of taking the handler's error path; other errors still propagate.
 
 ### Commands (`commands.py`) – reply in the same conv/thread
 - `/start`, `/help` – list commands (`/help` collapses the command list per section; prefers a `sendRichMessage` `blocks` payload of `details` blocks, falling back to HTML `<blockquote expandable>` when rich messages are unavailable).

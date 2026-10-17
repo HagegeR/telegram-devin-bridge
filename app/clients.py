@@ -1259,7 +1259,15 @@ class TelegramClient:
         body: dict[str, object] = {"callback_query_id": callback_id}
         if text is not None:
             body["text"] = text
-        await self._request("POST", "/answerCallbackQuery", body, None)
+        try:
+            await self._request("POST", "/answerCallbackQuery", body, None)
+        except RuntimeError as exc:
+            # Telegram rejects answers to stale taps (older than ~1min, or
+            # an update replayed after a restart). The ack is cosmetic —
+            # don't let it take the callback handler's error path.
+            if "query is too old" not in str(exc):
+                raise
+            logger.warning("answer_callback_query on a stale query: %s", exc)
 
     async def get_file(self, file_id: str) -> str:
         payload = await self._request("POST", "/getFile", {"file_id": file_id}, None)

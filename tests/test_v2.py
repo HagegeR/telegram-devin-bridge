@@ -878,6 +878,49 @@ async def test_telegram_topic_error_includes_description() -> None:
 
 
 @pytest.mark.asyncio
+async def test_answer_callback_query_swallows_only_stale_query_error() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "ok": False,
+                "description": (
+                    "Bad Request: query is too old and response timeout "
+                    "expired or query ID is invalid"
+                ),
+            },
+        )
+
+    telegram = TelegramClient(
+        "fake-token",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    # a stale tap's failed ack must not take the handler's error path
+    await telegram.answer_callback_query("cb-1")
+    await telegram.answer_callback_query("cb-2", "This choice expired")
+    await telegram.close()
+
+
+@pytest.mark.asyncio
+async def test_answer_callback_query_reraises_other_errors() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"ok": False, "description": "Bad Request: chat not found"},
+        )
+
+    telegram = TelegramClient(
+        "fake-token",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(RuntimeError, match="chat not found"):
+        await telegram.answer_callback_query("cb-1")
+    await telegram.close()
+
+
+@pytest.mark.asyncio
 async def test_telegram_parse_fallback_preserves_then_drops_markup() -> None:
     bodies: list[dict[str, object]] = []
     attempts = 0
