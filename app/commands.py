@@ -10,7 +10,7 @@ import httpx
 from app.access import is_allowed, is_topic_chat
 from app.config import Settings
 from app.crawlers import CRAWLER_NAMES
-from app.devin import DevinClient, Playbook, SessionState
+from app.devin import MAX_ACU_LIMIT, DevinClient, Playbook, SessionState
 from app.formatting import (
     rich_details,
     rich_paragraph,
@@ -684,7 +684,7 @@ async def handle_command(
                 "ACU limit reset — new sessions use the org default.",
                 ephemeral=True,
             )
-        elif value.isdigit() and 0 < int(value) <= 1000:
+        elif value.isdigit() and 0 < int(value) <= MAX_ACU_LIMIT:
             runtime.store.update_chat_settings(conv_key, acu_limit=int(value))
             await runtime.send_text(
                 message,
@@ -694,7 +694,7 @@ async def handle_command(
         else:
             await runtime.send_text(
                 message,
-                "Usage: /acu 1-1000 · /acu default",
+                f"Usage: /acu 1-{MAX_ACU_LIMIT} · /acu default",
                 ephemeral=True,
             )
     elif command == "tags":

@@ -19,6 +19,7 @@ import app.main as main_module
 from app.access import is_allowed, is_topic_chat, should_respond_in_group
 from app.clients import (
     DEVIN_MODES,
+    MAX_ACU_LIMIT,
     DevinClient,
     DevinMessage,
     SessionState,
@@ -737,6 +738,12 @@ async def test_secrets_acu_and_flag_settings_submenus(tmp_path: Path) -> None:
     assert store.get_settings("222").acu_limit == 10
     await runtime.handle_callback({**callback, "id": "c5", "data": "cfg:acu:default"})
     assert store.get_settings("222").acu_limit is None
+    await runtime.handle_callback({**callback, "id": "c5b", "data": "cfg:acu:1000000"})
+    assert store.get_settings("222").acu_limit is None
+    await runtime.handle_callback({**callback, "id": "c5c", "data": "cfg:acu:nope"})
+    assert store.get_settings("222").acu_limit is None
+    await runtime.handle_callback({**callback, "id": "c5d", "data": "cfg:acu:0"})
+    assert store.get_settings("222").acu_limit is None
     await runtime.handle_callback({**callback, "id": "c6", "data": "cfg:unlisted:on"})
     assert store.get_settings("222").unlisted is True
     await runtime.handle_callback({**callback, "id": "c7", "data": "cfg:idempotent:off"})
@@ -811,6 +818,29 @@ async def test_devin_client_create_session_sends_new_options() -> None:
         unlisted=True,
         idempotent=False,
     )
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_devin_client_create_session_clamps_acu_limit() -> None:
+    bodies = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"session_id": "s1", "url": "u"})
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    await devin.create_session("p", None, acu_limit=1000000)
+    await devin.create_session("p", None, acu_limit=0)
+    assert bodies[0]["max_acu_limit"] == MAX_ACU_LIMIT
+    assert bodies[1]["max_acu_limit"] == 1
     await devin.close()
 
 

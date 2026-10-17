@@ -10,6 +10,11 @@ and deployment update channels.
 
 ### Fixed
 
+- A forged `cfg:acu:<n>` settings callback could store any integer (or crash
+  on non-numeric input), bypassing the `/acu` 1-1000 bound and lifting the
+  per-session ACU cap; the callback now validates like `/acu` and
+  `DevinClient.create_session` clamps the value to 1-1000 before sending.
+
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now

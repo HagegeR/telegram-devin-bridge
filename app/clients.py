@@ -120,6 +120,8 @@ class Playbook:
     title: str
 
 
+MAX_ACU_LIMIT = 1000
+
 DEVIN_MODES = (
     "normal",
     "fast",
@@ -280,7 +282,9 @@ class DevinClient:
         body: dict[str, object] = {
             "prompt": prompt,
             "max_acu_limit": (
-                acu_limit if acu_limit is not None else self.max_acu_limit
+                max(1, min(int(acu_limit), MAX_ACU_LIMIT))
+                if acu_limit is not None
+                else self.max_acu_limit
             ),
             "tags": ["telegram-bridge", *(tags or [])],
         }

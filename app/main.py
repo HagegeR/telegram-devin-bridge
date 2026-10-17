@@ -32,7 +32,7 @@ from app.admin import _sanitize_update_output, drain_tasks, register_admin_route
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.crawlers import CRAWLER_NAMES, crawl_text
-from app.devin import DevinClient, Playbook, SessionState
+from app.devin import MAX_ACU_LIMIT, DevinClient, Playbook, SessionState
 from app.doctor import register_doctor_route
 from app.formatting import (
     chunk,
@@ -3065,10 +3065,16 @@ class Bridge:
                 )
                 await self.push_chat_menu(chat_id)
             elif field == "acu":
-                self.store.update_chat_settings(
-                    conv_key,
-                    acu_limit=None if value == "default" else int(value),
-                )
+                if value == "default":
+                    acu_limit = None
+                elif value.isdigit() and 0 < int(value) <= MAX_ACU_LIMIT:
+                    acu_limit = int(value)
+                else:
+                    await self.telegram.answer_callback_query(
+                        callback_id, f"ACU limit must be 1-{MAX_ACU_LIMIT}"
+                    )
+                    return
+                self.store.update_chat_settings(conv_key, acu_limit=acu_limit)
             elif field == "secrets":
                 # Attaching org secrets exposes them to the session —
                 # same admin gate as pre-crawl toggles.
