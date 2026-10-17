@@ -32,6 +32,11 @@ and deployment update channels.
   reroute the fetch), and re-vet every redirect hop and `og:image`
   download — non-canonical numeric IPv4 spellings like `2130706433` or
   `0x7f.1` resolve to private addresses and are rejected.
+- One local session that can't be respawned at startup (e.g. an `OSError`
+  from the acp subprocess) no longer aborts `_replay_interrupted_turns`:
+  its pending prompt is dropped like a "gone" session's and later
+  conversations still get their replay instead of every boot dying on
+  the same conversation.
 - A subprocess that exits in the same instant `_run_command`'s 300s
   timeout fires no longer crashes the bridge: `process.kill()` on the
   already-reaped child raised `ProcessLookupError`, which escaped the

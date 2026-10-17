@@ -319,7 +319,14 @@ class Bridge:
                 continue
             try:
                 await self.local.send_message(conv.session_id, prompt)
-            except RuntimeError:
+            except Exception:
+                # one unresumable session must not eat the rest of the
+                # replay (or abort startup); drop its prompt like a "gone"
+                # session does instead of retrying it on every boot
+                logger.exception(
+                    "failed to replay pending prompt for conversation %s",
+                    conv.conv_key,
+                )
                 self.store.set_pending_prompt(
                     conv.conv_key, conv.session_id, None
                 )

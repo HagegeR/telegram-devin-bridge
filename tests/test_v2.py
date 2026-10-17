@@ -10096,6 +10096,48 @@ async def test_replay_interrupted_turns_resends_pending_prompt(
     assert conv is not None and conv.pending_prompt is None
 
 
+@pytest.mark.asyncio
+async def test_replay_interrupted_turns_continues_past_spawn_failure(
+    tmp_path: Path,
+) -> None:
+    # a local session whose acp subprocess can't spawn raises OSError, not
+    # RuntimeError — it must not abort the whole startup replay
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    store.save_conversation(
+        conv_key="222:10",
+        chat_id=222,
+        thread_id=10,
+        session_id="local:y",
+        session_url="local:y · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:10", "local:y", "answer me too")
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+
+    async def flaky_send(session_id: str, message: str) -> None:
+        if session_id == "local:x":
+            raise OSError("spawn failed")
+        sent.append((session_id, message))
+
+    runtime.local.send_message = flaky_send  # type: ignore[method-assign]
+    await runtime._replay_interrupted_turns()
+    assert sent == [("local:y", "answer me too")]
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt is None
+
+
 def test_prompt_state_hook_persists_and_resume_config_reads_settings(
     tmp_path: Path,
 ) -> None:
