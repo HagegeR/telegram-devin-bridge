@@ -2,7 +2,7 @@ import asyncio
 import io
 import shutil
 import sys
-import time
+import threading
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -657,8 +657,18 @@ async def test_transcribe_local_returns_none_on_timeout(
     transcription._models.clear()
     monkeypatch.setattr(transcription, "_TIMEOUT", 0.05)
 
+    proceed = threading.Event()
+    released = asyncio.Event()
+    release_slot = transcription._release_slot
+
+    def track_slot_release(job: asyncio.Future[str]) -> None:
+        release_slot(job)
+        released.set()
+
+    monkeypatch.setattr(transcription, "_release_slot", track_slot_release)
+
     def slow(*_: object, **__: object) -> str:
-        time.sleep(0.5)
+        proceed.wait(5)
         return "late"
 
     monkeypatch.setattr(transcription, "_load", lambda _name: object())
@@ -670,7 +680,8 @@ async def test_transcribe_local_returns_none_on_timeout(
         "en",
     ) is None
     assert transcription._slots._value == transcription._MAX_CONCURRENT - 1
-    await asyncio.sleep(0.6)
+    proceed.set()
+    await asyncio.wait_for(released.wait(), 5)
     assert transcription._slots._value == transcription._MAX_CONCURRENT
 
 
