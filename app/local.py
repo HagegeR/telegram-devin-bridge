@@ -58,6 +58,12 @@ def is_local(session_id: str) -> bool:
     return session_id.startswith(LOCAL_PREFIX)
 
 
+# Modes that approve tool calls without ever emitting
+# session/request_permission — picking one hands out unattended host
+# access, so selecting one is an admin decision.
+APPROVAL_SKIPPING_MODES = frozenset({"bypass", "smart"})
+
+
 @dataclass
 class _AcpSession:
     proc: asyncio.subprocess.Process
@@ -912,6 +918,25 @@ class LocalClient:
         return str(opt) if opt is not None else None
 
     @staticmethod
+    def _pick_reject(msg: dict) -> str | None:
+        options = msg.get("params", {}).get("options") or []
+        pick = next(
+            (
+                o for o in options
+                if any(
+                    word
+                    in str(o.get("kind", "") + o.get("name", "")).lower()
+                    for word in ("reject", "deny")
+                )
+            ),
+            None,
+        )
+        if pick is None:
+            return None
+        opt = pick.get("optionId", pick.get("id"))
+        return str(opt) if opt is not None else None
+
+    @staticmethod
     def permission_options(msg: dict) -> list[tuple[str, str]]:
         """(optionId, label) pairs for the Telegram approval keyboard."""
         out = []
@@ -964,6 +989,34 @@ class LocalClient:
             ),
             option_id,
         )
+
+    def _deny_permission(
+        self, sess: _AcpSession, req_id: int | str, msg: dict
+    ) -> None:
+        """Fail closed: answer with the reject option, or the ACP
+        cancelled outcome when the request offers none — used when the
+        approval prompt cannot reach a decider."""
+        option_id = self._pick_reject(msg)
+        if option_id is not None:
+            self._answer_permission(sess, req_id, option_id)
+        elif sess.proc.stdin is not None:
+            sess.proc.stdin.write(
+                json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"outcome": {"outcome": "cancelled"}},
+                }).encode() + b"\n"
+            )
+
+    def reject_permission(self, session_id: str, req_id: int | str) -> None:
+        """Deny a pending session/request_permission (fail-closed path).
+        No-op when the request or session is already gone."""
+        sess = self.sessions.get(session_id)
+        if sess is None:
+            return
+        msg = sess.permissions.pop(req_id, None)
+        if msg is not None:
+            self._deny_permission(sess, req_id, msg)
 
     def save_attachment(self, filename: str, content: bytes) -> Path:
         """Persist a Telegram file on the host — ACP has no file-transfer
@@ -1029,6 +1082,14 @@ class LocalClient:
             await self._reap(sess)
         self.sessions.clear()
         self._resuming.clear()
+
+    async def suspend(self, session_id: str) -> None:
+        """Stop the acp process without deleting the persisted session —
+        a detached session stops acting on the host but stays
+        resumable, unlike terminate which removes its record."""
+        sess = self.sessions.pop(session_id, None)
+        if sess is not None:
+            await self._reap(sess)
 
     async def terminate(self, session_id: str) -> None:
         sess = self.sessions.pop(session_id, None)
@@ -1524,11 +1585,11 @@ class LocalClient:
                         self.on_permission(f"{LOCAL_PREFIX}{sess.acp_id}", msg)
                     except Exception:
                         logger.exception(
-                            "on_permission hook failed for %s — auto-allowing",
+                            "on_permission hook failed for %s — denying",
                             sess.acp_id,
                         )
                         sess.permissions.pop(req_id, None)
-                        self._answer_permission(sess, req_id, self._pick_allow(msg))
+                        self._deny_permission(sess, req_id, msg)
             return
         if msg.get("method") != "session/update":
             return
