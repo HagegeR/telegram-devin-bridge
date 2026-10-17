@@ -446,11 +446,17 @@ def test_scrub_command_masks_credentials() -> None:
 
 
 def test_scrub_command_bounds_backtracking() -> None:
-    # "-key-key-…" used to force cubic backtracking in _SECRET_RE — at
-    # this size the old pattern needed tens of seconds on the event loop
+    # "-key-key-…" used to force cubic backtracking in the scrub regex —
+    # at this size the old pattern needed tens of seconds on the event loop
     start = time.monotonic()
     _scrub_command("-key" * 25_000)
     assert time.monotonic() - start < 2
+
+
+def test_scrub_command_masks_long_credential_names() -> None:
+    # names longer than any fixed suffix bound must still be masked
+    raw = "export TOKEN" + "x" * 200 + "=sk-live && pytest"
+    assert "sk-live" not in _scrub_command(raw)
 
 
 @pytest.mark.asyncio

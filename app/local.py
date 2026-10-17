@@ -147,9 +147,11 @@ _WEDGE_PROBE_TIMEOUT = 30
 # to crash the reader and orphan every turn on that session
 _STREAM_CHUNK = 65536
 # ...but one boundless JSON-RPC line would still stall the loop (parse
-# cost, regex scrub) — drop lines past a megabyte instead of handling
-# them; real updates are nowhere near that size
-_ACP_MAX_LINE = 1 << 20
+# cost, memory) — drop lines past 16MB; real updates are nowhere near
+# that size, and a dropped line that carried a pending response settles
+# its turn with an error instead of leaving it waiting
+_ACP_MAX_LINE = 1 << 24
+_PENDING_ID_RE = re.compile(rb'"id"\s*:\s*(\d+)')
 
 
 # structured agent logs ("2026-10-12T22:19:57Z INFO target: msg") are
@@ -195,19 +197,13 @@ _FLUSH_INTERVAL = 20
 # it anyway rather than holding the turn's whole output back
 _STREAM_MAX_BUFFER = 3072
 # the activity line posts rawInput.command to Telegram — blank anything
-# that looks like a credential before it can leak to the chat
-_SECRET_RE = re.compile(
-    r"(?i)("
-    r"(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]{0,64}\s*[=:]"
-    r"\s*(?:(?:bearer|basic)\s+)?"
-    r"|(?:bearer|basic)\s+"
-    # lookahead asserts a secret-keyword occurs in the flag token, then
-    # one greedy pass consumes it — unbounded adjacent [\w-]* quantifiers
-    # here used to backtrack cubically on inputs like "-key-key-…";
-    # both are bounded (flags are short) so the check stays linear
-    r"|--?(?=[\w-]{0,64}(?:key|token|secret|passw(?:or)?d|auth))[\w-]{0,128}\s*[= ]"
-    r")\s*(?:[\"'][^\"']*[\"']?|\S+)"
-)
+# that looks like a credential before it can leak to the chat. Each token
+# is a single greedy run and the keyword test happens on the token in
+# Python — the old one-regex approach with adjacent unbounded [\w-]*
+# quantifiers backtracked cubically on inputs like "-key-key-…"
+_KEYWORD_RE = re.compile(r"(?i)key|token|secret|passw(?:or)?d|credential|auth")
+_TOKEN_RE = re.compile(r"--?[\w-]+|[\w-]+")
+_SECRET_VALUE_RE = re.compile(r"(?:[\"'][^\"']*[\"']?|\S+)")
 _USERINFO_RE = re.compile(r"(?<=://)[^\s/:]+:[^\s@]+@")
 # the CLI's chunk stream can drop line separators between streamed
 # progress updates — sentence punctuation immediately followed by a
@@ -283,8 +279,47 @@ def _kill(proc: asyncio.subprocess.Process) -> None:
 
 
 def _scrub_command(cmd: str) -> str:
-    scrubbed = _SECRET_RE.sub(lambda m: m.group(1) + "***", cmd)
-    return _USERINFO_RE.sub("***@", scrubbed)
+    # mask the value after `name=`, `name:`, `--name `, and after a
+    # bearer/basic scheme word — for any name that contains a credential
+    # keyword, however long the name is
+    out: list[str] = []
+    pos = 0
+    for m in _TOKEN_RE.finditer(cmd):
+        if m.start() < pos:
+            continue  # inside an already-masked value
+        name, bare = m.group(0), m.group(0).lstrip("-")
+        scheme = bare.lower() in ("bearer", "basic")
+        if not (scheme or _KEYWORD_RE.search(bare)):
+            continue
+        j = m.end()
+        while j < len(cmd) and cmd[j].isspace():
+            j += 1
+        if j < len(cmd) and cmd[j] in "=:":
+            j += 1
+            while j < len(cmd) and cmd[j].isspace():
+                j += 1
+            v = _SECRET_VALUE_RE.match(cmd, j)
+            if v is not None and v.group(0).lower() in ("bearer", "basic"):
+                # "Authorization: Bearer x" — the scheme word goes too
+                j2 = v.end()
+                while j2 < len(cmd) and cmd[j2].isspace():
+                    j2 += 1
+                tail = _SECRET_VALUE_RE.match(cmd, j2)
+                if tail is not None:
+                    out += [cmd[pos : v.start()], "***"]
+                    pos = tail.end()
+                    continue
+        elif name.startswith("-") or scheme:
+            # flag or scheme word separated by whitespace (`--token x`,
+            # `Bearer x`) — a bare `NAME x` is not treated as a secret
+            v = _SECRET_VALUE_RE.match(cmd, j) if j > m.end() else None
+        else:
+            continue
+        if v is not None:
+            out += [cmd[pos : v.start()], "***"]
+            pos = v.end()
+    out.append(cmd[pos:])
+    return _USERINFO_RE.sub("***@", "".join(out))
 
 
 class LocalClient:
@@ -1408,7 +1443,10 @@ class LocalClient:
             buf += chunk
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
-                if not raw or len(raw) > _ACP_MAX_LINE:
+                if not raw:
+                    continue
+                if len(raw) > _ACP_MAX_LINE:
+                    self._drop_line(sess, raw)
                     continue
                 try:
                     msg = json.loads(raw)
@@ -1423,6 +1461,7 @@ class LocalClient:
             if len(buf) > _ACP_MAX_LINE:
                 # an unterminated oversized line: drop it chunk-by-chunk
                 # so memory and downstream scrub cost stay bounded
+                self._drop_line(sess, buf)
                 buf = b""
         sess.dead = True
         # stdout can close before stderr finishes draining — give the
@@ -1440,6 +1479,19 @@ class LocalClient:
         for fut in sess.pending.values():
             if not fut.done():
                 fut.set_exception(RuntimeError(f"acp process exited{detail}"))
+
+    def _drop_line(self, sess: _AcpSession, data: bytes) -> None:
+        logger.warning("dropping oversized acp line (%d bytes)", len(data))
+        # the line may carry the only response a pending request waits
+        # on — settle that turn instead of letting it hang
+        m = _PENDING_ID_RE.search(data[:4096])
+        if m is None:
+            return
+        fut = sess.pending.pop(int(m.group(1)), None)
+        if fut is not None and not fut.done():
+            fut.set_exception(
+                RuntimeError("acp reply exceeded the line limit and was dropped")
+            )
 
     async def _drain_stderr(self, sess: _AcpSession) -> None:
         if sess.proc.stderr is None:
@@ -1577,6 +1629,6 @@ class LocalClient:
             cmd = raw.get("command") if isinstance(raw, dict) else None
             title = cmd or update.get("title") or update.get("kind")
             if title:
-                # truncate before scrubbing — _SECRET_RE on a huge
-                # command would stall the event loop
+                # truncate before scrubbing — credential scrubbing on a
+                # huge command would stall the event loop
                 sess.activity = _scrub_command(str(title)[:512])[:120]
