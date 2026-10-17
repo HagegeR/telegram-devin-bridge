@@ -53,7 +53,12 @@ and deployment update channels.
   1 MB of HTML on the event loop; article extraction now parses the
   first 200 KB in a single pass via `html.parser`, off the event loop
   in `asyncio.to_thread` with a 5s timeout.
->>>>>>> origin/main
+- One transient error (a timed-out Telegram edit, a Devin API flap) no
+  longer kills a session watcher mid-turn — previously the conversation
+  stopped streaming replies until the janitor's 10-minute backlog probe
+  or the user's next message, and a bogus "Couldn't reach Devin" plus a
+  👎 expired mark landed on the turn. The poll loop now retries up to 5
+  consecutive failures before reporting.
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now

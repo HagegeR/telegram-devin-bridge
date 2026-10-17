@@ -53,6 +53,11 @@ ACTIVE_STATUSES = frozenset({
 # into a single digest message instead of a burst of individual sends.
 _DIGEST_MIN_MESSAGES = 3
 
+# Consecutive poll-loop failures tolerated before the watcher gives up:
+# a lone flap (a timed-out Telegram edit, a 5xx from the Devin API) must
+# not kill delivery for the whole conversation.
+_POLL_ERROR_BUDGET = 5
+
 FINISH_NOTICES = {
     "blocked": "💬 Waiting for your reply",
     "finished": "✓ Finished",
@@ -199,199 +204,193 @@ class SessionWatcher:
         previous_status: str | None = None
         previous_detail: str | None = None
         title_retries_after_finish = 3
+        consecutive_errors = 0
+        # The reset lives at the top of the next iteration, not in try/else:
+        # `continue` inside the body skips `else`, and every successful
+        # working poll continues via the typing-refresh path — an else-only
+        # reset would let spread-out flaps exhaust the budget.
+        poll_failed = False
         try:
             while True:
-                turn_trigger = self.trigger_message_id
-                turn_mids = list(self.turn_message_ids)
-                turn_delivered = self.delivered
-                gen = self.generation
-                # A session still working past DEVIN_WATCH_TIMEOUT keeps its
-                # watcher — long replies must not strand undelivered; only a
-                # much larger cap bounds a stuck-active session.
-                watch_cap = (
-                    self.settings.devin_active_watch_timeout_seconds
-                    if previous_status in ACTIVE_STATUSES
-                    else self.settings.devin_watch_timeout_seconds
-                )
-                if self.clock() - self.started_at >= watch_cap:
-                    await self._cleanup_transients()
-                    if self.generation != gen:
-                        continue
-                    if previous_status in {"expired", "finished"}:
-                        await self._close_turn(
-                            previous_status,
-                            gen=gen,
-                            mids=turn_mids,
-                            detail=previous_detail,
+                if not poll_failed:
+                    consecutive_errors = 0
+                poll_failed = False
+                try:
+                    turn_trigger = self.trigger_message_id
+                    turn_mids = list(self.turn_message_ids)
+                    turn_delivered = self.delivered
+                    gen = self.generation
+                    # A session still working past DEVIN_WATCH_TIMEOUT keeps its
+                    # watcher — long replies must not strand undelivered; only a
+                    # much larger cap bounds a stuck-active session.
+                    watch_cap = (
+                        self.settings.devin_active_watch_timeout_seconds
+                        if previous_status in ACTIVE_STATUSES
+                        else self.settings.devin_watch_timeout_seconds
+                    )
+                    if self.clock() - self.started_at >= watch_cap:
+                        await self._cleanup_transients()
+                        if self.generation != gen:
+                            continue
+                        if previous_status in {"expired", "finished"}:
+                            await self._close_turn(
+                                previous_status,
+                                gen=gen,
+                                mids=turn_mids,
+                                detail=previous_detail,
+                            )
+                        elif not self.delivered:
+                            await self.telegram.send_message(
+                                self.conversation.chat_id,
+                                "⏳ Devin is still working; I'll deliver replies when you next message.",
+                                thread_id=self.conversation.thread_id,
+                                disable_notification=self.silent,
+                            )
+                        if self.generation != gen:
+                            continue
+                        logger.info(
+                            "watcher %s exiting at watch cap (status=%s delivered=%s)",
+                            self.conversation.conv_key, previous_status, self.delivered,
                         )
-                    elif not self.delivered:
+                        return
+                    state = await self.devin.get_session(
+                        self.conversation.session_id,
+                        since_event_id=last_event_id,
+                    )
+                    if self.generation != gen:
+                        await self.sleep(interval)
+                        continue
+                    if self.conversation.title_pending or self.topic_title_stale:
+                        stored = self.store.get_conversation(self.conversation.conv_key)
+                        if stored is not None:
+                            self.conversation = stored
+                    if self.topic_title_stale:
+                        self.topic_title_stale = not await self._edit_topic(
+                            self.conversation.title
+                        )
+                    elif (
+                        self.conversation.title_pending
+                        and state.title
+                        and state.title != self.conversation.title
+                    ):
+                        await self._apply_session_title(state.title)
+                    new_messages = self._new_messages(
+                        state,
+                        wall_started_at,
+                        last_event_id,
+                    )
+                    first_poll = previous_status is None
+                    status_changed = (
+                        previous_status is not None
+                        and state.status_enum != previous_status
+                    )
+                    previous_status = state.status_enum
+                    previous_detail = state.status_detail
+                    self.last_status = state.status_enum
+                    if self.first_status is None:
+                        self.first_status = state.status_enum
+                    if first_poll or new_messages or status_changed:
+                        interval = min(
+                            max(self.settings.devin_poll_fast_seconds, 0.5),
+                            self.poll_seconds,
+                        )
+                    else:
+                        interval = min(
+                            max(interval * 1.5, self.settings.devin_poll_fast_seconds, 0.5),
+                            self.poll_seconds,
+                        )
+                    backlog_digest = (
+                        self.resume_from is not None
+                        and first_poll
+                        and len(new_messages) >= _DIGEST_MIN_MESSAGES
+                    )
+                    covered: set[int] = set()
+                    if backlog_digest:
+                        covered = await self._deliver_digest(
+                            new_messages, state, reply_to_message_id=turn_trigger
+                        )
+                    delivery_delivered = turn_delivered
+                    for index, message in enumerate(new_messages):
+                        stale = self._pre_trigger(message)
+                        if not delivery_delivered and not stale:
+                            await self._cleanup_transients()
+                        if index not in covered:
+                            await self._deliver(
+                                message,
+                                state,
+                                reply_to_message_id=(
+                                    turn_trigger
+                                    if not delivery_delivered and not stale
+                                    else None
+                                ),
+                                react_message_id=(
+                                    turn_trigger if not stale else None
+                                ),
+                            )
+                        if not stale:
+                            delivery_delivered = True
+                            self.delivered = True
+                        if message.event_id is not None:
+                            last_event_id = message.event_id
+                            self.conversation = replace(
+                                self.conversation,
+                                last_event_id=message.event_id,
+                            )
+                            self.store.update_conversation(
+                                self.conversation.conv_key,
+                                self.conversation.session_id,
+                                last_event_id=message.event_id,
+                            )
+                        self.delivered_count += 1
+                    if status_changed and self.on_status_change is not None:
+                        await self.on_status_change(state.status_enum)
+                    if state.pr_url is not None and state.pr_url != last_pr_url:
                         await self.telegram.send_message(
                             self.conversation.chat_id,
-                            "⏳ Devin is still working; I'll deliver replies when you next message.",
+                            f"🔗 PR: {state.pr_url}",
                             thread_id=self.conversation.thread_id,
                             disable_notification=self.silent,
                         )
-                    if self.generation != gen:
-                        continue
-                    logger.info(
-                        "watcher %s exiting at watch cap (status=%s delivered=%s)",
-                        self.conversation.conv_key, previous_status, self.delivered,
-                    )
-                    return
-                state = await self.devin.get_session(
-                    self.conversation.session_id,
-                    since_event_id=last_event_id,
-                )
-                if self.generation != gen:
-                    await self.sleep(interval)
-                    continue
-                if self.conversation.title_pending or self.topic_title_stale:
-                    stored = self.store.get_conversation(self.conversation.conv_key)
-                    if stored is not None:
-                        self.conversation = stored
-                if self.topic_title_stale:
-                    self.topic_title_stale = not await self._edit_topic(
-                        self.conversation.title
-                    )
-                elif (
-                    self.conversation.title_pending
-                    and state.title
-                    and state.title != self.conversation.title
-                ):
-                    await self._apply_session_title(state.title)
-                new_messages = self._new_messages(
-                    state,
-                    wall_started_at,
-                    last_event_id,
-                )
-                first_poll = previous_status is None
-                status_changed = (
-                    previous_status is not None
-                    and state.status_enum != previous_status
-                )
-                previous_status = state.status_enum
-                previous_detail = state.status_detail
-                self.last_status = state.status_enum
-                if self.first_status is None:
-                    self.first_status = state.status_enum
-                if first_poll or new_messages or status_changed:
-                    interval = min(
-                        max(self.settings.devin_poll_fast_seconds, 0.5),
-                        self.poll_seconds,
-                    )
-                else:
-                    interval = min(
-                        max(interval * 1.5, self.settings.devin_poll_fast_seconds, 0.5),
-                        self.poll_seconds,
-                    )
-                backlog_digest = (
-                    self.resume_from is not None
-                    and first_poll
-                    and len(new_messages) >= _DIGEST_MIN_MESSAGES
-                )
-                covered: set[int] = set()
-                if backlog_digest:
-                    covered = await self._deliver_digest(
-                        new_messages, state, reply_to_message_id=turn_trigger
-                    )
-                delivery_delivered = turn_delivered
-                for index, message in enumerate(new_messages):
-                    stale = self._pre_trigger(message)
-                    if not delivery_delivered and not stale:
-                        await self._cleanup_transients()
-                    if index not in covered:
-                        await self._deliver(
-                            message,
-                            state,
-                            reply_to_message_id=(
-                                turn_trigger
-                                if not delivery_delivered and not stale
-                                else None
-                            ),
-                            react_message_id=(
-                                turn_trigger if not stale else None
-                            ),
-                        )
-                    if not stale:
-                        delivery_delivered = True
-                        self.delivered = True
-                    if message.event_id is not None:
-                        last_event_id = message.event_id
-                        self.conversation = replace(
-                            self.conversation,
-                            last_event_id=message.event_id,
-                        )
+                        last_pr_url = state.pr_url
                         self.store.update_conversation(
                             self.conversation.conv_key,
                             self.conversation.session_id,
-                            last_event_id=message.event_id,
+                            last_pr_url=state.pr_url,
                         )
-                    self.delivered_count += 1
-                if status_changed and self.on_status_change is not None:
-                    await self.on_status_change(state.status_enum)
-                if state.pr_url is not None and state.pr_url != last_pr_url:
-                    await self.telegram.send_message(
-                        self.conversation.chat_id,
-                        f"🔗 PR: {state.pr_url}",
-                        thread_id=self.conversation.thread_id,
-                        disable_notification=self.silent,
+                    # a missing title is outstanding too — the generated
+                    # title can land a poll after the session settles, so
+                    # keep retrying; when it never arrives the topic falls
+                    # back to the prompt-derived name below
+                    title_missing = (
+                        self.conversation.title_pending
+                        and self.conversation.thread_id is not None
+                        and not state.title
                     )
-                    last_pr_url = state.pr_url
-                    self.store.update_conversation(
-                        self.conversation.conv_key,
-                        self.conversation.session_id,
-                        last_pr_url=state.pr_url,
-                    )
-                # a missing title is outstanding too — the generated
-                # title can land a poll after the session settles, so
-                # keep retrying; when it never arrives the topic falls
-                # back to the prompt-derived name below
-                title_missing = (
-                    self.conversation.title_pending
-                    and self.conversation.thread_id is not None
-                    and not state.title
-                )
-                if (
-                    state.status_enum not in ACTIVE_STATUSES
-                    and (self._topic_title_outstanding(state) or title_missing)
-                    and title_retries_after_finish
-                ):
-                    title_retries_after_finish -= 1
-                    await self.sleep(max(interval, 0.001))
-                    continue
-                if state.status_enum not in ACTIVE_STATUSES and title_missing:
-                    await self._apply_session_title(
-                        self.conversation.title.removeprefix(
-                            PLACEHOLDER_TITLE_PREFIX
+                    if (
+                        state.status_enum not in ACTIVE_STATUSES
+                        and (self._topic_title_outstanding(state) or title_missing)
+                        and title_retries_after_finish
+                    ):
+                        title_retries_after_finish -= 1
+                        await self.sleep(max(interval, 0.001))
+                        continue
+                    if state.status_enum not in ACTIVE_STATUSES and title_missing:
+                        await self._apply_session_title(
+                            self.conversation.title.removeprefix(
+                                PLACEHOLDER_TITLE_PREFIX
+                            )
                         )
+                    settled = (
+                        self.clock() - self.started_at
+                        >= self.settings.devin_settle_seconds
                     )
-                settled = (
-                    self.clock() - self.started_at
-                    >= self.settings.devin_settle_seconds
-                )
-                # A user-triggered watcher on a session with delivered history
-                # may be watching a resume still in flight: hold the close
-                # until a post-trigger reply lands or the settle window
-                # expires. Other watchers close as before.
-                if state.status_enum in {"expired", "finished"} and (
-                    self.trigger_at is None or self.delivered or settled
-                ):
-                    await self._cleanup_transients()
-                    if self.generation != gen:
-                        await self.sleep(interval)
-                        continue
-                    await self._close_turn(
-                        state.status_enum,
-                        gen=gen,
-                        mids=turn_mids,
-                        detail=state.status_detail,
-                    )
-                    if self.generation != gen:
-                        await self.sleep(interval)
-                        continue
-                    return
-                if state.status_enum not in ACTIVE_STATUSES:
-                    if self.delivered or settled:
+                    # A user-triggered watcher on a session with delivered history
+                    # may be watching a resume still in flight: hold the close
+                    # until a post-trigger reply lands or the settle window
+                    # expires. Other watchers close as before.
+                    if state.status_enum in {"expired", "finished"} and (
+                        self.trigger_at is None or self.delivered or settled
+                    ):
                         await self._cleanup_transients()
                         if self.generation != gen:
                             await self.sleep(interval)
@@ -405,17 +404,46 @@ class SessionWatcher:
                         if self.generation != gen:
                             await self.sleep(interval)
                             continue
-                        logger.info(
-                            "watcher %s closing on %s (delivered=%s)",
-                            self.conversation.conv_key, state.status_enum, self.delivered,
-                        )
                         return
-                else:
-                    await self._refresh_progress(self.started_at, state)
-                    if self.last_chat_action_at is not None:
-                        await self._sleep_keeping_typing(interval)
-                        continue
-                await self.sleep(max(interval, 0.001))
+                    if state.status_enum not in ACTIVE_STATUSES:
+                        if self.delivered or settled:
+                            await self._cleanup_transients()
+                            if self.generation != gen:
+                                await self.sleep(interval)
+                                continue
+                            await self._close_turn(
+                                state.status_enum,
+                                gen=gen,
+                                mids=turn_mids,
+                                detail=state.status_detail,
+                            )
+                            if self.generation != gen:
+                                await self.sleep(interval)
+                                continue
+                            logger.info(
+                                "watcher %s closing on %s (delivered=%s)",
+                                self.conversation.conv_key, state.status_enum, self.delivered,
+                            )
+                            return
+                    else:
+                        await self._refresh_progress(self.started_at, state)
+                        if self.last_chat_action_at is not None:
+                            await self._sleep_keeping_typing(interval)
+                            continue
+                    await self.sleep(max(interval, 0.001))
+                except Exception as exc:
+                    consecutive_errors += 1
+                    if consecutive_errors >= _POLL_ERROR_BUDGET:
+                        raise
+                    logger.warning(
+                        "watcher %s poll failed (%d/%d), retrying: %s",
+                        self.conversation.conv_key,
+                        consecutive_errors,
+                        _POLL_ERROR_BUDGET,
+                        self._short_reason(exc),
+                    )
+                    poll_failed = True
+                    await self.sleep(max(interval, 0.001))
         except Exception as exc:
             logger.exception("Session watcher failed for conversation %s", self.conversation.conv_key)
             await self._cleanup_transients()
