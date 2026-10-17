@@ -10,11 +10,17 @@ and deployment update channels.
 
 ### Fixed
 
+- A single oversized `tool_call` command from `devin acp` could stall the
+  whole bridge: the credential-scrubbing regex backtracked catastrophically
+  on inputs like `-key-key-…` and ran on the uncapped command string on
+  the event loop. Commands are now truncated before scrubbing, ACP lines
+  past 16MB are dropped (settling any pending turn they answered), and
+  the scrubbing regex is replaced by a linear token scan so credential
+  names of any length still mask (200KB input: ~105s → ~2ms).
 - A forged `cfg:acu:<n>` settings callback could store any integer (or crash
   on non-numeric input), bypassing the `/acu` 1-1000 bound and lifting the
   per-session ACU cap; the callback now validates like `/acu` and
   `DevinClient.create_session` clamps the value to 1-1000 before sending.
-
 - A crafted page of unclosed tags could stall the whole bridge for
   minutes when the `article` crawler ran quadratic regexes over up to
   1 MB of HTML on the event loop; article extraction now parses the
