@@ -120,6 +120,8 @@ class Playbook:
     title: str
 
 
+MAX_ACU_LIMIT = 1000
+
 DEVIN_MODES = (
     "normal",
     "fast",
@@ -277,11 +279,10 @@ class DevinClient:
         unlisted: bool | None = None,
         idempotent: bool | None = None,
     ) -> tuple[str, str]:
+        limit = acu_limit if acu_limit is not None else self.max_acu_limit
         body: dict[str, object] = {
             "prompt": prompt,
-            "max_acu_limit": (
-                acu_limit if acu_limit is not None else self.max_acu_limit
-            ),
+            "max_acu_limit": max(1, min(int(limit), MAX_ACU_LIMIT)),
             "tags": ["telegram-bridge", *(tags or [])],
         }
         if title is not None:

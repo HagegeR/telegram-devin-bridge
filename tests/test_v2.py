@@ -19,6 +19,7 @@ import app.main as main_module
 from app.access import is_allowed, is_topic_chat, should_respond_in_group
 from app.clients import (
     DEVIN_MODES,
+    MAX_ACU_LIMIT,
     DevinClient,
     DevinMessage,
     SessionState,
@@ -737,6 +738,15 @@ async def test_secrets_acu_and_flag_settings_submenus(tmp_path: Path) -> None:
     assert store.get_settings("222").acu_limit == 10
     await runtime.handle_callback({**callback, "id": "c5", "data": "cfg:acu:default"})
     assert store.get_settings("222").acu_limit is None
+    await runtime.handle_callback({**callback, "id": "c5b", "data": "cfg:acu:1000000"})
+    assert store.get_settings("222").acu_limit is None
+    await runtime.handle_callback({**callback, "id": "c5c", "data": "cfg:acu:nope"})
+    assert store.get_settings("222").acu_limit is None
+    await runtime.handle_callback({**callback, "id": "c5d", "data": "cfg:acu:0"})
+    assert store.get_settings("222").acu_limit is None
+    # superscript ² passes isdigit() but not isdecimal()/int()
+    await runtime.handle_callback({**callback, "id": "c5e", "data": "cfg:acu:²"})
+    assert store.get_settings("222").acu_limit is None
     await runtime.handle_callback({**callback, "id": "c6", "data": "cfg:unlisted:on"})
     assert store.get_settings("222").unlisted is True
     await runtime.handle_callback({**callback, "id": "c7", "data": "cfg:idempotent:off"})
@@ -811,6 +821,41 @@ async def test_devin_client_create_session_sends_new_options() -> None:
         unlisted=True,
         idempotent=False,
     )
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_devin_client_create_session_clamps_acu_limit() -> None:
+    bodies = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"session_id": "s1", "url": "u"})
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    await devin.create_session("p", None, acu_limit=1000000)
+    await devin.create_session("p", None, acu_limit=0)
+    assert bodies[0]["max_acu_limit"] == MAX_ACU_LIMIT
+    assert bodies[1]["max_acu_limit"] == 1
+    await devin.close()
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        5000,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    await devin.create_session("p", None)
+    assert bodies[2]["max_acu_limit"] == MAX_ACU_LIMIT
     await devin.close()
 
 
@@ -9502,6 +9547,203 @@ async def test_permission_prompt_non_admin_tap_preserves_buttons(
         "data": reject,
     })
     assert answered == [("local:s1", 5, "reject")]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_platform_local_is_admin_only(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_admin_user_ids="900",
+            telegram_allowed_users="111,900",
+        ),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    # command and settings-button paths both refuse non-admins
+    await handle_command(runtime, message("/platform local"), "/platform local")
+    assert store.get_settings("222").platform is None
+    assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    await runtime.handle_callback({
+        "id": "cfg-p",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+        "data": "cfg:platform:local",
+    })
+    assert store.get_settings("222").platform is None
+    assert "Admins only" in telegram.answers[-1]
+    await handle_command(
+        runtime,
+        message("/platform local", user_id=900),
+        "/platform local",
+    )
+    assert store.get_settings("222").platform == "local"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_approval_skipping_modes_are_admin_only(tmp_path: Path) -> None:
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_admin_user_ids="900",
+            telegram_allowed_users="111,900",
+        ),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    await handle_command(runtime, message("/mode bypass"), "/mode bypass")
+    assert store.get_settings("222").devin_mode is None
+    assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    await runtime.handle_callback({
+        "id": "cfg-m",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+        "data": "cfg:mode:smart",
+    })
+    assert store.get_settings("222").devin_mode is None
+    assert "Admins only" in telegram.answers[-1]
+    # prompting modes stay open to everyone
+    await handle_command(runtime, message("/mode fast"), "/mode fast")
+    assert store.get_settings("222").devin_mode == "fast"
+    await runtime.handle_callback({
+        "id": "cfg-m2",
+        "from": {"id": 900, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+        "data": "cfg:mode:bypass",
+    })
+    assert store.get_settings("222").devin_mode == "bypass"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_local_session_denied_for_non_admin(tmp_path: Path) -> None:
+    # even when an admin set platform=local, only admins may create or
+    # drive a host session — otherwise any chat member gets host access
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_admin_user_ids="900",
+            telegram_allowed_users="111,900",
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    runtime._is_finished = lambda _sid: _async(False)  # type: ignore[method-assign]
+    runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+    store.update_settings("222", platform="local")
+    created: list[object] = []
+    runtime.local.create_session = (  # type: ignore[method-assign]
+        lambda *a, **k: created.append(a) or _async(("local:s1", "local"))
+    )
+    sent: list[tuple[str, str]] = []
+    runtime.local.send_message = (  # type: ignore[method-assign]
+        lambda s, t: sent.append((s, t)) or _async(None)
+    )
+    await runtime.handle_user_turn(message("hi"), "hi")
+    assert not created
+    assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    await runtime.handle_user_turn(message("hi", user_id=900), "hi")
+    assert created
+    await runtime.handle_user_turn(message("more"), "more")
+    assert not sent
+    assert "admins only" in str(telegram.sent[-1]["text"]).lower()
+    # an OPTIONS: button tap drives the session just like a typed turn
+    store.add_choice("c1", "222", "local:s1", 222, "yes", 50)
+    await runtime.handle_callback({
+        "id": "cb-opt",
+        "from": {"id": 111, "is_bot": False},
+        "message": {
+            "message_id": 50,
+            "chat": {"id": 222, "type": "private"},
+        },
+        "data": "c1",
+    })
+    assert not sent
+    assert "Admins only" in telegram.answers[-1]
+    await runtime.handle_user_turn(message("more", user_id=900), "more")
+    assert sent
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_detach_suspends_local_session(tmp_path: Path) -> None:
+    # /new must not leave a detached agent running on the host — its
+    # permission prompts would have no conversation to surface in; the
+    # process stops but the persisted session stays /resume-able
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    killed: list[str] = []
+    runtime.local.suspend = (  # type: ignore[method-assign]
+        lambda sid: killed.append(sid) or _async(None)
+    )
+    conv = store.get_conversation("222")
+    assert conv is not None
+    await runtime.detach_conversation(conv)
+    assert killed == ["local:s1"]
+    assert store.get_conversation("222") is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_permission_prompt_fails_closed(tmp_path: Path) -> None:
+    # no mapped conversation, or a failed prompt delivery -> the request
+    # is rejected, never auto-allowed
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    rejected: list[tuple[str, object]] = []
+    runtime.local.reject_permission = (  # type: ignore[method-assign]
+        lambda s, r: rejected.append((s, r))
+    )
+    msg = {
+        "id": 9,
+        "params": {
+            "toolCall": {"title": "Run rm -rf"},
+            "options": [
+                {"optionId": "allow", "name": "Allow"},
+                {"optionId": "reject", "name": "Reject"},
+            ],
+        },
+    }
+    await runtime._send_permission_prompt("local:detached", msg)
+    assert rejected == [("local:detached", 9)]
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+
+    async def boom(*_a: object, **_k: object) -> list[dict[str, object]]:
+        raise RuntimeError("blocked")
+
+    runtime.telegram.send_markdown = boom  # type: ignore[method-assign]
+    rejected.clear()
+    await runtime._send_permission_prompt("local:s1", msg)
+    assert rejected == [("local:s1", 9)]
     await runtime.shutdown()
 
 

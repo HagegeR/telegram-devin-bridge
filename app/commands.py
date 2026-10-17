@@ -10,7 +10,7 @@ import httpx
 from app.access import is_allowed, is_topic_chat
 from app.config import Settings
 from app.crawlers import CRAWLER_NAMES
-from app.devin import DevinClient, Playbook, SessionState
+from app.devin import MAX_ACU_LIMIT, DevinClient, Playbook, SessionState
 from app.formatting import (
     rich_details,
     rich_paragraph,
@@ -18,7 +18,13 @@ from app.formatting import (
     rich_text_code,
     rich_text_link,
 )
-from app.local import MODEL_TIER_ICONS, LocalClient, is_local, sort_models
+from app.local import (
+    APPROVAL_SKIPPING_MODES,
+    MODEL_TIER_ICONS,
+    LocalClient,
+    is_local,
+    sort_models,
+)
 from app.store import Conversation, HistoryEntry, Store
 
 SYSTEM_PREAMBLE = (
@@ -104,7 +110,7 @@ class CommandRuntime(Protocol):
         *,
         playbook_id: str | None = None,
         start_watcher: bool = True,
-    ) -> Conversation: ...
+    ) -> Conversation | None: ...
 
     async def start_watcher(
         self,
@@ -220,6 +226,7 @@ async def handle_command(
         is_forum=is_topic_chat(message),
     )
     conversation = runtime.store.get_conversation(conv_key)
+    sender_id = _int(_mapping(message.get("from")).get("id"))
     if command in {"start", "help"}:
         help_text = _start_text() if command == "start" else _help_html()
         tip = (
@@ -423,6 +430,18 @@ async def handle_command(
                 ephemeral=True,
             )
         elif re.fullmatch(r"[\w.-]+", value):
+            if (
+                value == "local"
+                and sender_id not in runtime.settings.admin_user_ids
+            ):
+                # local sessions run devin acp on the bridge host itself
+                # with the bridge's env and filesystem — admin-only
+                await runtime.send_text(
+                    message,
+                    "⛔ Local sessions run an agent on the bridge host — admins only.",
+                    ephemeral=True,
+                )
+                return
             available = [*await runtime.devin.platforms(), "local"]
             # An empty list means the probe failed, not that the org has
             # no platforms — accept the name and let Devin arbitrate.
@@ -484,6 +503,15 @@ async def handle_command(
                 + v3_hint,
                 ephemeral=True,
             )
+        elif local and sender_id not in runtime.settings.admin_user_ids:
+            # every mode mutation steers the host session — not just the
+            # approval-skipping ones (a flip to ask/plan still reconfigures
+            # an admin's running agent)
+            await runtime.send_text(
+                message,
+                "⛔ This chat's session runs on the bridge host — admins only.",
+                ephemeral=True,
+            )
         elif value.casefold() in {"default", "off", "reset"}:
             runtime.store.update_chat_settings(conv_key, devin_mode=None)
             applied = ""
@@ -502,7 +530,17 @@ async def handle_command(
                 ephemeral=True,
             )
         else:
-            if modes and value not in modes:
+            if (
+                value in APPROVAL_SKIPPING_MODES
+                and sender_id not in runtime.settings.admin_user_ids
+            ):
+                # approval-skipping modes hand out unattended host access
+                await runtime.send_text(
+                    message,
+                    f"⛔ Mode {value} auto-approves every tool call — admins only.",
+                    ephemeral=True,
+                )
+            elif modes and value not in modes:
                 await runtime.send_text(
                     message,
                     f"Unknown mode: {value}\nAvailable: {', '.join(modes)}",
@@ -548,6 +586,12 @@ async def handle_command(
                 f"Model: {current or 'cli default'}"
                 + options_line
                 + "\n/model <slug> to set · /model default to reset",
+                ephemeral=True,
+            )
+        elif sender_id not in runtime.settings.admin_user_ids:
+            await runtime.send_text(
+                message,
+                "⛔ This chat's session runs on the bridge host — admins only.",
                 ephemeral=True,
             )
         elif value.casefold() in {"default", "off", "reset"}:
@@ -612,6 +656,12 @@ async def handle_command(
                 f"Thinking: {current or 'cli default'}"
                 + options_line
                 + "\n/think <level> to set · /think default to reset",
+                ephemeral=True,
+            )
+        elif sender_id not in runtime.settings.admin_user_ids:
+            await runtime.send_text(
+                message,
+                "⛔ This chat's session runs on the bridge host — admins only.",
                 ephemeral=True,
             )
         elif value.casefold() in {"default", "off", "reset"}:
@@ -684,7 +734,7 @@ async def handle_command(
                 "ACU limit reset — new sessions use the org default.",
                 ephemeral=True,
             )
-        elif value.isdigit() and 0 < int(value) <= 1000:
+        elif value.isdecimal() and 0 < int(value) <= MAX_ACU_LIMIT:
             runtime.store.update_chat_settings(conv_key, acu_limit=int(value))
             await runtime.send_text(
                 message,
@@ -694,7 +744,7 @@ async def handle_command(
         else:
             await runtime.send_text(
                 message,
-                "Usage: /acu 1-1000 · /acu default",
+                f"Usage: /acu 1-{MAX_ACU_LIMIT} · /acu default",
                 ephemeral=True,
             )
     elif command == "tags":
@@ -980,6 +1030,15 @@ async def handle_command(
     elif command == "retry":
         if conversation is None or not conversation.last_user_text:
             await runtime.send_text(message, "Nothing to retry.")
+        elif (
+            is_local(conversation.session_id)
+            and sender_id not in runtime.settings.admin_user_ids
+        ):
+            await runtime.send_text(
+                message,
+                "⛔ This session runs on the bridge host — admins only.",
+                ephemeral=True,
+            )
         else:
             await runtime.retry_conversation(conversation)
     elif command == "steer":
@@ -991,6 +1050,16 @@ async def handle_command(
                 "Usage: /steer <text> — send a message to the running session immediately.",
             )
         else:
+            if (
+                is_local(conversation.session_id)
+                and sender_id not in runtime.settings.admin_user_ids
+            ):
+                await runtime.send_text(
+                    message,
+                    "⛔ This session runs on the bridge host — admins only.",
+                    ephemeral=True,
+                )
+                return
             await runtime.send_session_message(conversation.session_id, args)
             await runtime.react(message, "👀")
             await runtime.start_watcher(
@@ -1019,7 +1088,15 @@ async def handle_command(
         # (/fast, /compact, /loop, skills like /ponytail:ponytail) as
         # plain prompts; forward the raw head so namespaced names and
         # arg casing survive (_parse rejects ':' and lowercases)
-        if runtime.rate_limited(_int(_mapping(message.get("from")).get("id"))):
+        if sender_id not in runtime.settings.admin_user_ids:
+            # same host-access gate as message turns and /steer
+            await runtime.send_text(
+                message,
+                "⛔ This session runs on the bridge host — admins only.",
+                ephemeral=True,
+            )
+            return
+        if runtime.rate_limited(sender_id):
             await runtime.send_text(
                 message, "⏳ Slow down — try again in a moment."
             )
