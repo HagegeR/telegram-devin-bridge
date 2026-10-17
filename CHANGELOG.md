@@ -10,6 +10,12 @@ and deployment update channels.
 
 ### Fixed
 
+- A single oversized `tool_call` command from `devin acp` could stall the
+  whole bridge: the credential-scrubbing regex backtracked catastrophically
+  on inputs like `-key-key-…` and ran on the uncapped command string on
+  the event loop. Commands are now truncated before scrubbing, ACP lines
+  past 1MB are dropped, and the regex is rewritten without unbounded
+  adjacent quantifiers (200KB input: ~105s → ~0.25s).
 - A local session whose `devin acp` subprocess stayed alive but stopped
   answering mid-turn (the CLI's internal event channel can deadlock —
   observed blocked for 40+min) showed `working` forever: a watchdog now

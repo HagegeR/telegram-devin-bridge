@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -442,6 +443,14 @@ def test_scrub_command_masks_credentials() -> None:
         for secret in ("tok123", "sk-abc123", "secret", "ghp_xyz"):
             assert secret not in scrubbed, (raw, scrubbed)
     assert _scrub_command("rtk pytest -q") == "rtk pytest -q"
+
+
+def test_scrub_command_bounds_backtracking() -> None:
+    # "-key-key-…" used to force cubic backtracking in _SECRET_RE — at
+    # this size the old pattern needed tens of seconds on the event loop
+    start = time.monotonic()
+    _scrub_command("-key" * 25_000)
+    assert time.monotonic() - start < 2
 
 
 @pytest.mark.asyncio

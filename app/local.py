@@ -146,6 +146,10 @@ _WEDGE_PROBE_TIMEOUT = 30
 # on newlines manually because the default 64KB StreamReader limit used
 # to crash the reader and orphan every turn on that session
 _STREAM_CHUNK = 65536
+# ...but one boundless JSON-RPC line would still stall the loop (parse
+# cost, regex scrub) — drop lines past a megabyte instead of handling
+# them; real updates are nowhere near that size
+_ACP_MAX_LINE = 1 << 20
 
 
 # structured agent logs ("2026-10-12T22:19:57Z INFO target: msg") are
@@ -194,10 +198,14 @@ _STREAM_MAX_BUFFER = 3072
 # that looks like a credential before it can leak to the chat
 _SECRET_RE = re.compile(
     r"(?i)("
-    r"(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]"
+    r"(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]{0,64}\s*[=:]"
     r"\s*(?:(?:bearer|basic)\s+)?"
     r"|(?:bearer|basic)\s+"
-    r"|--?[\w-]*(?:key|token|secret|passw(?:or)?d|auth)[\w-]*\s*[= ]"
+    # lookahead asserts a secret-keyword occurs in the flag token, then
+    # one greedy pass consumes it — unbounded adjacent [\w-]* quantifiers
+    # here used to backtrack cubically on inputs like "-key-key-…";
+    # both are bounded (flags are short) so the check stays linear
+    r"|--?(?=[\w-]{0,64}(?:key|token|secret|passw(?:or)?d|auth))[\w-]{0,128}\s*[= ]"
     r")\s*(?:[\"'][^\"']*[\"']?|\S+)"
 )
 _USERINFO_RE = re.compile(r"(?<=://)[^\s/:]+:[^\s@]+@")
@@ -1400,7 +1408,7 @@ class LocalClient:
             buf += chunk
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
-                if not raw:
+                if not raw or len(raw) > _ACP_MAX_LINE:
                     continue
                 try:
                     msg = json.loads(raw)
@@ -1412,6 +1420,10 @@ class LocalClient:
                     # a malformed update must not kill the reader — its
                     # pending turns would otherwise hang forever
                     logger.warning("bad acp update skipped: %.200s", raw)
+            if len(buf) > _ACP_MAX_LINE:
+                # an unterminated oversized line: drop it chunk-by-chunk
+                # so memory and downstream scrub cost stay bounded
+                buf = b""
         sess.dead = True
         # stdout can close before stderr finishes draining — give the
         # drain a moment so the tail is complete for the detail and the
@@ -1565,4 +1577,6 @@ class LocalClient:
             cmd = raw.get("command") if isinstance(raw, dict) else None
             title = cmd or update.get("title") or update.get("kind")
             if title:
-                sess.activity = _scrub_command(str(title))[:120]
+                # truncate before scrubbing — _SECRET_RE on a huge
+                # command would stall the event loop
+                sess.activity = _scrub_command(str(title)[:512])[:120]
