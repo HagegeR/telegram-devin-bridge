@@ -25,6 +25,7 @@ from app.formatting import (
     markdown_to_telegram_markdown_v2,
     parse_rich_segments,
     split_long_text,
+    topic_name,
 )
 from app.images import photo_fits_unchanged
 from app.store import PLACEHOLDER_TITLE_PREFIX, Conversation, Store
@@ -493,7 +494,7 @@ class SessionWatcher:
         if conv.thread_id is not None and conv.conv_key == Store.conv_key(
             conv.chat_id, conv.thread_id, is_forum=True
         ):
-            if not await self._edit_topic(title):
+            if not await self._edit_topic(topic_name(title)):
                 return
             stored = self.store.get_conversation(conv.conv_key)
             if stored is None or stored.session_id != conv.session_id:

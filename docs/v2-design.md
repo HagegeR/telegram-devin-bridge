@@ -233,10 +233,14 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     derived from the prompt itself — the bridge ignores any reported
     title that prefixes the whitespace-normalized prompt it sent (the
     CLI collapses newlines to spaces and truncates to ~80 chars ending
-    in `...`, so a raw prefix check misses it) or that looks like a
-    tool-call serialization (`name:N{…}`), so boilerplate instructions
-    and tool dumps never become the subject. On resume the
-    `session/list` title is authoritative: replayed provisional updates
+    in `...`, so a raw prefix check misses it), that is a ~60+ char
+    truncation ending in an ellipsis (suffix plus length marks
+    provisionals derived from the reply head rather than the prompt; a
+    short title may legitimately end in `…`), or that looks
+    like a tool-call serialization (`name:N{…}`), so boilerplate
+    instructions and tool dumps never become the subject. On resume the
+    `session/list` title is authoritative unless it is itself a
+    truncated provisional: replayed provisional updates
     (the sent prompt is not persisted) cannot replace it.
     Sessions have no cloud URL, and ignore
     the cloud
@@ -346,7 +350,12 @@ chat drafts while Devin works and falls back to typing on rejection. Implicit
 topics are renamed to the session title once it is known — the
 generated title (cloud or the local CLI's `session_info_update`) for an
 untitled session, the explicit `/new` title otherwise — rather than to
-the first line of the prompt. When the session settles before any title
+the first line of the prompt. Auto-derived names are capped at five
+words plus an ellipsis (`formatting.topic_name`) so a sentence-length
+generated title still leaves a glanceable subject; explicit names
+(`/new`, `/rename`, `/topic`) are never shortened, and the stored title
+keeps the full text for `/status` and `/sessions`. When the session
+settles before any title
 arrives, the watcher waits a few more polls and then names the topic
 from the prompt anyway so it never keeps Telegram's generic name. Option buttons include
 `disabled: {}` after selection, while `/stop` uses `danger` and `primary`

@@ -2954,6 +2954,51 @@ async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_watcher_caps_a_long_session_title_for_the_topic(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class VerboseDevin(_FakeDevin):
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return SessionState(
+                "finished",
+                "Fix Pirushim Search iOS Keyboard, Selection Limit, and Guidance",
+                None,
+                [],
+            )
+
+    await SessionWatcher(
+        conversation,
+        store,
+        VerboseDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    # the topic stays glanceable; the stored title keeps the full text
+    assert telegram.edited_topics == [
+        (222, 7, "Fix Pirushim Search iOS Keyboard…")
+    ]
+    assert store.get_conversation("222:7").title == (  # type: ignore[union-attr]
+        "Fix Pirushim Search iOS Keyboard, Selection Limit, and Guidance"
+    )
+
+
+@pytest.mark.asyncio
 async def test_watcher_names_topic_from_prompt_when_title_never_arrives(
     tmp_path: Path,
 ) -> None:
@@ -3062,7 +3107,10 @@ async def test_watcher_retries_manual_title_after_failed_reconcile(
             self.edited_topics.append((chat_id, thread_id, name))
             if name == "A useful session title":
                 store.update_conversation(
-                    "222:7", "s1", title="Manual", title_pending=False
+                    "222:7",
+                    "s1",
+                    title="My carefully chosen six word topic name",
+                    title_pending=False,
                 )
             elif self.edited_topics.count((chat_id, thread_id, name)) <= 3:
                 raise httpx.ReadTimeout("temporary failure")
@@ -3096,10 +3144,13 @@ async def test_watcher_retries_manual_title_after_failed_reconcile(
         sleep=no_sleep,
     ).run()
     names = [name for _, _, name in telegram.edited_topics]
-    assert names == ["A useful session title"] + ["Manual"] * 4
+    # manual names are never shortened, even on reconcile retries
+    assert names == ["A useful session title"] + [
+        "My carefully chosen six word topic name"
+    ] * 4
     stored = store.get_conversation("222:7")
     assert stored is not None
-    assert stored.title == "Manual"
+    assert stored.title == "My carefully chosen six word topic name"
 
 
 @pytest.mark.asyncio
