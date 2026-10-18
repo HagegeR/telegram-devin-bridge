@@ -25,6 +25,7 @@ from app.formatting import (
     markdown_to_telegram_markdown_v2,
     parse_rich_segments,
     split_long_text,
+    topic_name,
 )
 from app.images import photo_fits_unchanged
 from app.store import PLACEHOLDER_TITLE_PREFIX, Conversation, Store
@@ -475,7 +476,7 @@ class SessionWatcher:
         for attempt in range(3):
             try:
                 await self.telegram.edit_forum_topic(
-                    conv.chat_id, conv.thread_id, title[:128]
+                    conv.chat_id, conv.thread_id, topic_name(title)
                 )
                 return True
             except (RuntimeError, httpx.HTTPError):

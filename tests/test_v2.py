@@ -2954,6 +2954,51 @@ async def test_watcher_renames_topic_to_session_title(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_watcher_caps_a_long_session_title_for_the_topic(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:7",
+        chat_id=222,
+        thread_id=7,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="Telegram: prompt",
+        title_pending=True,
+    )
+    conversation = store.get_conversation("222:7")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+
+    class VerboseDevin(_FakeDevin):
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            return SessionState(
+                "finished",
+                "Fix Pirushim Search iOS Keyboard, Selection Limit, and Guidance",
+                None,
+                [],
+            )
+
+    await SessionWatcher(
+        conversation,
+        store,
+        VerboseDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    ).run()
+    # the topic stays glanceable; the stored title keeps the full text
+    assert telegram.edited_topics == [
+        (222, 7, "Fix Pirushim Search iOS Keyboard…")
+    ]
+    assert store.get_conversation("222:7").title == (  # type: ignore[union-attr]
+        "Fix Pirushim Search iOS Keyboard, Selection Limit, and Guidance"
+    )
+
+
+@pytest.mark.asyncio
 async def test_watcher_names_topic_from_prompt_when_title_never_arrives(
     tmp_path: Path,
 ) -> None:

@@ -614,3 +614,18 @@ def parse_rich_segments(text: str) -> list[dict[str, object]] | None:
     if found:
         flush()
     return segments if found else None
+
+
+# Forum topic names stay glanceable: auto-derived session titles run to
+# sentence length, so a topic keeps only the first few words. Explicit
+# names (/rename, /topic, /new) bypass this — the user typed them.
+_TOPIC_NAME_MAX_WORDS = 5
+
+
+def topic_name(title: str) -> str:
+    """Cap an auto-derived session title for use as a forum topic name."""
+    words = title.split()
+    if len(words) <= _TOPIC_NAME_MAX_WORDS:
+        return title[:128]
+    head = " ".join(words[:_TOPIC_NAME_MAX_WORDS]).rstrip(" ,;:")
+    return f"{head[:127]}…"

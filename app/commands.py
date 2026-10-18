@@ -17,6 +17,7 @@ from app.formatting import (
     rich_text_bold,
     rich_text_code,
     rich_text_link,
+    topic_name,
 )
 from app.local import (
     APPROVAL_SKIPPING_MODES,
@@ -1269,7 +1270,7 @@ async def _resume(
         try:
             if thread_id is not None:
                 await runtime.edit_forum_topic(
-                    chat_id, thread_id, state.title[:128]
+                    chat_id, thread_id, topic_name(state.title)
                 )
         except (RuntimeError, httpx.HTTPError):
             retry_title = True

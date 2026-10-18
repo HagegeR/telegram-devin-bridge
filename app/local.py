@@ -170,6 +170,15 @@ _LOG_LINE = re.compile(
 )
 
 
+def _is_provisional_title(title: str) -> bool:
+    # the CLI's provisional title is the prompt/activity head truncated to
+    # ~80 chars ending in "..." — the suffix marks provisionals the
+    # prompt-head prefix check misses (reply-derived, or replayed on a
+    # resumed session whose prompt_head is empty); generated titles never
+    # end in an ellipsis
+    return " ".join(title.split()).endswith(("...", "…"))
+
+
 class _TurnRescheduledError(Exception):
     """A queued turn's process died — its prompt moved to the resumed
     process; the turn's own failure is not user-visible."""
@@ -1429,7 +1438,11 @@ class LocalClient:
             })
             for entry in listed.get("sessions", []):
                 if entry.get("sessionId") == acp_id:
-                    return str(entry.get("title") or "")
+                    title = str(entry.get("title") or "")
+                    # a persisted provisional is a truncated prompt head,
+                    # not a title — leave the session untitled so a real
+                    # generated title can still land
+                    return "" if _is_provisional_title(title) else title
         except (RuntimeError, TimeoutError):
             pass
         return ""
@@ -1626,6 +1639,7 @@ class LocalClient:
                     and " ".join(sess.prompt_head.split()).startswith(cand)
                 )
                 and not _TOOL_TITLE.match(title)
+                and not _is_provisional_title(title)
             ):
                 sess.title = title
             return

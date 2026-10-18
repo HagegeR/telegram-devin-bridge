@@ -254,7 +254,8 @@ FAKE_ACP = textwrap.dedent(
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"sessions": [{
                                   "sessionId": sid,
-                                  "title": "resumed title",
+                                  "title": os.environ.get(
+                                      "FAKE_LIST_TITLE", "resumed title"),
                               }]}}), flush=True)
         elif meth == "session/delete":
             print(json.dumps({"jsonrpc": "2.0", "id": i, "result": {}}), flush=True)
@@ -1273,6 +1274,42 @@ async def test_tool_derived_provisional_title_is_ignored(
             break
         await asyncio.sleep(0.1)
     assert state.title == "Generated title"
+
+
+@pytest.mark.asyncio
+async def test_reply_derived_provisional_title_is_ignored(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a provisional can be the head of the agent's own reply rather than
+    # the prompt — it never prefixes prompt_head, but the truncation
+    # ellipsis marks it either way, so it must not become the subject
+    monkeypatch.setenv(
+        "FAKE_PROVISIONAL",
+        "⚠ I can't open external URLs, so I need the session content "
+        "to edit it. Send ...",
+    )
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo:")
+    assert (await shell_client.get_session(session_id)).title == ""
+
+
+@pytest.mark.asyncio
+async def test_resumed_provisional_list_title_is_ignored(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a session whose generated title never landed keeps the provisional
+    # in the CLI DB — a truncated prompt head is not a title, so the
+    # resumed session stays untitled and can still pick up a real one
+    monkeypatch.setenv(
+        "FAKE_LIST_TITLE", "prompt head fragment, find matching ones, and fo..."
+    )
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+    await shell_client.send_message(session_id, "second")
+    await _wait_for(shell_client, session_id, "echo: second")
+    assert (await shell_client.get_session(session_id)).title == ""
 
 
 @pytest.mark.asyncio

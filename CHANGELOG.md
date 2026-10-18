@@ -8,6 +8,24 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Changed
+
+- Forum topic names are capped at five words (plus an ellipsis) when the
+  bridge derives them — generated session titles run to sentence length,
+  which made every subject unreadable in the topic list. Explicit names
+  (`/new`, `/rename`, `/topic`) are never shortened, and `/status` and
+  `/sessions` keep the full title.
+
+### Fixed
+
+- Local sessions could still be titled by the CLI's ~80-char
+  provisional: a `session_info_update` title derived from the agent's
+  own reply head (rather than the prompt) slipped past the prefix check,
+  and the resume path took the persisted `session/list` title — often
+  the provisional — unconditionally. Any title ending in `...`/`…` is
+  now treated as a provisional on both paths, so truncated prompt or
+  reply fragments never become the subject.
+
 ## [v3.0.0] - 2026-10-18
 
 ### Breaking
