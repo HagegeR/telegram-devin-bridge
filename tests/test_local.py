@@ -1301,7 +1301,8 @@ async def test_resumed_provisional_list_title_is_ignored(
     # in the CLI DB — a truncated prompt head is not a title, so the
     # resumed session stays untitled and can still pick up a real one
     monkeypatch.setenv(
-        "FAKE_LIST_TITLE", "prompt head fragment, find matching ones, and fo..."
+        "FAKE_LIST_TITLE",
+        "prompt head fragment, find matching ones, fix missing, and fo...",
     )
     session_id, _ = await shell_client.create_session("first")
     await _wait_for(shell_client, session_id, "echo: first")
@@ -1310,6 +1311,38 @@ async def test_resumed_provisional_list_title_is_ignored(
     await shell_client.send_message(session_id, "second")
     await _wait_for(shell_client, session_id, "echo: second")
     assert (await shell_client.get_session(session_id)).title == ""
+
+
+@pytest.mark.asyncio
+async def test_short_ellipsis_title_is_kept(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a short title that merely ends in an ellipsis is a real title —
+    # only the ~80-char truncated head marks a provisional
+    monkeypatch.setenv("FAKE_PROVISIONAL", "What happens next…")
+    session_id, _ = await shell_client.create_session("hello")
+    for _ in range(50):
+        state = await shell_client.get_session(session_id)
+        if state.title:
+            break
+        await asyncio.sleep(0.1)
+    assert state.title == "What happens next…"
+
+
+@pytest.mark.asyncio
+async def test_resumed_ellipsis_title_is_kept(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_LIST_TITLE", "What happens next…")
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+    await shell_client.send_message(session_id, "second")
+    await _wait_for(shell_client, session_id, "echo: second")
+    assert (await shell_client.get_session(session_id)).title == (
+        "What happens next…"
+    )
 
 
 @pytest.mark.asyncio

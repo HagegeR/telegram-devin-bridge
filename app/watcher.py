@@ -476,7 +476,7 @@ class SessionWatcher:
         for attempt in range(3):
             try:
                 await self.telegram.edit_forum_topic(
-                    conv.chat_id, conv.thread_id, topic_name(title)
+                    conv.chat_id, conv.thread_id, title[:128]
                 )
                 return True
             except (RuntimeError, httpx.HTTPError):
@@ -494,7 +494,7 @@ class SessionWatcher:
         if conv.thread_id is not None and conv.conv_key == Store.conv_key(
             conv.chat_id, conv.thread_id, is_forum=True
         ):
-            if not await self._edit_topic(title):
+            if not await self._edit_topic(topic_name(title)):
                 return
             stored = self.store.get_conversation(conv.conv_key)
             if stored is None or stored.session_id != conv.session_id:

@@ -170,13 +170,20 @@ _LOG_LINE = re.compile(
 )
 
 
+# the truncated provisional is ~80 chars; a shorter title that merely
+# ends in an ellipsis is a real title that chose that punctuation
+_PROVISIONAL_MIN_LEN = 60
+
+
 def _is_provisional_title(title: str) -> bool:
     # the CLI's provisional title is the prompt/activity head truncated to
-    # ~80 chars ending in "..." — the suffix marks provisionals the
-    # prompt-head prefix check misses (reply-derived, or replayed on a
-    # resumed session whose prompt_head is empty); generated titles never
-    # end in an ellipsis
-    return " ".join(title.split()).endswith(("...", "…"))
+    # ~80 chars ending in "..." — suffix plus length marks provisionals
+    # the prompt-head prefix check misses (reply-derived, or replayed on
+    # a resumed session whose prompt_head is empty)
+    normalized = " ".join(title.split())
+    return len(normalized) >= _PROVISIONAL_MIN_LEN and normalized.endswith(
+        ("...", "…")
+    )
 
 
 class _TurnRescheduledError(Exception):

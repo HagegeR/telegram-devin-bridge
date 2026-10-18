@@ -22,9 +22,10 @@ and deployment update channels.
   provisional: a `session_info_update` title derived from the agent's
   own reply head (rather than the prompt) slipped past the prefix check,
   and the resume path took the persisted `session/list` title — often
-  the provisional — unconditionally. Any title ending in `...`/`…` is
-  now treated as a provisional on both paths, so truncated prompt or
-  reply fragments never become the subject.
+  the provisional — unconditionally. Long (~60+ char) titles ending in
+  `...`/`…` are now treated as provisionals on both paths, so truncated
+  prompt or reply fragments never become the subject while short
+  ellipsis-ended titles survive.
 
 ## [v3.0.0] - 2026-10-18
 

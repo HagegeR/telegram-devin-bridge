@@ -233,9 +233,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     derived from the prompt itself — the bridge ignores any reported
     title that prefixes the whitespace-normalized prompt it sent (the
     CLI collapses newlines to spaces and truncates to ~80 chars ending
-    in `...`, so a raw prefix check misses it), that ends in an
-    ellipsis (the truncation's signature — it also marks provisionals
-    derived from the reply head rather than the prompt), or that looks
+    in `...`, so a raw prefix check misses it), that is a ~60+ char
+    truncation ending in an ellipsis (suffix plus length marks
+    provisionals derived from the reply head rather than the prompt; a
+    short title may legitimately end in `…`), or that looks
     like a tool-call serialization (`name:N{…}`), so boilerplate
     instructions and tool dumps never become the subject. On resume the
     `session/list` title is authoritative unless it is itself a

@@ -3107,7 +3107,10 @@ async def test_watcher_retries_manual_title_after_failed_reconcile(
             self.edited_topics.append((chat_id, thread_id, name))
             if name == "A useful session title":
                 store.update_conversation(
-                    "222:7", "s1", title="Manual", title_pending=False
+                    "222:7",
+                    "s1",
+                    title="My carefully chosen six word topic name",
+                    title_pending=False,
                 )
             elif self.edited_topics.count((chat_id, thread_id, name)) <= 3:
                 raise httpx.ReadTimeout("temporary failure")
@@ -3141,10 +3144,13 @@ async def test_watcher_retries_manual_title_after_failed_reconcile(
         sleep=no_sleep,
     ).run()
     names = [name for _, _, name in telegram.edited_topics]
-    assert names == ["A useful session title"] + ["Manual"] * 4
+    # manual names are never shortened, even on reconcile retries
+    assert names == ["A useful session title"] + [
+        "My carefully chosen six word topic name"
+    ] * 4
     stored = store.get_conversation("222:7")
     assert stored is not None
-    assert stored.title == "Manual"
+    assert stored.title == "My carefully chosen six word topic name"
 
 
 @pytest.mark.asyncio
