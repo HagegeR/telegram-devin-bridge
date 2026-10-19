@@ -9,6 +9,18 @@ from collections import Counter
 
 _started = time.monotonic()
 _counters: Counter[str] = Counter()
+# the documented counters, rendered even while still zero — an absent row
+# reads as missing instrumentation, not as "nothing happened"
+_NAMES = (
+    "updates",
+    "commands",
+    "turns",
+    "sessions_cloud",
+    "sessions_local",
+    "events",
+    "errors",
+    "watcher_failures",
+)
 
 
 def incr(name: str) -> None:
@@ -21,7 +33,8 @@ def render() -> str:
     minutes, seconds = divmod(rem, 60)
     age = f"{hours}h{minutes}m{seconds}s" if hours else f"{minutes}m{seconds}s"
     lines = [f"◆ Metrics · uptime {age} (counters reset on restart)"]
-    width = max((len(name) for name in _counters), default=0)
-    for name, count in sorted(_counters.items()):
-        lines.append(f"{name.ljust(width)}  {count}")
+    extras = sorted(name for name in _counters if name not in _NAMES)
+    width = max((len(name) for name in (*_NAMES, *extras)), default=0)
+    for name in (*_NAMES, *extras):
+        lines.append(f"{name.ljust(width)}  {_counters[name]}")
     return "\n".join(lines)

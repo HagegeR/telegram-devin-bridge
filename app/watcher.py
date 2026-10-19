@@ -344,7 +344,7 @@ class SessionWatcher:
                                 last_event_id=message.event_id,
                             )
                         self.delivered_count += 1
-                        metrics.incr("replies")
+                        metrics.incr("events")
                     if status_changed and self.on_status_change is not None:
                         await self.on_status_change(state.status_enum)
                     if state.pr_url is not None and state.pr_url != last_pr_url:

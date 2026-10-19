@@ -12,7 +12,9 @@ and deployment update channels.
 
 - **`/metrics`**: an admin-only command rendering process counters since
   boot (`updates`, `commands`, `turns`, `sessions_cloud`/`sessions_local`,
-  `replies`, `errors`, `watcher_failures`) plus uptime. In-memory only;
+  `events`, `errors`, `watcher_failures`) plus uptime, restricted to
+  private chats so an ephemeral fallback can't leak them to a group.
+  In-memory only;
   nothing is persisted or attributed per chat.
 
 ### Changed

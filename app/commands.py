@@ -1086,6 +1086,13 @@ async def handle_command(
                 message, "⛔ Metrics are admin-only.", ephemeral=True
             )
             return
+        if _mapping(message.get("chat")).get("type") != "private":
+            # send_text falls back to a public retry when ephemeral fails,
+            # which would leak admin-only counters to the whole group
+            await runtime.send_text(
+                message, "Run /metrics in your private chat with me."
+            )
+            return
         await runtime.send_text(message, metrics.render(), ephemeral=True)
     elif (
         conversation is not None
