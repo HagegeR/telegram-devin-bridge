@@ -66,19 +66,23 @@ repos:
         additional_dependencies: ["shellcheck-py==0.11.0.1"]
         files: ^deploy/.*\.sh$
         priority: 10
-      # Uses the repo's own .venv (the suite needs the real deps, not an
-      # isolated env). Self-skips on machines without a .venv; CI remains the
-      # authoritative gate. `python -m pytest` puts the repo root on sys.path.
-      # `language: python` supplies the bootstrap interpreter (dep-less python
-      # hooks are supported since pre-commit 4.5.1).
+      # Managed env with the real deps — pinned runtime deps mirror
+      # requirements.txt (keep in sync; pip/uv can't read the file from a
+      # local hook env). `python -m pytest` puts the repo root on sys.path.
       - id: pytest
         name: pytest
-        entry: >-
-          python -c "import os,subprocess,sys;
-          b=next((p for p in (r'.venv/bin/python',r'.venv/Scripts/python.exe')
-          if os.path.exists(p)),None);
-          sys.exit(0 if b is None else subprocess.call([b,'-m','pytest','-q']))"
+        entry: python -m pytest -q
         language: python
+        additional_dependencies:
+          - fastapi==0.143.0
+          - httpx==0.28.1
+          - Pillow==12.3.0
+          - pydantic-settings==2.15.0
+          - uvicorn[standard]==0.54.0
+          - pytest
+          - pytest-asyncio
+          - pytest-timeout
+          - anyio
         files: ^(app|tests)/
         pass_filenames: false
         priority: 10
