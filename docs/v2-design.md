@@ -204,7 +204,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     can't silently eat a question. The marker is kept when the process
     died (shutdown/crash/evict — an interrupted turn, not a failed one),
     cleared when a live prompt call errors, and dropped atomically when
-    `save_conversation` swaps the row to a different session. A resume
+    `save_conversation` swaps the row to a different session. A
+    `session/prompt` error the CLI flags retryable
+    (`cognition.ai/retryable`, e.g. `agent_channel_closed`) is retried
+    once after ~1s on the same process — a second failure reports like
+    any other error, and a prompt that overtakes it during the backoff
+    simply lands first as a steer. Requests issued to a dead process
+    fail fast instead of waiting on a reply that can't arrive. A resume
     that runs before its conversation is active (`/resume` of a history
     entry) applies the chat config on the first prompt instead. A wedge
     watchdog guards live processes: while a turn is running, stdout

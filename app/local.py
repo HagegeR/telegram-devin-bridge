@@ -888,11 +888,19 @@ class LocalClient:
                             raise
                         # the CLI marked the failure retryable (e.g. a
                         # dropped agent channel) — one retry keeps a
-                        # transient blip from eating the prompt
+                        # transient blip from eating the prompt. Log only
+                        # the error kind: the raw object can echo the
+                        # prompt, which may carry a secret (/login keys)
+                        data = exc.error.get("data")
+                        kind = (
+                            data.get("cognition.ai/errorKind")
+                            if isinstance(data, dict)
+                            else None
+                        )
                         logger.info(
-                            "retrying local prompt for %s: %s",
+                            "retrying local prompt for %s after %s",
                             sess.acp_id,
-                            exc,
+                            kind or exc.error.get("code"),
                         )
                         await asyncio.sleep(_RETRY_BACKOFF)
             except asyncio.CancelledError:
@@ -1624,6 +1632,10 @@ class LocalClient:
     ) -> tuple[int, asyncio.Future]:
         self._next_id += 1
         req_id = self._next_id
+        if sess.dead:
+            # a request sent after the reader settled pending futures would
+            # never resolve — fail fast so callers take the dead-session path
+            raise RuntimeError("acp process exited")
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         sess.pending[req_id] = fut
         assert sess.proc.stdin is not None

@@ -140,6 +140,19 @@ FAKE_ACP = textwrap.dedent(
                                               "cognition.ai/retryable":
                                               True}}}), flush=True)
                     continue
+            if os.environ.get("FAKE_RETRYABLE_ALWAYS"):
+                with open(os.environ["FAKE_RETRYABLE_ALWAYS"], "a") as fh:
+                    fh.write("x")
+                print(json.dumps({"jsonrpc": "2.0", "id": i,
+                                  "error": {"code": -32603,
+                                      "message": "Agent communication"
+                                      " channel closed",
+                                      "data": {
+                                          "cognition.ai/errorKind":
+                                          "agent_channel_closed",
+                                          "cognition.ai/retryable":
+                                          True}}}), flush=True)
+                continue
             if os.environ.get("FAKE_WEDGE"):
                 once = os.environ.get("FAKE_WEDGE_ONCE")
                 if not once or not os.path.exists(once):
@@ -934,6 +947,27 @@ async def test_retryable_prompt_error_retries_once(
     assert (tmp_path / "retried").exists()
     sess = shell_client.sessions[session_id]
     assert not any("prompt failed" in m.message for m in sess.events)
+
+
+@pytest.mark.asyncio
+async def test_retryable_prompt_error_fails_after_second_error(
+    shell_client: LocalClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # the retry is one-shot: a second retryable failure still reports the
+    # turn failed, and exactly two prompts reach the CLI — never a loop
+    monkeypatch.setattr("app.local._RETRY_BACKOFF", 0)
+    marker = tmp_path / "attempts"
+    monkeypatch.setenv("FAKE_RETRYABLE_ALWAYS", str(marker))
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(100):
+        if any("prompt failed" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert any("prompt failed" in m.message for m in sess.events)
+    assert marker.read_text() == "xx"
 
 
 def _wedge_constants(monkeypatch: pytest.MonkeyPatch) -> None:
