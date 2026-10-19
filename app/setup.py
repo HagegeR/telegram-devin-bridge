@@ -2,15 +2,19 @@
 
 Only TELEGRAM_BOT_TOKEN and DEVIN_API_KEY are truly required; everything
 else either gets a generated secret or stays at its documented default.
+The file is written 0600 via an atomic replace, after validation, so a
+failed run can never destroy a working configuration.
 """
 
 from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import secrets
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 _ENV_HEADER = """\
@@ -34,7 +38,7 @@ def _ask(label: str, default: str = "", required: bool = False) -> str:
         print("  required")
 
 
-def _ask_secret(label: str) -> str:
+def _ask_secret(label: str, hint: str | None = None) -> str:
     while True:
         try:
             value = getpass.getpass(f"{label}: ").strip()
@@ -42,6 +46,9 @@ def _ask_secret(label: str) -> str:
             print()
             raise SystemExit(2)
         if value:
+            if hint is not None and not value.startswith(hint):
+                print(f"  expected a value starting with {hint!r} — try again")
+                continue
             return value
         print("  required")
 
@@ -64,7 +71,7 @@ def collect() -> dict[str, str]:
         token = _ask_secret("TELEGRAM_BOT_TOKEN")
     env["TELEGRAM_BOT_TOKEN"] = token
     env["DEVIN_API_KEY"] = _ask_secret(
-        "DEVIN_API_KEY (service key from app.devin.ai)"
+        "DEVIN_API_KEY (v1 key, starts with apk_)", hint="apk_"
     )
 
     users = _ask(
@@ -79,16 +86,25 @@ def collect() -> dict[str, str]:
         print("  no allowed users — only admins could talk to the bot; "
               "falling back to TELEGRAM_ALLOW_ALL_USERS=false anyway")
 
-    mode = _ask("TELEGRAM_MODE (polling works with no public URL)",
-                default="polling").casefold()
+    mode = ""
+    while mode not in {"polling", "webhook"}:
+        mode = _ask(
+            "TELEGRAM_MODE (polling works with no public URL)",
+            default="polling",
+        ).casefold()
+        if mode not in {"polling", "webhook"}:
+            print("  enter 'polling' or 'webhook'")
+    env["TELEGRAM_MODE"] = mode
     if mode == "webhook":
-        env["TELEGRAM_MODE"] = "webhook"
-        env["PUBLIC_BASE_URL"] = _ask(
-            "PUBLIC_BASE_URL (https://… routed to port 8000)",
-            required=True,
-        )
-    else:
-        env["TELEGRAM_MODE"] = "polling"
+        url = ""
+        while not url.startswith("https://"):
+            url = _ask(
+                "PUBLIC_BASE_URL (https://… routed to port 8000)",
+                required=True,
+            )
+            if not url.startswith("https://"):
+                print("  Telegram webhooks require an https:// URL")
+        env["PUBLIC_BASE_URL"] = url
 
     env["DATABASE_PATH"] = _ask("DATABASE_PATH", default="./bridge.sqlite3")
 
@@ -117,18 +133,31 @@ def render(env: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def validate(path: Path) -> None:
-    """Load the written file through the real Settings — as init kwargs, so
-    the host's own environment can't shadow what we are checking."""
+def validate(env: dict[str, str]) -> None:
+    """Run the collected mapping through the real Settings — as init
+    kwargs, so the host's own environment can't shadow what we check."""
     from app.config import Settings
 
-    values = {
-        key: value
-        for line in path.read_text().splitlines()
-        if "=" in line and not line.startswith("#")
-        for key, value in [line.split("=", 1)]
-    }
-    Settings(**values)
+    Settings(**env)
+
+
+def _write_private(path: Path, content: str) -> None:
+    """Write content to path atomically, mode 0600 — a failed or
+    interrupted write leaves any existing file untouched."""
+    handle, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "w") as out:
+            out.write(content)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -150,17 +179,26 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     env = collect()
-    path.write_text(render(env))
-    print(f"\nwrote {path}")
 
-    # self-check: load exactly what was written through the real Settings
+    # validate before touching the destination — a bad answer must not
+    # destroy a working configuration
     try:
-        validate(path)
+        validate(env)
     except Exception as exc:  # noqa: BLE001 — surface the pydantic detail
-        print(f"warning: {path} does not validate: {exc}", file=sys.stderr)
+        print(f"\nsettings do not validate: {exc}", file=sys.stderr)
         return 1
 
-    print("validates cleanly. Next steps:")
+    _write_private(path, render(env))
+    print(f"\nwrote {path} (mode 0600)")
+
+    if path.name != ".env":
+        print(
+            f"warning: the bridge reads .env — copy or symlink {path} to "
+            ".env before starting",
+            file=sys.stderr,
+        )
+
+    print("next steps:")
     if env.get("TELEGRAM_MODE") == "polling":
         print("  .venv/bin/python -m app.poll")
     else:
