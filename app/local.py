@@ -153,6 +153,9 @@ _MAX_SESSIONS = 32
 # turns can run for a long time; prompts get no deadline (they end on
 # stopReason or terminate), everything else uses the control timeout
 _CONTROL_TIMEOUT = 30
+# pause before the single retry a retryable session/prompt error earns —
+# instant re-issue can hit the same just-closed agent channel
+_RETRY_BACKOFF = 1.0
 # a live acp process whose turn emits nothing AND that stops answering
 # control requests is wedged inside the CLI (observed: emit(ToolUpdate)
 # blocked 40+min on a stalled internal channel) — respawning and reloading
@@ -205,6 +208,23 @@ def _is_provisional_title(title: str) -> bool:
 class _TurnRescheduledError(Exception):
     """A queued turn's process died — its prompt moved to the resumed
     process; the turn's own failure is not user-visible."""
+
+
+class _RpcError(RuntimeError):
+    """An ACP error response carrying the raw error object — the CLI
+    flags transient ones with `cognition.ai/retryable`."""
+
+    def __init__(self, method: str, error: dict) -> None:
+        super().__init__(f"{method}: {error}")
+        self.error = error
+
+    @property
+    def retryable(self) -> bool:
+        data = self.error.get("data")
+        return (
+            isinstance(data, dict)
+            and data.get("cognition.ai/retryable") is True
+        )
 
 
 def _clean_reason(exc: BaseException) -> str:
@@ -856,10 +876,25 @@ class LocalClient:
             if suppress:
                 sess.suppressed_inflight += 1
             try:
-                result = await self._request(sess, "session/prompt", {
-                    "sessionId": sess.acp_id,
-                    "prompt": [{"type": "text", "text": message}],
-                }, timeout=None)
+                for attempt in range(2):
+                    try:
+                        result = await self._request(sess, "session/prompt", {
+                            "sessionId": sess.acp_id,
+                            "prompt": [{"type": "text", "text": message}],
+                        }, timeout=None)
+                        break
+                    except _RpcError as exc:
+                        if attempt or sess.dead or not exc.retryable:
+                            raise
+                        # the CLI marked the failure retryable (e.g. a
+                        # dropped agent channel) — one retry keeps a
+                        # transient blip from eating the prompt
+                        logger.info(
+                            "retrying local prompt for %s: %s",
+                            sess.acp_id,
+                            exc,
+                        )
+                        await asyncio.sleep(_RETRY_BACKOFF)
             except asyncio.CancelledError:
                 # shutdown mid-turn: keep the pending marker for replay
                 raise
@@ -1615,7 +1650,7 @@ class LocalClient:
             sess.pending.pop(req_id, None)
             raise
         if "error" in result:
-            raise RuntimeError(f"{method}: {result['error']}")
+            raise _RpcError(method, result["error"])
         return result.get("result", {})
 
     async def _reader(self, sess: _AcpSession) -> None:

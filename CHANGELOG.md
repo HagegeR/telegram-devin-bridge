@@ -56,6 +56,11 @@ and deployment update channels.
 
 ### Fixed
 
+- A `session/prompt` error the CLI marks retryable (e.g.
+  `agent_channel_closed` when its internal channel drops) used to fail
+  the turn and drop the user's prompt with a `⚠`. The prompt is now
+  retried once on the same process — a second failure reports as
+  before.
 - A `devin acp` process stopped by the bridge itself — deploy restart,
   `/update`, session-cap evict, wedge respawn, `/stop` — used to report
   every in-flight turn as `⚠ prompt failed: acp process exited`, so
