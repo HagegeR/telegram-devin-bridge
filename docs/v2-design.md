@@ -313,7 +313,31 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     namespace; `cmd:r:<name>` sends `/<name>` to the active local session);
     any `/foo` message that isn't a bridge command is forwarded to a local
     session as a prompt, so every CLI command and skill (`/fast`, `/compact`,
-    `/loop`, `/<plugin>:<skill>`) works from Telegram. `/status` shows the
+    `/loop`, `/goal`, `/<plugin>:<skill>`) works from Telegram. A prompt sent
+    while a turn is still running is not queued behind it: the bridge issues
+    a second `session/prompt` concurrently, which the CLI hands to the
+    running turn as a steer. This is what makes native goals usable: a
+    `/goal` run keeps its prompt call open across every internal
+    continuation turn (`Continuing goal (turn N)` lines and tool output all
+    stream on the same update channel and deliver like any other turn), so
+    queuing would lock out `/goal pause`, `/goal resume`, `/goal clear`, and
+    `/steer` text for the whole run — which is also why the busy queue
+    (`telegram_queue_while_busy`) never applies to local conversations:
+    follow-ups reach `LocalClient.send_message` and steer instead of
+    waiting out the run. Whether a prompt steers or owns the run is
+    decided on live request count (`sess.inflight`), not on the tail
+    task — a quick steer can finish while an earlier goal request is
+    still open, and deciding on `tail.done()` made the next prompt reset
+    the running turn's buffer and durable marker. Every live request is
+    tracked in `inflight_msgs` (send order); the `pending_prompt` marker
+    follows the oldest unsettled one, so an owner finishing mid-steer
+    still leaves a durable prompt for restart replay, and crash recovery
+    replays the owner ahead of its steers. Turns that must
+    stay ordered still queue and wait for every in-flight request:
+    session-history replays, interrupted-turn
+    replays, and hidden turns (login, preamble — suppression is per
+    turn, so an early login reply can't unhide the preamble queued behind
+    it). `/status` shows the
     session's live mode/model/thinking (`config_option_update` +
     `current_mode_update` tracked per session, rendered as
     `local: mode X · model Y · thought_level Z`).
@@ -334,7 +358,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 - `/sethome` – store chat/thread as home (allowed users only). Reply confirms.
 - `/commands` – category → command browser for local CLI slash commands (tap-to-run needs an active local session; browsing works on any chat).
 - `/think [level]` – per-chat `thought_level` for local sessions (`/think default` resets; applied to the running session via `session/set_config_option`).
-- Unknown `/cmd` – forwarded to the active local session as a CLI slash command when the conversation is local (👀 ack + watcher), else "Unknown command; /help".
+- Unknown `/cmd` – forwarded to the active local session as a CLI slash command when the conversation is local (👀 ack + watcher); on a chat configured `/platform local` with no active conversation it also creates a local session first, running `SYSTEM_PREAMBLE` as a hidden first turn (suppressed per-turn, awaited before the command is sent, since the CLI only treats a prompt as a slash command when it is the whole prompt, and the preamble's own reply must never reach Telegram) and then forwarding the `/cmd` as the first visible turn. Dispatch runs these under the per-conversation lock so two racing commands can't both see "no session" and spawn orphan ACP processes. On any other chat it stays "Unknown command; /help".
 
 ### `/notify` (notify.py)
 `POST /notify` with `Authorization: Bearer <NOTIFY_SECRET>` (403 otherwise; if `NOTIFY_SECRET` unset, route returns 404). JSON `{text: str, chat_id?: int, thread_id?: int, silent?: bool, markdown?: bool=true, html?: str, html_name?: str="report.html"}`. `html` is stored as a report and linked with an `Open` URL button when `PUBLIC_BASE_URL` is set, otherwise sent as a document. Target = provided chat or `settings.home_*` or `TELEGRAM_HOME_CHANNEL` env; 400 if none. Chunk + format like normal messages. Returns `{sent: N}`.
@@ -351,7 +375,7 @@ Existing deploy has `TELEGRAM_ALLOWED_CHAT_IDS` unset; keep supporting it.
 - Make watcher poll interval injectable (0 in tests).
 
 ### Non-goals (explicitly skipped)
-Network IP failover, stickers/vision, TTS, /model, /memory, /goal, kanban, streaming edits of partial cloud text (the cloud Devin API has no partial-message stream; local sessions do stream interim lines — see below).
+Network IP failover, stickers/vision, TTS, /model, /memory, kanban, streaming edits of partial cloud text (the cloud Devin API has no partial-message stream; local sessions do stream interim lines — see below).
 
 ### Bot API 10.3 behavior
 Rich Markdown is the primary Devin response path when `TELEGRAM_RICH_MESSAGES`

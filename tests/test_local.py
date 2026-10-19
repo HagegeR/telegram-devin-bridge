@@ -25,8 +25,12 @@ from app.local import (
 
 FAKE_ACP = textwrap.dedent(
     """
-    import json, os, sys, time
+    import json, os, sys, threading, time
     sid = "fake-sid"
+    out_lock = threading.Lock()
+    def emit(obj):
+        with out_lock:
+            print(json.dumps(obj), flush=True)
     for line in sys.stdin:
         try:
             m = json.loads(line)
@@ -155,6 +159,49 @@ FAKE_ACP = textwrap.dedent(
                                           "result": {"sessions": []}}),
                               flush=True)
             chunks = ["echo: ", text]
+            if os.environ.get("FAKE_GOAL"):
+                if text.startswith("/goal ") and text != "/goal clear":
+                    # a goal run: the response stays open while the run
+                    # emits turns on its own — the main loop keeps
+                    # reading so a concurrent prompt (a steer, /goal
+                    # clear) is answered mid-run like the real CLI
+                    def _run(i=i):
+                        delay = float(
+                            os.environ.get("FAKE_GOAL_DELAY", "0.15"))
+                        for n in range(10):
+                            emit({"jsonrpc": "2.0",
+                                  "method": "session/update",
+                                  "params": {"sessionId": sid,
+                                             "update": {
+                                      "sessionUpdate": "agent_message_chunk",
+                                      "content": {"type": "text",
+                                                  "text": "tick %d\\n\\n" % n}}}})
+                            time.sleep(delay)
+                        emit({"jsonrpc": "2.0", "id": i,
+                              "result": {"stopReason": "end_turn"}})
+                    threading.Thread(target=_run, daemon=True).start()
+                    continue
+                if text == "/goal clear":
+                    # answered while the goal run above is still live
+                    emit({"jsonrpc": "2.0", "method": "session/update",
+                          "params": {"sessionId": sid, "update": {
+                              "sessionUpdate": "agent_message_chunk",
+                              "content": {"type": "text",
+                                          "text": "Goal cleared."}}}})
+                    emit({"jsonrpc": "2.0", "id": i,
+                          "result": {"stopReason": "end_turn"}})
+                    continue
+            if text == "hang steer":
+                # a steer that stays in flight past the owner's end —
+                # answered on a thread so the main loop keeps reading. The
+                # delay must outlive the test body on slow runners; the
+                # daemon thread dies with the process at teardown.
+                def _hang(i=i):
+                    time.sleep(30)
+                    emit({"jsonrpc": "2.0", "id": i,
+                          "result": {"stopReason": "end_turn"}})
+                threading.Thread(target=_hang, daemon=True).start()
+                continue
             if os.environ.get("FAKE_PERMISSION"):
                 print(json.dumps({"jsonrpc": "2.0", "id": 9000,
                                   "method": "session/request_permission",
@@ -291,6 +338,17 @@ async def shell_client(tmp_path: Path):
     yield client
     for session_id in list(client.sessions):
         await client.terminate(session_id)
+
+
+async def _wait_inflight(client: LocalClient, session_id: str, prompt: str) -> object:
+    """Wait until `prompt` owns a live request — much earlier than its
+    first flushed event, which a short fake goal run would outlast."""
+    sess = client.sessions[session_id]
+    for _ in range(50):
+        if sess.inflight and sess.pending_prompt == prompt:
+            return sess
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{prompt!r} never went in-flight")
 
 
 async def _wait_for(client: LocalClient, session_id: str, needle: str) -> None:
@@ -1358,3 +1416,164 @@ async def test_replayed_title_cannot_clobber_the_resumed_title(
     await _wait_for(shell_client, session_id, "echo: second")
     state = await shell_client.get_session(session_id)
     assert state.title == "resumed title"
+
+
+@pytest.mark.asyncio
+async def test_steer_reaches_a_running_goal_turn(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a goal run keeps its prompt response open for the whole run — a
+    # queued /goal clear would wait out every continuation turn. The
+    # fake answers a concurrent prompt mid-run, so the clear must land
+    # while the run is still ticking, not after it ends.
+    monkeypatch.setenv("FAKE_GOAL", "1")
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "echo: hi")
+    await shell_client.send_message(session_id, "/goal tick forever")
+    await _wait_for(shell_client, session_id, "tick 0")
+    started = asyncio.get_event_loop().time()
+    await shell_client.send_message(session_id, "/goal clear")
+    await _wait_for(shell_client, session_id, "Goal cleared.")
+    # under turn-chaining the clear lands only after the ~1.5s run ends
+    assert asyncio.get_event_loop().time() - started < 1.0
+    sess = shell_client.sessions[session_id]
+    # the steered turn finishing mid-run must not strand the run's count
+    for _ in range(50):
+        if not sess.turns:
+            break
+        await asyncio.sleep(0.1)
+    assert sess.turns == 0
+
+
+@pytest.mark.asyncio
+async def test_steer_finish_keeps_goal_owner_and_buffer(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a quick steer can end while the goal request is still open — the
+    # next prompt must not read as a clean turn: resetting on tail.done()
+    # wiped the running goal's buffer and durable marker. The run is
+    # slowed so the steer can settle inside it
+    monkeypatch.setenv("FAKE_GOAL", "1")
+    monkeypatch.setenv("FAKE_GOAL_DELAY", "0.4")
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "echo: hi")
+    await shell_client.send_message(session_id, "/goal tick forever")
+    sess = await _wait_inflight(
+        shell_client, session_id, "/goal tick forever"
+    )
+    await shell_client.send_message(session_id, "ping")
+    # the steer settles mid-run — its echo stays buffered until the owner
+    # drains, so watch the request set instead of flushed events
+    for _ in range(50):
+        if sess.inflight_msgs == ["/goal tick forever"]:
+            break
+        await asyncio.sleep(0.05)
+    assert sess.inflight == 1
+    # the durable marker still belongs to the goal that owns the run
+    assert sess.pending_prompt == "/goal tick forever"
+    # a third prompt now steers into the still-running goal — queued
+    # would wait out the remaining ~3s of the run
+    await shell_client.send_message(session_id, "hola")
+    await asyncio.wait_for(asyncio.shield(sess.tail), 1.0)
+    # and the owner is untouched: marker and run still the goal's
+    assert sess.pending_prompt == "/goal tick forever"
+    assert sess.inflight_msgs == ["/goal tick forever"]
+    # and the run's later ticks keep flowing into the same stream
+    await _wait_for(shell_client, session_id, "tick 5")
+
+
+@pytest.mark.asyncio
+async def test_crash_replays_goal_owner_before_its_steer(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the steer dead-guards into the interrupted queue before the goal's
+    # marker lands — the owner was sent first, so it replays first
+    monkeypatch.setenv("FAKE_GOAL", "1")
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "echo: hi")
+    await shell_client.send_message(session_id, "/goal tick forever")
+    await _wait_inflight(shell_client, session_id, "/goal tick forever")
+    await shell_client.send_message(session_id, "hang steer")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if len(sess.inflight_msgs) == 2:
+            break
+        await asyncio.sleep(0.05)
+    # spy the send order — the drain consumes the queue before the send
+    # returns, so the only observable proof is what the resumed process
+    # gets fed
+    sent: list[str] = []
+    orig = shell_client.send_message
+
+    async def spy(sid: str, msg: str, **kw: object) -> None:
+        sent.append(msg)
+        await orig(sid, msg, **kw)
+
+    shell_client.send_message = spy  # type: ignore[method-assign]
+    sess.proc.terminate()
+    for _ in range(50):
+        if sess.dead:
+            break
+        await asyncio.sleep(0.05)
+    await shell_client.send_message(session_id, "after crash")
+    assert "/goal tick forever" in sent and "hang steer" in sent, sent
+    assert sent.index("/goal tick forever") < sent.index("hang steer"), sent
+
+
+@pytest.mark.asyncio
+async def test_owner_settle_hands_marker_to_live_steer(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a goal ending while a steer still flies must not clear the durable
+    # marker — a bridge restart then would lose the unsettled steer
+    monkeypatch.setenv("FAKE_GOAL", "1")
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "echo: hi")
+    await shell_client.send_message(session_id, "/goal tick forever")
+    await _wait_inflight(shell_client, session_id, "/goal tick forever")
+    await shell_client.send_message(session_id, "hang steer")
+    sess = shell_client.sessions[session_id]
+    # the goal run ends (~1.5s) while the steer is still in flight
+    for _ in range(60):
+        if sess.inflight == 1 and sess.pending_prompt == "hang steer":
+            break
+        await asyncio.sleep(0.05)
+    assert sess.pending_prompt == "hang steer"
+
+
+@pytest.mark.asyncio
+async def test_login_does_not_unhide_preamble_turn(tmp_path: Path) -> None:
+    # a required /login turn used to consume the session-level suppress
+    # flag before the preamble ran, leaking the hidden preamble's reply
+    fake = tmp_path / "fake_acp.py"
+    fake.write_text(FAKE_ACP, encoding="utf-8")
+    client = LocalClient(
+        cli_command=_devin_command(tmp_path, fake, logged_out=True),
+        api_key="sekrit",
+    )
+    try:
+        session_id, _ = await client.create_session(
+            "the preamble", suppress_first=True
+        )
+        state = await client.get_session(session_id)
+        assert state.messages == []
+    finally:
+        for sid in list(client.sessions):
+            await client.terminate(sid)
+
+
+@pytest.mark.asyncio
+async def test_suppressed_first_turn_is_hidden(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # command-created sessions open with the system preamble as a
+    # suppressed turn — its reply must never become a chat message, and
+    # the next prompt runs as a clean turn, not a steer into it
+    monkeypatch.setenv("FAKE_GOAL", "1")
+    session_id, _ = await shell_client.create_session(
+        "the preamble", suppress_first=True
+    )
+    state = await shell_client.get_session(session_id)
+    assert not any("the preamble" in m.message for m in state.messages)
+    await shell_client.send_message(session_id, "/goal tick forever")
+    await _wait_for(shell_client, session_id, "tick 0")
