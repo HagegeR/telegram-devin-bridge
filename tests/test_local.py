@@ -193,9 +193,11 @@ FAKE_ACP = textwrap.dedent(
                     continue
             if text == "hang steer":
                 # a steer that stays in flight past the owner's end —
-                # answered on a thread so the main loop keeps reading
+                # answered on a thread so the main loop keeps reading. The
+                # delay must outlive the test body on slow runners; the
+                # daemon thread dies with the process at teardown.
                 def _hang(i=i):
-                    time.sleep(2)
+                    time.sleep(30)
                     emit({"jsonrpc": "2.0", "id": i,
                           "result": {"stopReason": "end_turn"}})
                 threading.Thread(target=_hang, daemon=True).start()
@@ -1531,7 +1533,7 @@ async def test_owner_settle_hands_marker_to_live_steer(
     await _wait_inflight(shell_client, session_id, "/goal tick forever")
     await shell_client.send_message(session_id, "hang steer")
     sess = shell_client.sessions[session_id]
-    # the goal run ends (~1.5s) while the 2s steer is still in flight
+    # the goal run ends (~1.5s) while the steer is still in flight
     for _ in range(60):
         if sess.inflight == 1 and sess.pending_prompt == "hang steer":
             break
