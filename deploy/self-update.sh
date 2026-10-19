@@ -126,6 +126,13 @@ if [ -f requirements-transcription.txt ] \
   "$VENV_BIN/pip" install -q -r requirements-transcription.txt
 fi
 echo "$REMOTE" > "$MARKER"
+# the local backend runs `devin acp` — keep the CLI itself current on the
+# same cadence. Detached and best-effort: a hung or failing `devin update`
+# must never stall or fail a bridge deploy, and fd 9 is closed so the
+# child can't inherit the update lock (same hazard as the restart wrapper)
+if command -v "${DEVIN_LOCAL_CLI:-devin}" >/dev/null 2>&1; then
+  nohup "${DEVIN_LOCAL_CLI:-devin}" update >/dev/null 2>&1 9>&- &
+fi
 # restart detached so a caller running inside the service (the /update
 # command) can still reply before the process is recycled. Close the lock fd
 # (9>&-) so the restarted service does not inherit the flock and block every

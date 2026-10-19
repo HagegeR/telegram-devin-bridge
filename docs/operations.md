@@ -95,6 +95,9 @@ stop+start pairs and spawn duplicate `supervise-daemon` processes; the
 wait is unbounded — a dead holder's fd releases the lock anyway, while
 a live holder should be waited on rather than raced.
 `--check` reports without touching anything.
+After a deploy lands, the script also kicks off a detached best-effort
+`devin update` (or `$DEVIN_LOCAL_CLI update`) so the local-CLI backend's
+binary stays current; a missing or failing CLI never fails the deploy.
 The host checkout is deploy-only: local changes are discarded on purpose.
 VM installs keep the source git checkout under `BRIDGE_HOME` so `/update`
 works; unprivileged services exit and let supervise-daemon or systemd respawn

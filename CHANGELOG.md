@@ -10,6 +10,10 @@ and deployment update channels.
 
 ### Changed
 
+- `deploy/self-update.sh` now kicks off a detached best-effort
+  `devin update` (honoring `DEVIN_LOCAL_CLI`) after every deploy, so the
+  local-CLI backend's binary stays current with the bridge. A missing or
+  failing CLI never fails the deploy.
 - Forum topic names are capped at five words (plus an ellipsis) when the
   bridge derives them — generated session titles run to sentence length,
   which made every subject unreadable in the topic list. Explicit names
