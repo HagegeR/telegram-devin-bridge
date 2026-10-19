@@ -13,14 +13,21 @@
 # gates below no-op the script elsewhere.
 set -eu
 
-home=${BRIDGE_HOME:-/root/telegram-devin-bridge}
+# follow the service's own directory= so the same file works on VM
+# installs where the checkout is /opt, not /root
+home=${BRIDGE_HOME:-}
+[ -n "$home" ] || home=$(sed -n 's/^directory="\(.*\)"/\1/p' \
+    /etc/init.d/telegram-devin-bridge 2>/dev/null)
+home=${home:-/root/telegram-devin-bridge}
 hb=/tmp/telegram-devin-bridge.poll-alive
 log=/var/log/telegram-devin-bridge-watchdog.log
 
 # serialize with self-update's detached restarts, which hold this lock: an
 # unlocked rc-service can stop a just-started child mid-boot (the collision
-# that leaves the service down or kills a startup replay)
-if command -v flock >/dev/null 2>&1; then
+# that leaves the service down or kills a startup replay). A missing or
+# unwritable home must skip the lock, not exit — a stopped service still
+# has to recover on installs where self-update never ran
+if command -v flock >/dev/null 2>&1 && [ -w "$home" ]; then
     exec 9>"$home/.self-update.lock"
     flock -w 600 9 || exit 0
 fi
