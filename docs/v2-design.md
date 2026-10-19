@@ -326,6 +326,11 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 - `unlisted` / `idempotent` – tri-state (inherit/on/off) per-chat flags toggled in `/settings` (👁 Unlisted, 🔁 Idempotent rows), passed through to create-session when set.
 - `/crawl` – show which site crawlers are active (read-only). The active set is bridge-wide: `CRAWL_SITES` env is the default, and the `/settings` 🔎 Pre-crawl submenu overrides it live via the `settings` table key `crawl_sites` (a csv; empty = off; deleting the key reverts to env; toggles are admin-only — `TELEGRAM_ADMIN_USER_IDS`, falling back to all allowed users when unset). When enabled, URLs in a user message matching an enabled crawler (`app/crawlers.py`: `instagram` via the oEmbed API — caption + cover image; `article` — generic HTML title/description/body, preferring `<article>`/`<main>`) are fetched in the bridge before the turn reaches Devin: extracted text is appended to the prompt as `[Crawled <site>: <url>]` blocks and media is uploaded as session attachments. Up to 3 crawler-owned URLs per message; fetches stream with a body cap and re-vet the host on every redirect hop (DNS-resolved, all addresses required global) and connect to the resolved IP with the original name kept as SNI/Host; article HTML is parsed single-pass (`html.parser`) off the event loop in `asyncio.to_thread` — first 200 KB only, 5s timeout — so a hostile page can't stall the bridge; failures are skipped silently.
 - `/whoami` – user id, chat id, thread id, allowed yes/no, is-home yes/no.
+- `/metrics` – admin-only process counters since boot (`updates`,
+  `commands`, `turns`, `sessions_cloud`/`sessions_local`, `events`,
+  `errors`, `watcher_failures`) plus uptime; private chats only so the
+  ephemeral fallback can't leak them to a group. In-memory only, reset on
+  restart, and never persisted or attributed per chat.
 - `/sethome` – store chat/thread as home (allowed users only). Reply confirms.
 - `/commands` – category → command browser for local CLI slash commands (tap-to-run needs an active local session; browsing works on any chat).
 - `/think [level]` – per-chat `thought_level` for local sessions (`/think default` resets; applied to the running session via `session/set_config_option`).

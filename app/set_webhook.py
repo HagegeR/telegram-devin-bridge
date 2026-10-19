@@ -45,6 +45,7 @@ COMMANDS = [
     ("users", "List approved users"),
     ("revoke", "Revoke user access"),
     ("update", "Pull latest code and restart"),
+    ("metrics", "Show bridge counters since boot"),
 ]
 
 # commands that only make sense for a local-platform chat — they stay out
@@ -52,7 +53,7 @@ COMMANDS = [
 LOCAL_COMMANDS = {"model", "think", "commands"}
 
 # admin-only commands — they only autocomplete in an admin's private chat
-ADMIN_COMMANDS = {"update", "users", "revoke", "sethome"}
+ADMIN_COMMANDS = {"update", "users", "revoke", "sethome", "metrics"}
 
 
 def chat_commands(*, local: bool, admin: bool) -> list[dict[str, str]]:

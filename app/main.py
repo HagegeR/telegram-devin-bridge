@@ -22,6 +22,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response
 
+from app import metrics
 from app.access import (
     is_allowed,
     is_topic_chat,
@@ -506,6 +507,7 @@ class Bridge:
     async def _dispatch_update(
         self, update: Mapping[str, object], *, replayed: bool = False
     ) -> None:
+        metrics.incr("updates")
         try:
             callback = _mapping(update.get("callback_query"))
             if callback:
@@ -534,6 +536,7 @@ class Bridge:
                     replayed=replayed,
                 )
         except Exception as exc:
+            metrics.incr("errors")
             logger.exception("Failed to process Telegram update")
             await self._report_processing_failure(update, exc)
 
@@ -1299,6 +1302,7 @@ class Bridge:
         chat_id = _int(chat.get("id"))
         thread_id = _thread_id(message)
         conv_key = self._conversation_key(message)
+        metrics.incr("turns")
         message_id = _int(message.get("message_id"))
         if message_id:
             self.store.index_message(chat_id, message_id, conv_key)
@@ -1549,6 +1553,9 @@ class Bridge:
                 unlisted=conv_settings.unlisted,
                 idempotent=conv_settings.idempotent,
             )
+        metrics.incr(
+            "sessions_local" if is_local(session_id) else "sessions_cloud"
+        )
         self.store.delete_setting(f"pending_title:{conv_key}")
         stored_title = (
             title

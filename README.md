@@ -118,6 +118,7 @@ deployment check list.
 | `/whoami` · `/sethome` | Show IDs; set the notification target chat |
 | `/users` · `/revoke <id>` | Admin: manage approved users |
 | `/update [check] [channel]` | Admin: pull latest for the channel (default `main`) and restart, or preview |
+| `/metrics` | Admin: bridge counters since boot (private chat only) |
 
 Reactions work too: 🔁 on your message retries it, 🛑 stops the session. Topics
 are renamed to the Devin session title once generated.

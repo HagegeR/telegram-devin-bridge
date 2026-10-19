@@ -13,6 +13,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
+from app import metrics
 from app.commands import _STATUS_DETAIL
 from app.config import Settings
 from app.devin import DevinClient, DevinMessage, SessionState
@@ -343,6 +344,7 @@ class SessionWatcher:
                                 last_event_id=message.event_id,
                             )
                         self.delivered_count += 1
+                        metrics.incr("events")
                     if status_changed and self.on_status_change is not None:
                         await self.on_status_change(state.status_enum)
                     if state.pr_url is not None and state.pr_url != last_pr_url:
@@ -446,6 +448,7 @@ class SessionWatcher:
                     poll_failed = True
                     await self.sleep(max(interval, 0.001))
         except Exception as exc:
+            metrics.incr("watcher_failures")
             logger.exception("Session watcher failed for conversation %s", self.conversation.conv_key)
             await self._cleanup_transients()
             try:

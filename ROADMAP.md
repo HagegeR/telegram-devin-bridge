@@ -10,6 +10,8 @@ Rough direction, not commitments — open an issue to discuss anything here.
   external command, bounded Docker sidecar (Moonshine)
 - Rich Telegram replies: `OPTIONS:` buttons, PR cards, image/document delivery
 - Access control: allowlists, admin approval flow, free-response chats
+- Metrics: in-process counters (updates, commands, turns, sessions,
+  replies, errors) rendered by admin-only `/metrics`
 
 ## Next
 
@@ -20,8 +22,6 @@ Rough direction, not commitments — open an issue to discuss anything here.
 - **Backup/restore commands** — SQLite backup via `/admin` and a `db_check`
   diagnostic
 - **Setup wizard** — `python -m app.setup` interactive `.env` writer
-- **Metrics** — structured logging and counters for messages, sessions,
-  watcher activity
 - **Docker Compose / one-click deploys** beyond Fly.io
 
 ## Later (scaling)

@@ -7,6 +7,7 @@ from typing import Protocol
 
 import httpx
 
+from app import metrics
 from app.access import is_allowed, is_topic_chat
 from app.config import Settings
 from app.crawlers import CRAWLER_NAMES
@@ -219,6 +220,7 @@ async def handle_command(
     text: str,
 ) -> None:
     command, args = _parse(text)
+    metrics.incr("commands")
     chat_id = _int(_mapping(message.get("chat")).get("id"))
     thread_id = _thread_id(message)
     conv_key = Store.conv_key(
@@ -1078,6 +1080,20 @@ async def handle_command(
         await runtime.send_text(message, "📌 This chat is now the notification home.")
     elif command == "update":
         await runtime.self_update(message, args)
+    elif command == "metrics":
+        if sender_id not in runtime.settings.admin_user_ids:
+            await runtime.send_text(
+                message, "⛔ Metrics are admin-only.", ephemeral=True
+            )
+            return
+        if _mapping(message.get("chat")).get("type") != "private":
+            # send_text falls back to a public retry when ephemeral fails,
+            # which would leak admin-only counters to the whole group
+            await runtime.send_text(
+                message, "Run /metrics in your private chat with me."
+            )
+            return
+        await runtime.send_text(message, metrics.render(), ephemeral=True)
     elif (
         conversation is not None
         and is_local(conversation.session_id)
@@ -1519,6 +1535,7 @@ _HELP_SECTIONS = (
             "/sethome — route notifications here",
             "/users · /revoke <id> — approved users (admin)",
             "/update [check] [channel] — self-update (admin)",
+            "/metrics — bridge counters since boot (admin)",
         ],
     ),
 )
