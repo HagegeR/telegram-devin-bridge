@@ -17,10 +17,13 @@ Create a **v1** API key in Devin (`apk_user_…` or `apk_…`; a service-user
 ## 3. Configure
 
 ```bash
-cp .env.example .env
+python -m app.setup
 ```
 
-Minimal `.env` for polling — only the two secrets plus the mode:
+The wizard asks for the token, key, allowed user ids, and delivery mode,
+generates the secrets it needs, and validates the file it writes. To
+configure by hand instead, `cp .env.example .env` — a minimal `.env` for
+polling is only the two secrets plus the mode:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=<token from BotFather>
