@@ -21,6 +21,15 @@ pytest          # test suite (httpx.MockTransport, no live Telegram/Devin needed
 ruff check .    # lint
 ```
 
+Git hooks ([prek](https://github.com/j178/prek), a fast pre-commit drop-in
+shipped in `requirements-dev.txt`) run the same ruff, yamllint, shellcheck,
+actionlint, gitleaks, and file checks — plus the test suite on `app|tests`
+changes — before each commit. Install once per clone:
+
+```bash
+prek install    # then `prek run --all-files` to check the tree on demand
+```
+
 Add or update tests when you change behavior — the suite mocks both the
 Telegram and Devin transports, so new command, watcher, or endpoint paths are
 cheap to cover.

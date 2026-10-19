@@ -1,0 +1,82 @@
+repos:
+  - repo: "https://github.com/pre-commit/pre-commit-hooks"
+    rev: v6.0.0
+    hooks:
+      # File fixers run first, sequentially — they may rewrite the same file.
+      - id: trailing-whitespace
+        priority: 1
+      - id: end-of-file-fixer
+        priority: 2
+      - id: mixed-line-ending
+        priority: 3
+      # prek runs hooks sharing a `priority` in parallel (lower runs first);
+      # pre-commit validates the field but ignores it — sequential there.
+      - id: check-yaml
+        priority: 10
+      - id: check-toml
+        priority: 10
+      - id: check-json
+        priority: 10
+      - id: check-ast
+        priority: 10
+      - id: check-added-large-files
+        priority: 10
+      - id: check-case-conflict
+        priority: 10
+      - id: check-symlinks
+        priority: 10
+      - id: check-illegal-windows-names
+        priority: 10
+      - id: check-merge-conflict
+        priority: 10
+  # Same version the CI ruff job pins.
+  - repo: "https://github.com/astral-sh/ruff-pre-commit"
+    rev: v0.17.0
+    hooks:
+      - id: ruff-check
+        priority: 10
+  # Same args as the CI yamllint job.
+  - repo: "https://github.com/adrienverge/yamllint"
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [-d, relaxed]
+        files: ^\.github/workflows/
+        priority: 10
+  - repo: "https://github.com/rhysd/actionlint"
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+        priority: 10
+  # Bot tokens / API keys must never reach a commit (.env is gitignored —
+  # this covers everything else).
+  - repo: "https://github.com/gitleaks/gitleaks"
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        priority: 10
+  - repo: local
+    hooks:
+      # shellcheck-py ships the binary as a wheel — no system install needed.
+      # -e SC1007 -x mirrors the CI shellcheck job.
+      - id: shellcheck
+        name: shellcheck deploy scripts
+        entry: shellcheck -e SC1007 -x
+        language: python
+        additional_dependencies: ["shellcheck-py==0.11.0.1"]
+        files: ^deploy/.*\.sh$
+        priority: 10
+      # Uses the repo's own .venv (the suite needs the real deps, not an
+      # isolated env). Self-skips on machines without a .venv; CI remains the
+      # authoritative gate. `python -m pytest` puts the repo root on sys.path.
+      - id: pytest
+        name: pytest
+        entry: >-
+          python -c "import os,subprocess,sys;
+          b=next((p for p in (r'.venv/bin/python',r'.venv/Scripts/python.exe')
+          if os.path.exists(p)),None);
+          sys.exit(0 if b is None else subprocess.call([b,'-m','pytest','-q']))"
+        language: system
+        files: ^(app|tests)/
+        pass_filenames: false
+        priority: 10
