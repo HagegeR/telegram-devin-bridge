@@ -10,10 +10,12 @@ and deployment update channels.
 
 ### Changed
 
-- `deploy/self-update.sh` now kicks off a detached best-effort
-  `devin update` (honoring `DEVIN_LOCAL_CLI`) after every deploy, so the
-  local-CLI backend's binary stays current with the bridge. A missing or
-  failing CLI never fails the deploy.
+- `deploy/self-update.sh` now refreshes the local-CLI backend's binary on
+  every deploy: `devin update` (honoring `DEVIN_LOCAL_CLI`, read from
+  `.env` when not exported) runs best-effort before the restart is
+  scheduled — under `timeout 300` where available, as the `telegram-devin`
+  service user on root-invoked updates — so a missing, failing, or slow
+  CLI never fails or stalls a bridge deploy.
 - Forum topic names are capped at five words (plus an ellipsis) when the
   bridge derives them — generated session titles run to sentence length,
   which made every subject unreadable in the topic list. Explicit names

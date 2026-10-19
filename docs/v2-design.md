@@ -229,7 +229,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     explicit title was given, the CLI-generated title arrives after
     `session/new` as a `session_info_update` and is stored on the
     session, so an untitled topic still gets renamed (an explicit title
-    is never overwritten). The CLI first reports a provisional title
+    is never overwritten). Deploys keep the CLI itself current:
+    `deploy/self-update.sh` runs a best-effort `devin update`
+    (`DEVIN_LOCAL_CLI`, exported or parsed from `.env`) before the
+    restart is scheduled — bounded by `timeout 300` where available and
+    run as the `telegram-devin` service user on root-invoked updates —
+    so a missing, failing, or slow CLI never stalls a bridge deploy.
+    The CLI first reports a provisional title
     derived from the prompt itself — the bridge ignores any reported
     title that prefixes the whitespace-normalized prompt it sent (the
     CLI collapses newlines to spaces and truncates to ~80 chars ending
