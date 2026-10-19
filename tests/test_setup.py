@@ -113,7 +113,7 @@ def test_setup_refuses_to_clobber_existing_env(
 
 
 def test_failed_validation_preserves_existing_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # a bad answer must not destroy a working configuration
     path = tmp_path / ".env"
@@ -126,6 +126,11 @@ def test_failed_validation_preserves_existing_env(
     rc, _ = _run(tmp_path, "--force")
     assert rc == 1
     assert path.read_text() == "TELEGRAM_BOT_TOKEN=original\n"
+    # and the error must not echo submitted values (pydantic's str(exc)
+    # includes input=, which would spill secrets to stderr)
+    err = capsys.readouterr().err
+    for submitted in ("123,abc", "12345:bot-token", "apk_devin-key"):
+        assert submitted not in err
 
 
 def test_setup_blank_users_defaults_closed(

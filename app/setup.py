@@ -184,8 +184,18 @@ def main(argv: list[str] | None = None) -> int:
     # destroy a working configuration
     try:
         validate(env)
-    except Exception as exc:  # noqa: BLE001 — surface the pydantic detail
-        print(f"\nsettings do not validate: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        # pydantic str(exc) echoes input= values — that would spill the
+        # token and key to stderr, so report field + message only
+        errors = getattr(exc, "errors", None)
+        if callable(errors):
+            detail = "; ".join(
+                f"{'.'.join(str(p) for p in e.get('loc', ()))}: {e.get('msg')}"
+                for e in errors()
+            )
+        else:
+            detail = type(exc).__name__
+        print(f"\nsettings do not validate: {detail}", file=sys.stderr)
         return 1
 
     _write_private(path, render(env))
