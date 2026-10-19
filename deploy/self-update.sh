@@ -126,6 +126,37 @@ if [ -f requirements-transcription.txt ] \
   "$VENV_BIN/pip" install -q -r requirements-transcription.txt
 fi
 echo "$REMOTE" > "$MARKER"
+# the local backend runs `devin acp` — keep the CLI itself current on the
+# same cadence. Best-effort: a missing, failing or slow `devin update`
+# must never stall or fail a bridge deploy. It runs here, before the
+# restart is scheduled, because a detached child stays in the service
+# cgroup and systemd kills it mid-download when the bridge restarts.
+DEVIN_CLI="${DEVIN_LOCAL_CLI:-}"
+# the bridge reads DEVIN_LOCAL_CLI from .env via Settings; this shell only
+# sees exported vars, so fall back to the file (parsed, never sourced —
+# .env can hold secrets and must not be eval'd as shell)
+if [ -z "$DEVIN_CLI" ] && [ -f .env ]; then
+  DEVIN_CLI=$(sed -n 's/^DEVIN_LOCAL_CLI=//p' .env | tail -n 1 | tr -d "'\"")
+fi
+DEVIN_CLI="${DEVIN_CLI:-devin}"
+# the service runs as telegram-devin; a root cron hitting `devin update`
+# would refresh root's install while the service's own goes stale
+if [ "$(id -u)" -eq 0 ] && id telegram-devin >/dev/null 2>&1; then
+  DEVIN_UPDATE="su -s /bin/sh - telegram-devin -c 'exec \"$DEVIN_CLI\" update'"
+else
+  DEVIN_UPDATE="exec \"$DEVIN_CLI\" update"
+fi
+if command -v "$DEVIN_CLI" >/dev/null 2>&1 \
+  || { [ "$(id -u)" -eq 0 ] && id telegram-devin >/dev/null 2>&1; }; then
+  if command -v timeout >/dev/null 2>&1; then
+    # bounded foreground: done before the restart no matter how it ends
+    timeout 300 sh -c "$DEVIN_UPDATE" >/dev/null 2>&1 </dev/null 9>&- || true
+  else
+    # no timeout (macOS): detach; fd 9 closed so the child can't inherit
+    # the update lock (same hazard as the restart wrapper)
+    nohup sh -c "$DEVIN_UPDATE" >/dev/null 2>&1 </dev/null 9>&- &
+  fi
+fi
 # restart detached so a caller running inside the service (the /update
 # command) can still reply before the process is recycled. Close the lock fd
 # (9>&-) so the restarted service does not inherit the flock and block every

@@ -95,6 +95,15 @@ stop+start pairs and spawn duplicate `supervise-daemon` processes; the
 wait is unbounded — a dead holder's fd releases the lock anyway, while
 a live holder should be waited on rather than raced.
 `--check` reports without touching anything.
+After a deploy lands, the script also refreshes the local-CLI backend:
+a best-effort `devin update` run *before* the restart is scheduled,
+because a detached child would stay in the service cgroup and systemd
+would kill it mid-download. It honors `DEVIN_LOCAL_CLI` (exported or,
+falling back, parsed from `.env` — the file is never sourced as shell),
+runs as the `telegram-devin` service user on root-invoked updates so the
+service's own install is refreshed rather than root's, and is bounded by
+`timeout 300` where available (detached otherwise). A missing, failing,
+or slow CLI never fails or stalls the deploy.
 The host checkout is deploy-only: local changes are discarded on purpose.
 VM installs keep the source git checkout under `BRIDGE_HOME` so `/update`
 works; unprivileged services exit and let supervise-daemon or systemd respawn

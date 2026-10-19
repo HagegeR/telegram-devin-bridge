@@ -480,3 +480,169 @@ def test_restart_command_runs_without_lock_fd(deploy_clone, tmp_path: Path):
         time.sleep(0.1)
     rc_lines = calls.read_text().splitlines() if calls.exists() else []
     assert [line.split()[-1] for line in rc_lines] == ["fd9=no", "fd9=no"]
+
+
+def test_deploy_kicks_off_devin_update_without_lock_fd(
+    deploy_clone, tmp_path: Path
+):
+    # the local backend's `devin acp` binary is refreshed by the same
+    # deploy: a detached best-effort `devin update` that must not inherit
+    # the update lock fd (a held fd would block every later update)
+    import time
+
+    clone, _ = deploy_clone
+    calls = tmp_path / "calls"
+    stubbin = tmp_path / "bin"
+    stubbin.mkdir()
+    devin = stubbin / "devin"
+    devin.write_text(
+        "#!/bin/sh\n"
+        "if [ -e /proc/self/fd/9 ] || [ -e /dev/fd/9 ]; "
+        "then open=yes; else open=no; fi\n"
+        f'echo "$1 fd9=$open" >> "{calls}"\n'
+    )
+    devin.chmod(0o755)
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{_nonroot_id_stub(tmp_path)}:{stubbin}:{os.environ['PATH']}",
+    }
+    for var in ("INVOCATION_ID", "RC_SVCNAME", "BRIDGE_SUPERVISED", "BRIDGE_PID"):
+        env.pop(var, None)
+    result = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    for _ in range(80):
+        if calls.exists():
+            break
+        time.sleep(0.1)
+    assert calls.exists()
+    assert calls.read_text().splitlines() == ["update fd9=no"]
+
+
+def test_failing_devin_update_does_not_fail_deploy(
+    deploy_clone, tmp_path: Path
+):
+    # best-effort means exactly that: a `devin update` that errors (or is
+    # absent from PATH on cloud-only hosts) must not fail the deploy
+    clone, _ = deploy_clone
+    stubbin = tmp_path / "bin"
+    stubbin.mkdir()
+    devin = stubbin / "devin"
+    devin.write_text("#!/bin/sh\nexit 1\n")
+    devin.chmod(0o755)
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{_nonroot_id_stub(tmp_path)}:{stubbin}:{os.environ['PATH']}",
+    }
+    for var in ("INVOCATION_ID", "RC_SVCNAME", "BRIDGE_SUPERVISED", "BRIDGE_PID"):
+        env.pop(var, None)
+    result = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / ".self-update-rev").exists()
+
+
+def test_deploy_honours_devin_local_cli_from_dot_env(
+    deploy_clone, tmp_path: Path
+):
+    # the bridge reads DEVIN_LOCAL_CLI from .env via Settings; the deploy
+    # shell only sees exported vars, so it must fall back to the file or a
+    # configured CLI is silently skipped while `devin` gets updated instead
+    clone, _ = deploy_clone
+    calls = tmp_path / "calls"
+    stubbin = tmp_path / "bin"
+    stubbin.mkdir()
+    custom = stubbin / "custom-devin"
+    custom.write_text(f'#!/bin/sh\necho "$1" >> "{calls}"\n')
+    custom.chmod(0o755)
+    (clone / ".env").write_text(
+        f'DEVIN_LOCAL_CLI="{custom}"\nTELEGRAM_BOT_TOKEN=not-real\n'
+    )
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{_nonroot_id_stub(tmp_path)}:{os.environ['PATH']}",
+    }
+    for var in (
+        "INVOCATION_ID",
+        "RC_SVCNAME",
+        "BRIDGE_SUPERVISED",
+        "BRIDGE_PID",
+        "DEVIN_LOCAL_CLI",
+    ):
+        env.pop(var, None)
+    result = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls.read_text().splitlines() == ["update"]
+
+
+def test_deploy_without_devin_cli_still_succeeds(
+    deploy_clone, tmp_path: Path
+):
+    # cloud-only hosts have no local CLI at all: the update is skipped and
+    # the deploy completes — best-effort means missing is not a failure
+    clone, _ = deploy_clone
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    # a scrubbed PATH, not a stub: real devin binaries elsewhere on the
+    # host must not be found (git lives in /usr/bin here)
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{_nonroot_id_stub(tmp_path)}:{fakebin}:/bin:/usr/bin",
+    }
+    for var in (
+        "INVOCATION_ID",
+        "RC_SVCNAME",
+        "BRIDGE_SUPERVISED",
+        "BRIDGE_PID",
+        "DEVIN_LOCAL_CLI",
+    ):
+        env.pop(var, None)
+    result = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (clone / ".self-update-rev").exists()
