@@ -1301,7 +1301,11 @@ class LocalClient:
                 sess,
                 "⚠ the local CLI stopped answering mid-turn — restarting"
                 " the session process"
-                + (" and retrying the prompt" if replay else ""),
+                + (
+                    " and retrying the prompt"
+                    if replay
+                    else "; resend your last message" if prompt else ""
+                ),
             )
             # unmap so _get_or_resume spawns a fresh process — a dead
             # session left in the map fails every send as 'gone'

@@ -201,7 +201,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     flight the prompt is kept in `conversations.pending_prompt`; a
     shutdown that cancels the turn leaves the marker, and the next boot
     replays it (`_replay_interrupted_turns`) so a self-update deploy
-    can't silently eat a question. The marker is kept when the process
+    can't silently eat a question. A replay whose send fails while a
+    shutdown is already in progress keeps the marker for the following
+    boot (an aborted retry, not a failed one); a send that fails on a
+    live bridge clears the marker after telling the chat the turn
+    couldn't be resumed — unless the notice itself can't be delivered,
+    in which case the marker stays for the next boot. The marker is
+    kept when the process
     died (shutdown/crash/evict — an interrupted turn, not a failed one),
     cleared when a live prompt call errors, and dropped atomically when
     `save_conversation` swaps the row to a different session. A resume
@@ -217,8 +223,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     the session unmapped so the next message respawns it via
     `session/load`, and the in-flight prompt is retried once — a replayed
     turn that wedges the fresh process too is left failed rather than
-    looped, and the user sees `⚠ the local CLI stopped answering
-    mid-turn`. Prompts owed to a dead process (the wedged turn's prompt,
+    looped — the user sees `⚠ the local CLI stopped answering
+    mid-turn`, with `and retrying the prompt` when it will replay or
+    `resend your last message` when it won't. Prompts owed to a dead process (the wedged turn's prompt,
     turns queued behind it — which never write to the reaped pipe — and
     a pending prompt stranded when a process dies outside the watchdog)
     collect in a per-session interrupted queue, replayed in send order on

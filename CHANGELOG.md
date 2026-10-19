@@ -56,6 +56,18 @@ and deployment update channels.
 
 ### Fixed
 
+- A second `rc-service stop`/`restart` landing seconds after a boot used
+  to kill the fresh bridge mid-startup-replay and burn its
+  `pending_prompt`. The OpenRC watchdog now takes the same
+  `.self-update.lock` the deploy's detached restarts hold before calling
+  `rc-service` (bounded: skips a tick rather than piling up behind a
+  hung updater), and a startup replay that fails while shutdown is
+  already in progress keeps the marker for the next boot instead of
+  clearing it — only a genuinely unresumable session drops the prompt,
+  still with the resend notice, and only when the notice itself was
+  delivered. A prompt that wedges its replay process a second time now
+  ends the restart notice with `resend your last message` instead of
+  going quiet — its marker still survives for the next boot's replay.
 - A `devin acp` process stopped by the bridge itself — deploy restart,
   `/update`, session-cap evict, wedge respawn, `/stop` — used to report
   every in-flight turn as `⚠ prompt failed: acp process exited`, so

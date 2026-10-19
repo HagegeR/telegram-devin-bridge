@@ -17,9 +17,18 @@ home=${BRIDGE_HOME:-/root/telegram-devin-bridge}
 hb=/tmp/telegram-devin-bridge.poll-alive
 log=/var/log/telegram-devin-bridge-watchdog.log
 
+# serialize with self-update's detached restarts, which hold this lock: an
+# unlocked rc-service can stop a just-started child mid-boot (the collision
+# that leaves the service down or kills a startup replay)
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$home/.self-update.lock"
+    flock -w 600 9 || exit 0
+fi
+
 if ! rc-service telegram-devin-bridge status 2>/dev/null | grep -q "status: started"; then
     echo "$(date -u +%FT%TZ) not started; starting" >> "$log"
-    rc-service telegram-devin-bridge start >> "$log" 2>&1
+    # 9>&- so the service it starts does not inherit the update lock
+    rc-service telegram-devin-bridge start 9>&- >> "$log" 2>&1
     exit 0
 fi
 
@@ -46,6 +55,6 @@ fi
 
 if [ -n "$stale" ]; then
     echo "$(date -u +%FT%TZ) wedged ($stale); restarting" >> "$log"
-    rc-service telegram-devin-bridge restart >> "$log" 2>&1
+    rc-service telegram-devin-bridge restart 9>&- >> "$log" 2>&1
 fi
 exit 0
