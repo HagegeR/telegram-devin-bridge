@@ -8,6 +8,13 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- **`/metrics`**: an admin-only command rendering process counters since
+  boot (`updates`, `commands`, `turns`, `sessions_cloud`/`sessions_local`,
+  `replies`, `errors`, `watcher_failures`) plus uptime. In-memory only;
+  nothing is persisted or attributed per chat.
+
 ### Changed
 
 - Forum topic names are capped at five words (plus an ellipsis) when the
