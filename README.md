@@ -59,10 +59,12 @@ Requires Python ≥ 3.12, a Telegram bot token, and a Devin **v1** API key
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN + DEVIN_API_KEY
+python -m app.setup    # interactive .env writer (or: cp .env.example .env)
 ```
 
-New here? [docs/getting-started.md](docs/getting-started.md) walks through the
+`app.setup` prompts for the two required keys plus access/mode, generates
+the notify/doctor/admin/webhook secrets, and validates the result. New
+here? [docs/getting-started.md](docs/getting-started.md) walks through the
 BotFather and API-key steps in about five minutes. Prefer containers?
 `docker compose up -d` with a filled-in `.env` works too.
 

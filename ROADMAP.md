@@ -12,6 +12,8 @@ Rough direction, not commitments — open an issue to discuss anything here.
 - Access control: allowlists, admin approval flow, free-response chats
 - Metrics: in-process counters (updates, commands, turns, sessions,
   replies, errors) rendered by admin-only `/metrics`
+- Setup wizard: `python -m app.setup` interactive `.env` writer with a
+  `Settings` self-check
 
 ## Next
 
@@ -21,7 +23,6 @@ Rough direction, not commitments — open an issue to discuss anything here.
   `/start` for first-time and denied users
 - **Backup/restore commands** — SQLite backup via `/admin` and a `db_check`
   diagnostic
-- **Setup wizard** — `python -m app.setup` interactive `.env` writer
 - **Docker Compose / one-click deploys** beyond Fly.io
 
 ## Later (scaling)

@@ -16,6 +16,12 @@ and deployment update channels.
   private chats so an ephemeral fallback can't leak them to a group.
   In-memory only;
   nothing is persisted or attributed per chat.
+- **Setup wizard**: `python -m app.setup` interactively writes `.env` —
+  prompts for the bot token, Devin key, allowed user ids, and delivery
+  mode (webhook collects `PUBLIC_BASE_URL`), generates the
+  notify/doctor/admin/webhook secrets, refuses to clobber an existing
+  file without `--force`, and validates the result through the real
+  `Settings` before printing next steps.
 
 ### Changed
 
