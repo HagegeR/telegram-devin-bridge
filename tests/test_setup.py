@@ -68,8 +68,9 @@ def test_setup_writes_valid_polling_env(
     # the written file must load through the real Settings — init kwargs
     # so the host's own environment can't shadow the file being checked
     assert Settings(**_values(text)).telegram_bot_token == "12345:bot-token"
-    # secrets are not world-readable
-    assert os.stat(path).st_mode & 0o777 == 0o600
+    # secrets are not world-readable (POSIX; Windows has no mode bits)
+    if os.name != "nt":
+        assert os.stat(path).st_mode & 0o777 == 0o600
 
 
 def test_setup_webhook_mode_collects_url(
