@@ -1482,6 +1482,7 @@ class Bridge:
         last_user_text: str | None = None,
         start_watcher: bool = True,
         keep_queued: bool = False,
+        suppress_prompt: bool = False,
     ) -> Conversation | None:
         chat = _mapping(message.get("chat"))
         chat_id = _int(chat.get("id"))
@@ -1536,6 +1537,7 @@ class Bridge:
                 mode=conv_settings.devin_mode,
                 model=conv_settings.local_model,
                 thought_level=conv_settings.thought_level,
+                suppress_first=suppress_prompt,
             )
         else:
             session_id, session_url = await self.devin.create_session(

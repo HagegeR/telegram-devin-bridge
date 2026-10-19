@@ -25,8 +25,12 @@ from app.local import (
 
 FAKE_ACP = textwrap.dedent(
     """
-    import json, os, sys, time
+    import json, os, sys, threading, time
     sid = "fake-sid"
+    out_lock = threading.Lock()
+    def emit(obj):
+        with out_lock:
+            print(json.dumps(obj), flush=True)
     for line in sys.stdin:
         try:
             m = json.loads(line)
@@ -155,6 +159,36 @@ FAKE_ACP = textwrap.dedent(
                                           "result": {"sessions": []}}),
                               flush=True)
             chunks = ["echo: ", text]
+            if os.environ.get("FAKE_GOAL"):
+                if text.startswith("/goal ") and text != "/goal clear":
+                    # a goal run: the response stays open while the run
+                    # emits turns on its own — the main loop keeps
+                    # reading so a concurrent prompt (a steer, /goal
+                    # clear) is answered mid-run like the real CLI
+                    def _run(i=i):
+                        for n in range(10):
+                            emit({"jsonrpc": "2.0",
+                                  "method": "session/update",
+                                  "params": {"sessionId": sid,
+                                             "update": {
+                                      "sessionUpdate": "agent_message_chunk",
+                                      "content": {"type": "text",
+                                                  "text": "tick %d\\n\\n" % n}}}})
+                            time.sleep(0.15)
+                        emit({"jsonrpc": "2.0", "id": i,
+                              "result": {"stopReason": "end_turn"}})
+                    threading.Thread(target=_run, daemon=True).start()
+                    continue
+                if text == "/goal clear":
+                    # answered while the goal run above is still live
+                    emit({"jsonrpc": "2.0", "method": "session/update",
+                          "params": {"sessionId": sid, "update": {
+                              "sessionUpdate": "agent_message_chunk",
+                              "content": {"type": "text",
+                                          "text": "Goal cleared."}}}})
+                    emit({"jsonrpc": "2.0", "id": i,
+                          "result": {"stopReason": "end_turn"}})
+                    continue
             if os.environ.get("FAKE_PERMISSION"):
                 print(json.dumps({"jsonrpc": "2.0", "id": 9000,
                                   "method": "session/request_permission",
@@ -1358,3 +1392,47 @@ async def test_replayed_title_cannot_clobber_the_resumed_title(
     await _wait_for(shell_client, session_id, "echo: second")
     state = await shell_client.get_session(session_id)
     assert state.title == "resumed title"
+
+
+@pytest.mark.asyncio
+async def test_steer_reaches_a_running_goal_turn(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a goal run keeps its prompt response open for the whole run — a
+    # queued /goal clear would wait out every continuation turn. The
+    # fake answers a concurrent prompt mid-run, so the clear must land
+    # while the run is still ticking, not after it ends.
+    monkeypatch.setenv("FAKE_GOAL", "1")
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "echo: hi")
+    await shell_client.send_message(session_id, "/goal tick forever")
+    await _wait_for(shell_client, session_id, "tick 0")
+    started = asyncio.get_event_loop().time()
+    await shell_client.send_message(session_id, "/goal clear")
+    await _wait_for(shell_client, session_id, "Goal cleared.")
+    # under turn-chaining the clear lands only after the ~1.5s run ends
+    assert asyncio.get_event_loop().time() - started < 1.0
+    sess = shell_client.sessions[session_id]
+    # the steered turn finishing mid-run must not strand the run's count
+    for _ in range(50):
+        if not sess.turns:
+            break
+        await asyncio.sleep(0.1)
+    assert sess.turns == 0
+
+
+@pytest.mark.asyncio
+async def test_suppressed_first_turn_is_hidden(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # command-created sessions open with the system preamble as a
+    # suppressed turn — its reply must never become a chat message, and
+    # the next prompt runs as a clean turn, not a steer into it
+    monkeypatch.setenv("FAKE_GOAL", "1")
+    session_id, _ = await shell_client.create_session(
+        "the preamble", suppress_first=True
+    )
+    state = await shell_client.get_session(session_id)
+    assert not any("the preamble" in m.message for m in state.messages)
+    await shell_client.send_message(session_id, "/goal tick forever")
+    await _wait_for(shell_client, session_id, "tick 0")

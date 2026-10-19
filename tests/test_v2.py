@@ -8883,6 +8883,63 @@ async def test_namespaced_skill_forwards_to_local_session(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_goal_command_creates_session_on_local_chat(tmp_path: Path) -> None:
+    # /goal on a local-platform chat with no session starts one: the
+    # preamble goes first as a hidden turn, then the command runs
+    store = Store(":memory:")
+    store.update_chat_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+    created: list[dict[str, object]] = []
+
+    async def fake_send(session_id: str, text: str) -> None:
+        sent.append((session_id, text))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+
+    async def fake_create(
+        message_obj: object, prompt: str, title: object, **kw: object
+    ) -> object:
+        created.append({"prompt": prompt, **kw})
+        store.save_conversation(
+            conv_key="222",
+            chat_id=222,
+            thread_id=None,
+            session_id="local:new1",
+            session_url="local",
+            title="t",
+        )
+        return store.get_conversation("222")
+
+    runtime.create_session_for_message = fake_create  # type: ignore[method-assign]
+
+    async def noop_watcher(
+        conversation: object, *, trigger_message_id: int | None = None
+    ) -> None:
+        return None
+
+    runtime.start_watcher = noop_watcher  # type: ignore[method-assign]
+    await handle_command(runtime, message("/goal ship it"), "/goal ship it")
+    assert created[0]["prompt"] == SYSTEM_PREAMBLE
+    assert created[0]["suppress_prompt"] is True
+    assert sent == [("local:new1", "/goal ship it")]
+    assert telegram.reactions[-1] == "👀"
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_slash_command_stays_unknown_off_local_chat(tmp_path: Path) -> None:
+    # no conversation + cloud platform — no session is created
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/goal ship it"), "/goal ship it")
+    assert "Unknown command" in str(telegram.sent[-1]["text"])
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_passthrough_respects_rate_limit(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(

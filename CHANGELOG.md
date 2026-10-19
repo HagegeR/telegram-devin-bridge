@@ -22,6 +22,16 @@ and deployment update channels.
   notify/doctor/admin/webhook secrets, refuses to clobber an existing
   file without `--force`, and validates the result through the real
   `Settings` before printing next steps.
+- **Native `/goal` support for local sessions.** A `/goal` run keeps its
+  `session/prompt` call open across every internal continuation turn, so
+  mid-run messages used to queue behind it and `/goal pause`, `/goal
+  resume`, and `/goal clear` could never reach a running goal. Local
+  prompts sent while a turn is in flight now issue a concurrent
+  `session/prompt`, which the CLI hands to the running turn as a steer;
+  queued, replayed, and suppressed turns keep their send-order chaining.
+  Sending a CLI slash command on a `/platform local` chat with no active
+  session also creates one first: `SYSTEM_PREAMBLE` runs as a hidden
+  `suppress_turn` turn, then the command lands as the first visible turn.
 
 ### Changed
 

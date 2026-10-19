@@ -1095,14 +1095,20 @@ async def handle_command(
             return
         await runtime.send_text(message, metrics.render(), ephemeral=True)
     elif (
-        conversation is not None
-        and is_local(conversation.session_id)
-        and re.fullmatch(
-            r"/[\w:.-]+(@\S+)?", text.partition(" ")[0]
+        re.fullmatch(r"/[\w:.-]+(@\S+)?", text.partition(" ")[0])
+        and (
+            (
+                conversation is not None
+                and is_local(conversation.session_id)
+            )
+            or (
+                conversation is None
+                and runtime.store.get_settings(conv_key).platform == "local"
+            )
         )
     ):
         # not a bridge command — local CLI sessions take slash commands
-        # (/fast, /compact, /loop, skills like /ponytail:ponytail) as
+        # (/goal, /fast, /compact, /loop, skills like /ponytail:ponytail) as
         # plain prompts; forward the raw head so namespaced names and
         # arg casing survive (_parse rejects ':' and lowercases)
         if sender_id not in runtime.settings.admin_user_ids:
@@ -1120,6 +1126,23 @@ async def handle_command(
             return
         head, _, rest = text.partition(" ")
         forwarded = head.split("@", 1)[0] + (f" {rest.strip()}" if rest.strip() else "")
+        if conversation is None:
+            # a local chat with no session — the command starts one. The
+            # preamble must be its own turn (the CLI parses a command only
+            # as the whole prompt) and stays hidden; the command runs as
+            # the next, user-visible turn
+            conversation = await runtime.create_session_for_message(
+                message,
+                SYSTEM_PREAMBLE,
+                runtime.store.get_setting(f"pending_title:{conv_key}"),
+                last_user_text=forwarded,
+                start_watcher=False,
+                suppress_prompt=True,
+            )
+            if conversation is None:
+                # non-admin sender or dead backend — the create path
+                # already sent the reason
+                return
         try:
             await runtime.send_session_message(
                 conversation.session_id, forwarded
