@@ -56,6 +56,14 @@ and deployment update channels.
 
 ### Fixed
 
+- A `devin acp` process stopped by the bridge itself — deploy restart,
+  `/update`, session-cap evict, wedge respawn, `/stop` — used to report
+  every in-flight turn as `⚠ prompt failed: acp process exited`, so
+  each self-update looked like a crash even though the prompt replays
+  after boot. Bridge-ordered kills no longer emit the warning (a
+  mid-turn exit the bridge didn't order still does), and a startup
+  replay that can't resume the session now tells the chat to resend
+  instead of dropping the prompt silently.
 - Local sessions could still be titled by the CLI's ~80-char
   provisional: a `session_info_update` title derived from the agent's
   own reply head (rather than the prompt) slipped past the prefix check,

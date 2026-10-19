@@ -850,6 +850,59 @@ async def test_reap_keeps_pending_prompt_for_replay(
     shell_client.sessions.pop(session_id)
 
 
+@pytest.mark.asyncio
+async def test_reap_mid_turn_reports_no_failure(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a bridge-ordered kill (deploy restart, evict, /stop) interrupts a
+    # turn that pending_prompt replays — emitting "prompt failed" for it
+    # is a false alarm on every self-update
+    monkeypatch.setenv("FAKE_SLOW", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "second para tail")
+    await shell_client.send_message(session_id, "second")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if sess.pending_prompt == "second":
+            break
+        await asyncio.sleep(0.1)
+    await shell_client._reap(sess)
+    for _ in range(50):
+        if sess.turns == 0:
+            break
+        await asyncio.sleep(0.1)
+    assert not any("prompt failed" in m.message for m in sess.events)
+    shell_client.sessions.pop(session_id)
+
+
+@pytest.mark.asyncio
+async def test_crash_mid_turn_still_reports_failure(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # an exit the bridge didn't order (crash, OOM kill) is a real
+    # failure — the warning must survive or a dying CLI gaps turns
+    # silently
+    monkeypatch.setenv("FAKE_SLOW", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "second para tail")
+    await shell_client.send_message(session_id, "second")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if sess.pending_prompt == "second":
+            break
+        await asyncio.sleep(0.1)
+    _kill(sess.proc)
+    for _ in range(100):
+        if any("prompt failed" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert any(
+        "prompt failed: acp process exited" in m.message
+        for m in sess.events
+    )
+    shell_client.sessions.pop(session_id)
+
+
 def _wedge_constants(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.local._WEDGE_CHECK_SECONDS", 0.05)
     monkeypatch.setattr("app.local._WEDGE_SILENCE_SECONDS", 0.2)

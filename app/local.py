@@ -90,6 +90,10 @@ class _AcpSession:
     tail: asyncio.Task | None = None
     flusher: asyncio.Task | None = None
     dead: bool = False
+    # the bridge stopped the process itself (shutdown, evict, suspend,
+    # wedge respawn, /stop) — mid-turn failures during one are
+    # interruptions already queued for replay, not crashes to report
+    reaped: bool = False
     # turns in flight that must never surface their reply — each hidden
     # turn (login, preamble) suppresses exactly itself, so a login turn
     # finishing early can't unhide the preamble queued behind it
@@ -959,8 +963,19 @@ class LocalClient:
             # moved to the resumed process — not a user-visible failure
             return
         if exc is not None:
-            logger.warning("local prompt failed for %s: %s", sess.acp_id, exc)
-            self._emit(sess, f"⚠ prompt failed: {_clean_reason(exc)}")
+            if sess.reaped:
+                # we stopped the process — the prompt is queued for
+                # replay, so a ⚠ here reads as a crash on every deploy
+                logger.info(
+                    "local turn interrupted by reap for %s: %s",
+                    sess.acp_id,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "local prompt failed for %s: %s", sess.acp_id, exc
+                )
+                self._emit(sess, f"⚠ prompt failed: {_clean_reason(exc)}")
         elif fut.result().get("error"):
             self._emit(sess, f"⚠ {fut.result()['error'].get('message', 'error')}")
         if sess.inflight:
@@ -1205,6 +1220,7 @@ class LocalClient:
                 return
             sess.acp_id = session_id.removeprefix(LOCAL_PREFIX)
         sess.dead = True
+        sess.reaped = True
         try:
             await self._request(sess, "session/delete", {"sessionId": sess.acp_id})
         except (RuntimeError, TimeoutError, asyncio.CancelledError):
@@ -1221,6 +1237,7 @@ class LocalClient:
     async def _reap(self, sess: _AcpSession) -> None:
         """Stop the acp process without deleting the persisted session."""
         sess.dead = True
+        sess.reaped = True
         if sess.flusher is not None:
             sess.flusher.cancel()
         _terminate(sess.proc)

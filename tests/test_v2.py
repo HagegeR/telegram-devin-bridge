@@ -10296,8 +10296,9 @@ async def test_replay_interrupted_turns_resends_pending_prompt(
         title="t",
     )
     store.set_pending_prompt("222:10", "devin-cloud1", "cloud prompt")
+    tg = _FakeTelegram()
     runtime = Bridge(
-        settings(tmp_path), store, _FakeDevin(), _FakeTelegram()
+        settings(tmp_path), store, _FakeDevin(), tg
     )  # type: ignore[arg-type]
     sent: list[tuple[str, str]] = []
 
@@ -10318,6 +10319,12 @@ async def test_replay_interrupted_turns_resends_pending_prompt(
     # a session that can't resume doesn't wedge the replay loop forever
     conv = store.get_conversation("222:9")
     assert conv is not None and conv.pending_prompt is None
+    # and the drop is announced — a silent gap reads as a lost reply
+    assert any(
+        "resend" in m["text"] and m.get("thread_id") == 9
+        for m in tg.sent
+        if m["chat_id"] == 222
+    )
 
 
 @pytest.mark.asyncio

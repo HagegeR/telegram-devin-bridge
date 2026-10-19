@@ -323,11 +323,23 @@ class Bridge:
             except Exception:
                 # one unresumable session must not eat the rest of the
                 # replay (or abort startup); drop its prompt like a "gone"
-                # session does instead of retrying it on every boot
+                # session does instead of retrying it on every boot — but
+                # tell the user, or their question vanishes silently
                 logger.exception(
                     "failed to replay pending prompt for conversation %s",
                     conv.conv_key,
                 )
+                try:
+                    await self.telegram.send_message(
+                        conv.chat_id,
+                        "⚠ the interrupted turn couldn't be resumed — "
+                        "please resend your last message",
+                        thread_id=conv.thread_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "replay-failure notice failed for %s", conv.conv_key
+                    )
                 self.store.set_pending_prompt(
                     conv.conv_key, conv.session_id, None
                 )
