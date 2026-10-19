@@ -8929,6 +8929,122 @@ async def test_goal_command_creates_session_on_local_chat(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_racing_goal_commands_create_one_local_session(
+    tmp_path: Path,
+) -> None:
+    # two unknown-command updates landing together used to both see no
+    # conversation and spawn one ACP process each — the dispatch lock
+    # serializes the create, so the second forwards into the first
+    store = Store(":memory:")
+    store.update_chat_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    sent: list[tuple[str, str]] = []
+    created: list[str] = []
+
+    async def fake_send(session_id: str, text: str) -> None:
+        sent.append((session_id, text))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+
+    async def fake_create(
+        message_obj: object, prompt: str, title: object, **kw: object
+    ) -> object:
+        created.append(str(prompt))
+        # widen the race window — without the lock both forwards land here
+        await asyncio.sleep(0.05)
+        store.save_conversation(
+            conv_key="222",
+            chat_id=222,
+            thread_id=None,
+            session_id="local:new1",
+            session_url="local",
+            title="t",
+        )
+        return store.get_conversation("222")
+
+    runtime.create_session_for_message = fake_create  # type: ignore[method-assign]
+
+    async def noop_watcher(
+        conversation: object, *, trigger_message_id: int | None = None
+    ) -> None:
+        return None
+
+    runtime.start_watcher = noop_watcher  # type: ignore[method-assign]
+    await asyncio.gather(
+        runtime.handle_message(message("/goal one", message_id=1)),
+        runtime.handle_message(message("/goal two", message_id=2)),
+    )
+    assert len(created) == 1
+    assert sorted(t for _, t in sent) == ["/goal one", "/goal two"]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_busy_local_turn_steers_instead_of_queueing(
+    tmp_path: Path,
+) -> None:
+    # a goal turn keeps a local session "busy" for its whole run —
+    # queueing follow-ups there would lock /goal pause|resume|clear and
+    # steering text out until the goal ends; local bypasses the busy
+    # queue because LocalClient steers concurrent prompts instead
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:s1",
+        session_url="local",
+        title="t",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_queue_while_busy=True),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        _FakeDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    )
+    watcher.last_status = "working"
+    runtime.active_watchers["local:s1"] = watcher
+    task = asyncio.create_task(asyncio.sleep(10))
+    runtime.watchers["local:s1"] = task
+    sent: list[str] = []
+
+    async def fake_send(session_id: str, text: str) -> None:
+        sent.append(text)
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+
+    async def fake_get(*_: object, **__: object) -> SessionState:
+        # keep the fake conversation alive — an "expired" state would
+        # route the turn through session creation instead of send
+        return SessionState("working", "t", None, [])
+
+    runtime.local.get_session = fake_get  # type: ignore[method-assign]
+    await runtime._queue_turn(message("steer me", message_id=9), "steer me", None)
+    for _ in range(50):
+        if sent:
+            break
+        await asyncio.sleep(0.05)
+    # same shape as the cloud test above: busy -> queued. Here it must
+    # have gone straight through instead
+    assert runtime.queued_count("222") == 0
+    assert sent == ["steer me"]
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_slash_command_stays_unknown_off_local_chat(tmp_path: Path) -> None:
     # no conversation + cloud platform — no session is created
     store = Store(":memory:")
@@ -9099,8 +9215,8 @@ async def test_redeliver_backlog_recovers_undelivered_events(
         flusher=None,
         tail=None,
         turns=0,
-        suppress_turn=False,
         replaying=False,
+        suppressed_inflight=0,
         acp_id="x",
         proc=SimpleNamespace(
             terminate=lambda: None,
@@ -9145,8 +9261,8 @@ async def test_redeliver_backlog_recovers_before_first_reply(
         flusher=None,
         tail=None,
         turns=0,
-        suppress_turn=False,
         replaying=False,
+        suppressed_inflight=0,
         acp_id="y",
         proc=SimpleNamespace(
             terminate=lambda: None,
@@ -9194,8 +9310,8 @@ async def test_local_emit_hook_restarts_delivery(
         flusher=None,
         tail=None,
         turns=0,
-        suppress_turn=False,
         replaying=False,
+        suppressed_inflight=0,
         acp_id="y",
         proc=SimpleNamespace(
             terminate=lambda: None,

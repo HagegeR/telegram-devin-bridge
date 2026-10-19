@@ -654,7 +654,23 @@ class Bridge:
                 async with self._lock(self._conversation_key(message)):
                     await handle_command(self, message, text)
             else:
-                await handle_command(self, message, text)
+                # unknown slash command — /goal, /fast, skills: forwarded
+                # to a local session as a plain prompt, and on a local
+                # chat with no session it creates one. Serialize on the
+                # conversation lock like /new: two racing forwards would
+                # both see no conversation and spawn orphan ACP processes
+                cmd_key = self._conversation_key(message)
+                conv = self.store.get_conversation(cmd_key)
+                if (
+                    conv is not None and is_local(conv.session_id)
+                ) or (
+                    conv is None
+                    and self.store.get_settings(cmd_key).platform == "local"
+                ):
+                    async with self._lock(cmd_key):
+                        await handle_command(self, message, text)
+                else:
+                    await handle_command(self, message, text)
             return
         if self._rate_limited(user_id):
             now = time.monotonic()
@@ -796,9 +812,19 @@ class Bridge:
                 attachment,
                 [uid for *_, uid_list in fragments for uid in uid_list],
             )
+            conversation = self.store.get_conversation(conv_key)
             if (
                 self.settings.telegram_queue_while_busy
                 and not self.shutting_down
+                # local turns stay open for a whole goal run — queueing
+                # follow-ups would lock /goal pause|resume|clear and
+                # ordinary steering text out until the goal finishes.
+                # LocalClient.send_message steers concurrent prompts
+                # instead, so busy only queues for cloud sessions
+                and not (
+                    conversation is not None
+                    and is_local(conversation.session_id)
+                )
                 and self._conversation_busy(conv_key)
             ):
                 queue = self.queued_turns.setdefault(conv_key, [])
@@ -1043,7 +1069,12 @@ class Bridge:
         if self.shutting_down:
             return
         sess = self.local.sessions.get(session_id)
-        if sess is None or sess.dead or sess.replaying or sess.suppress_turn:
+        if (
+            sess is None
+            or sess.dead
+            or sess.replaying
+            or sess.suppressed_inflight
+        ):
             return
         watcher = self.watchers.get(session_id)
         if watcher is not None and not watcher.done():

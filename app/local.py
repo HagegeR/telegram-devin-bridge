@@ -90,7 +90,15 @@ class _AcpSession:
     tail: asyncio.Task | None = None
     flusher: asyncio.Task | None = None
     dead: bool = False
-    suppress_turn: bool = False
+    # turns in flight that must never surface their reply — each hidden
+    # turn (login, preamble) suppresses exactly itself, so a login turn
+    # finishing early can't unhide the preamble queued behind it
+    suppressed_inflight: int = 0
+    # every prompt with a live session/prompt request, in send order —
+    # the durable recovery set: pending_prompt tracks the oldest one so
+    # a restart replays a turn that is still owed an answer even after
+    # the run owner already settled
+    inflight_msgs: list[str] = field(default_factory=list)
     # live config the CLI reports (mode/model/thought_level -> current value)
     config: dict[str, str] = field(default_factory=dict)
     # available_commands_update arrives after session/new; None until then
@@ -736,15 +744,14 @@ class LocalClient:
         if self.api_key and not await self._cli_logged_in():
             # only login when the CLI isn't already authed — every /login
             # turn leaves the key in the session transcript
-            sess.suppress_turn = True
-            await self.send_message(session_id, f"/login {self.api_key}")
-        if suppress_first:
-            # the caller's first turn is context, not content (the system
-            # preamble for a command-created session) — drop its reply and
-            # wait for it so the next prompt starts as a clean turn, not a
-            # steer into a suppressed one
-            sess.suppress_turn = True
-        await self.send_message(session_id, prompt)
+            await self.send_message(
+                session_id, f"/login {self.api_key}", suppress=True
+            )
+        # the caller's first turn may be context, not content (the system
+        # preamble for a command-created session) — suppress drops its
+        # reply, and create_session waits for it so the next prompt
+        # starts as a clean turn, not a steer into a suppressed one
+        await self.send_message(session_id, prompt, suppress=suppress_first)
         if suppress_first and sess.tail is not None:
             try:
                 await sess.tail
@@ -770,9 +777,17 @@ class LocalClient:
         # have written its own prompt over the slot
         if sess.pending_prompt == message:
             sess.pending_prompt = None
-            self._prompt_state(session_id, None)
+        if sess.pending_prompt is None and sess.inflight_msgs:
+            # the owner settled while steers still fly — the durable
+            # marker follows the oldest unsettled prompt so a bridge
+            # restart replays a turn that's still owed an answer instead
+            # of losing it with the finished owner
+            sess.pending_prompt = sess.inflight_msgs[0]
+        self._prompt_state(session_id, sess.pending_prompt)
 
-    async def send_message(self, session_id: str, message: str) -> None:
+    async def send_message(
+        self, session_id: str, message: str, *, suppress: bool = False
+    ) -> None:
         sess = await self._get_or_resume(session_id)
         if sess is None:
             raise RuntimeError(f"local session {session_id} is gone")
@@ -781,31 +796,40 @@ class LocalClient:
         if sess.cfg_pending:
             await self._apply_resume_config(session_id, sess)
         prev = sess.tail
-        # a prompt sent while a turn is still running steers it — the CLI
-        # hands the text to the running turn and answers the prompt on its
-        # own response (this is how /goal pause|resume|clear can reach a
-        # session mid-run: a goal turn stays open until the goal finishes,
-        # so chaining would lock every follow-up out for the whole run).
-        # Replays and suppressed turns keep the queue — their ordering
-        # guarantees matter more than responsiveness there.
-        steering = (
-            prev is not None
-            and not prev.done()
-            and not sess.replaying
-            and not sess.replay_turn
-            and not sess.suppress_turn
+        # order-sensitive sends (history replays, drained interrupted
+        # turns, hidden preamble/login turns — or anything sent while one
+        # of those is still running) must serialize behind every earlier
+        # request. Ordinary messages don't wait: a prompt that reaches
+        # the process while a request is open is a steer — the CLI hands
+        # it to the running turn (this is how /goal pause|resume|clear
+        # and ordinary follow-ups reach a goal mid-run: a goal turn stays
+        # open until the goal finishes, so chaining would lock every
+        # follow-up out for the whole run).
+        queued = (
+            suppress
+            or sess.replay_turn
+            or sess.replaying
+            or bool(sess.suppressed_inflight)
         )
         sess.turns += 1
 
         async def _turn() -> dict:
-            if not steering:
+            if queued:
                 if prev is not None:
                     try:
                         await prev
                     except (RuntimeError, TimeoutError, asyncio.CancelledError) as exc:
                         logger.debug("prior local turn failed: %s", exc)
-                # reset at the real turn start (after any queued turn): the
-                # status line must not show the previous turn's tool/thought
+                while sess.inflight:
+                    # tail can't promise ordering — a short steer can end
+                    # while an earlier request (a goal run) still flies
+                    await asyncio.sleep(_FLUSH_INTERVAL)
+            if sess.inflight == 0:
+                # the first live request owns the run: reset the stream
+                # state and take the durable marker. A steer skips both —
+                # deciding here instead of on tail.done() keeps a quick
+                # steer from making the next prompt look like a clean
+                # turn that wipes a still-running goal's buffer/marker
                 sess.activity = ""
                 sess.thought = ""
                 sess.buffer.clear()
@@ -813,10 +837,8 @@ class LocalClient:
                 # the prompt's Telegram row was already consumed; keep it
                 # durable until the turn settles so a bridge restart
                 # mid-turn replays it instead of losing the user's
-                # question. A steered prompt keeps the run-owner's marker —
-                # replaying the steer alone would drop the prompt that
-                # started the run.
-                sess.pending_prompt = None if sess.suppress_turn else message
+                # question
+                sess.pending_prompt = None if suppress else message
                 self._prompt_state(session_id, sess.pending_prompt)
             if sess.dead:
                 # queued behind a turn whose process died — writing to a
@@ -826,6 +848,9 @@ class LocalClient:
                 self._interrupted.setdefault(session_id, []).append(message)
                 raise _TurnRescheduledError(sess.acp_id)
             sess.inflight += 1
+            sess.inflight_msgs.append(message)
+            if suppress:
+                sess.suppressed_inflight += 1
             try:
                 result = await self._request(sess, "session/prompt", {
                     "sessionId": sess.acp_id,
@@ -851,11 +876,17 @@ class LocalClient:
                 raise
             finally:
                 sess.inflight -= 1
+                if suppress:
+                    sess.suppressed_inflight -= 1
+                if message in sess.inflight_msgs:
+                    sess.inflight_msgs.remove(message)
             self._clear_pending_prompt(sess, session_id, message)
             return result
 
         sess.tail = asyncio.create_task(_turn())
-        sess.tail.add_done_callback(lambda f: self._turn_done(sess, f))
+        sess.tail.add_done_callback(
+            lambda f, s=suppress: self._turn_done(sess, f, s)
+        )
         if sess.flusher is None:
             sess.flusher = asyncio.create_task(self._flusher(sess))
         if self._wedge_task is None or self._wedge_task.done():
@@ -865,7 +896,7 @@ class LocalClient:
         try:
             while not sess.dead:
                 await asyncio.sleep(_FLUSH_INTERVAL)
-                if not sess.turns or sess.suppress_turn:
+                if not sess.turns or sess.suppressed_inflight:
                     continue
                 raw = "".join(sess.buffer)
                 # emit whole paragraphs, not arbitrary line batches — every
@@ -904,17 +935,18 @@ class LocalClient:
         except asyncio.CancelledError:
             pass
 
-    def _turn_done(self, sess: _AcpSession, fut: asyncio.Future) -> None:
+    def _turn_done(
+        self, sess: _AcpSession, fut: asyncio.Future, suppress: bool = False
+    ) -> None:
         sess.turns -= 1
         if not sess.turns:
             # clear only once every in-flight turn has ended — a steered
             # turn finishing early must not unmark a replay still running
             sess.replay_turn = False
-        if sess.suppress_turn:
-            sess.suppress_turn = False
+        if suppress:
             if "".join(sess.buffer).strip():
                 logger.warning(
-                    "local turn output discarded by suppress_turn for %s",
+                    "local turn output discarded by a suppressed turn for %s",
                     sess.acp_id,
                 )
             sess.buffer.clear()
@@ -1318,9 +1350,10 @@ class LocalClient:
             victim = self.sessions.pop(key)
             if victim.pending_prompt:
                 # evicting mid-turn — the prompt survives for replay
-                # on next contact, like a watchdog respawn
-                self._interrupted.setdefault(key, []).append(
-                    victim.pending_prompt
+                # on next contact, like a watchdog respawn; the owner was
+                # sent before any steer already in the queue
+                self._interrupted.setdefault(key, []).insert(
+                    0, victim.pending_prompt
                 )
             await self._reap(victim)
 
@@ -1378,10 +1411,12 @@ class LocalClient:
             if sess.pending_prompt:
                 # the dead process was mid-turn — replay that prompt on
                 # the fresh process instead of letting the next send
-                # overwrite the durable marker silently
+                # overwrite the durable marker silently. In-flight steers
+                # dead-guarded into the queue first; the owner was sent
+                # before them, so it replays first too
                 self._interrupted.setdefault(
                     session_id, []
-                ).append(sess.pending_prompt)
+                ).insert(0, sess.pending_prompt)
             sess = None
         if sess is None and session_id not in self._terminated:
             sess = await self._resume(session_id)
