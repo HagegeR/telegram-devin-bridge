@@ -1024,6 +1024,10 @@ async def test_wedged_session_replay_is_not_repeated(
         await asyncio.sleep(0.05)
     assert shell_client.sessions.get(session_id) is None
     assert not shell_client._interrupted.get(session_id)
+    # the abandoned prompt says so — a silent reap reads as a lost turn
+    assert any(
+        "resend your last message" in m.message for m in replayed.events
+    )
     # dormant session reloads on next contact; no echo ever arrived
     state = await shell_client.get_session(session_id)
     assert state.status_enum == "blocked"

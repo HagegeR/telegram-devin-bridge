@@ -10328,6 +10328,73 @@ async def test_replay_interrupted_turns_resends_pending_prompt(
 
 
 @pytest.mark.asyncio
+async def test_replay_interrupted_turns_keeps_prompt_when_shutting_down(
+    tmp_path: Path,
+) -> None:
+    # a restart that lands mid-replay fails send_message through no fault of
+    # the session — the prompt must survive for the next boot to retry, with
+    # no "resend" notice for a turn that may still be resumable
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    tg = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), tg
+    )  # type: ignore[arg-type]
+
+    async def reaped_send(session_id: str, message: str) -> None:
+        raise RuntimeError("acp process exited")
+
+    runtime.local.send_message = reaped_send  # type: ignore[method-assign]
+    runtime.shutting_down = True
+    await runtime._replay_interrupted_turns()
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt == "answer me"
+    assert not any("resend" in m["text"] for m in tg.sent if m["chat_id"] == 222)
+
+
+@pytest.mark.asyncio
+async def test_replay_interrupted_turns_keeps_prompt_when_notice_fails(
+    tmp_path: Path,
+) -> None:
+    # an undeliverable resend notice must not burn the prompt — the next
+    # boot may still be able to replay the turn itself
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    tg = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), tg
+    )  # type: ignore[arg-type]
+
+    async def broken_send(session_id: str, message: str) -> None:
+        raise RuntimeError("gone")
+
+    async def broken_notice(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("telegram down")
+
+    runtime.local.send_message = broken_send  # type: ignore[method-assign]
+    runtime.telegram.send_message = broken_notice  # type: ignore[method-assign]
+    await runtime._replay_interrupted_turns()
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt == "answer me"
+
+
+@pytest.mark.asyncio
 async def test_replay_interrupted_turns_continues_past_spawn_failure(
     tmp_path: Path,
 ) -> None:

@@ -321,6 +321,14 @@ class Bridge:
             try:
                 await self.local.send_message(conv.session_id, prompt)
             except Exception:
+                # a shutdown landing mid-replay is not a failed replay: keep
+                # the prompt for the next boot and skip the "resend" notice
+                if self.shutting_down:
+                    logger.info(
+                        "replay of pending prompt for %s aborted by shutdown",
+                        conv.conv_key,
+                    )
+                    continue
                 # one unresumable session must not eat the rest of the
                 # replay (or abort startup); drop its prompt like a "gone"
                 # session does instead of retrying it on every boot — but
@@ -337,12 +345,16 @@ class Bridge:
                         thread_id=conv.thread_id,
                     )
                 except Exception:
+                    # an undeliverable notice leaves the user unaware —
+                    # keep the marker so the next boot can still deliver
+                    # the prompt itself
                     logger.exception(
                         "replay-failure notice failed for %s", conv.conv_key
                     )
-                self.store.set_pending_prompt(
-                    conv.conv_key, conv.session_id, None
-                )
+                else:
+                    self.store.set_pending_prompt(
+                        conv.conv_key, conv.session_id, None
+                    )
 
     def _on_local_prompt_state(
         self, session_id: str, prompt: str | None
