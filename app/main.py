@@ -1617,12 +1617,19 @@ class Bridge:
             if self.devin.v3_enabled and devin_mode:
                 modes = await self.devin.devin_modes()
                 if modes and devin_mode not in modes:
-                    await self.send_text(
-                        message,
-                        f"⚠ mode {devin_mode} isn't available for cloud "
-                        "sessions — using the org default",
-                        silent=True,
-                    )
+                    try:
+                        await self.send_text(
+                            message,
+                            f"⚠ mode {devin_mode} isn't available for cloud "
+                            "sessions — using the org default",
+                            silent=True,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to send warning for unsupported cloud mode %s",
+                            devin_mode,
+                            exc_info=True,
+                        )
                     devin_mode = None
             session_id, session_url = await self.devin.create_session(
                 prompt,
@@ -3889,6 +3896,14 @@ def _short_reason(exc: Exception) -> str:
         detail = body.get("detail") if isinstance(body, dict) else None
         if isinstance(detail, str):
             text += f": {detail}"
+        elif isinstance(detail, list):
+            messages = [
+                item["msg"]
+                for item in detail
+                if isinstance(item, dict) and isinstance(item.get("msg"), str)
+            ]
+            if messages:
+                text += f": {'; '.join(messages)}"
     else:
         text = str(exc).strip()
     text = text.replace("\n", " ")

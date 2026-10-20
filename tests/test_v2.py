@@ -2188,7 +2188,11 @@ def test_short_reason_includes_http_status_detail_without_url() -> None:
         "'ultra', 'swe-2-medium', 'swe-2-high' or 'swe-2-max'"
     )
     request = httpx.Request("POST", "https://devin.test/v3/sessions")
-    response = httpx.Response(422, json={"detail": detail}, request=request)
+    response = httpx.Response(
+        422,
+        json={"detail": detail, "errors": [{"msg": "ignored error"}]},
+        request=request,
+    )
     error = httpx.HTTPStatusError(
         "request failed", request=request, response=response
     )
@@ -2205,6 +2209,31 @@ def test_short_reason_includes_http_status_detail_without_url() -> None:
     )
     assert main_module._short_reason(error) == (
         f"{response.status_code} {response.reason_phrase}"
+    )
+
+
+def test_short_reason_formats_list_valued_http_detail() -> None:
+    request = httpx.Request("POST", "https://devin.test/v3/sessions")
+    response = httpx.Response(
+        422,
+        json={
+            "detail": [
+                {"loc": ["body", "mode"], "msg": "Field required"},
+                {"loc": ["body", "mode"], "msg": "Invalid mode"},
+                {"loc": ["body", "mode"], "msg": 1},
+                "ignored",
+            ],
+            "errors": [{"msg": "ignored error"}],
+        },
+        request=request,
+    )
+    error = httpx.HTTPStatusError(
+        "request failed", request=request, response=response
+    )
+
+    assert main_module._short_reason(error) == (
+        f"{response.status_code} {response.reason_phrase}: "
+        "Field required; Invalid mode"
     )
 
 
@@ -2275,6 +2304,33 @@ async def test_create_session_validates_cloud_mode(
     else:
         assert warnings[0]["text"] == expected_warning
         assert warnings[0]["disable_notification"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_session_continues_when_cloud_mode_warning_fails(
+    tmp_path: Path,
+) -> None:
+    class BrokenWarningTelegram(_FakeTelegram):
+        async def send_message(
+            self, chat_id: int, text: str, **kwargs: object
+        ) -> dict[str, object]:
+            if "isn't available for cloud sessions" in text:
+                raise RuntimeError("Telegram is unavailable")
+            return await super().send_message(chat_id, text, **kwargs)
+
+    store = Store(":memory:")
+    store.update_settings("222", devin_mode="bypass")
+    devin = _FakeDevin()
+    devin.v3_enabled = True
+    runtime = Bridge(
+        settings(tmp_path), store, devin, BrokenWarningTelegram()
+    )  # type: ignore[arg-type]
+
+    await runtime.create_session_for_message(
+        message("hello"), "hello", None, start_watcher=False
+    )
+
+    assert devin.created_modes == [None]
 
 
 @pytest.mark.asyncio
