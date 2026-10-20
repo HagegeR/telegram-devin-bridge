@@ -56,6 +56,10 @@ and deployment update channels.
 
 ### Fixed
 
+- Startup recovery no longer spawns ACP processes for idle local sessions
+  without pending prompts or undelivered events. Those sessions still start a
+  watcher normally when their next user message arrives.
+
 - A second `rc-service stop`/`restart` landing seconds after a boot used
   to kill the fresh bridge mid-startup-replay and burn its
   `pending_prompt`. The OpenRC watchdog now takes the same

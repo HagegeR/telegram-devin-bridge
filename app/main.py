@@ -295,6 +295,24 @@ class Bridge:
             self.settings.devin_watch_timeout_seconds,
         )
         for conversation in self.store.list_recent_conversations(since):
+            session_id = conversation.session_id
+            if (
+                is_local(session_id)
+                and not conversation.pending_prompt
+                and session_id not in self.local.sessions
+            ):
+                has_undelivered_events = (
+                    bool(self.store.local_events(session_id))
+                    if conversation.last_event_id is None
+                    else (
+                        self.store.count_local_events_since(
+                            session_id, conversation.last_event_id
+                        )
+                        > 0
+                    )
+                )
+                if not has_undelivered_events:
+                    continue
             raw_mids = (
                 self.store.get_setting(f"turn_mids:{conversation.conv_key}")
                 or ""
