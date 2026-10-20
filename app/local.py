@@ -1603,9 +1603,11 @@ class LocalClient:
 
     async def _session_title(self, sess: _AcpSession, acp_id: str) -> str:
         try:
+            # same startup contention that can stall session/load applies
+            # here — a 30s timeout would silently drop the restored title
             listed = await self._request(sess, "session/list", {
                 "cwd": self._cwd(),
-            })
+            }, timeout=_LOAD_TIMEOUT)
             for entry in listed.get("sessions", []):
                 if entry.get("sessionId") == acp_id:
                     title = str(entry.get("title") or "")

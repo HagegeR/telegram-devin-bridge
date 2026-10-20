@@ -105,9 +105,10 @@ and deployment update channels.
 - A retryable turn failure (a flushed or drained batch that gets
   requeued) used to mark every feeding message 👎, so messages that
   later delivered fine still read as rejected. 👎 is now the terminal
-  mark only — a turn that dies on a client-side 4xx (except 429) is
-  dropped with its durable rows and marked 👎; a retryable failure
-  keeps its 🫡 and retries without the false verdict.
+  mark only — a turn that dies on a client-side 4xx is dropped with
+  its durable rows and marked 👎 (credential/transient codes 401, 403,
+  408, 429 stay retryable since fixing the key or waiting clears them);
+  a retryable failure keeps its 🫡 and retries without the false verdict.
 - Local sessions could still be titled by the CLI's ~80-char
   provisional: a `session_info_update` title derived from the agent's
   own reply head (rather than the prompt) slipped past the prefix check,

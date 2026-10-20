@@ -491,6 +491,9 @@ class Bridge:
                     self._consume_pending_turns(uids)
                 except Exception as exc:
                     retryable = not _terminal(exc)
+                    # read the marks before a terminal consume drops the
+                    # update→message index they are resolved from
+                    turn_mids = self._turn_message_ids(uids)
                     if not retryable:
                         # a dead turn must not replay at boot either
                         self._consume_pending_turns(uids)
@@ -501,7 +504,10 @@ class Bridge:
                     # unconsumed pending_update rows replay at next boot —
                     # the failure is terminal only when they were dropped
                     await self._report_processing_failure(
-                        {"message": message}, exc, retryable=retryable
+                        {"message": message},
+                        exc,
+                        retryable=retryable,
+                        message_ids=turn_mids,
                     )
         for task in self.watchers.values():
             task.cancel()
@@ -3941,11 +3947,13 @@ def _command_name(text: str) -> str:
 def _terminal(exc: Exception) -> bool:
     # a client-side 4xx fails the same way on every retry — the turn is
     # dead, not delayed; requeueing it would re-report the same failure
-    # on every later flush. 429 stays retryable (rate limit).
+    # on every later flush. Auth/config and transient 4xx stay retryable:
+    # 401/403 clear once credentials are fixed, 408 is a timeout, 429 is
+    # a rate limit — none of them are caused by the turn's input.
     return (
         isinstance(exc, httpx.HTTPStatusError)
         and 400 <= exc.response.status_code < 500
-        and exc.response.status_code != 429
+        and exc.response.status_code not in {401, 403, 408, 429}
     )
 
 

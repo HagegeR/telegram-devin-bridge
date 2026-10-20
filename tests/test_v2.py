@@ -2517,6 +2517,45 @@ async def test_terminal_flush_failure_marks_and_drops_turn(
 
 
 @pytest.mark.asyncio
+async def test_auth_failure_keeps_queued_turn(tmp_path: Path) -> None:
+    # a credential outage is a config problem, not a dead turn — the
+    # message must survive for retry once the key is replaced
+    class UnauthorizedDevin(_FakeDevin):
+        async def create_session(
+            self,
+            prompt: str,
+            title: str | None,
+            playbook_id: str | None = None,
+            devin_mode: str | None = None,
+            repos: list[str] | None = None,
+            platform: str | None = None,
+            **options: object,
+        ) -> tuple[str, str]:
+            request = httpx.Request("POST", "https://api.devin.ai/v3/x")
+            raise httpx.HTTPStatusError(
+                "401",
+                request=request,
+                response=httpx.Response(401, request=request),
+            )
+
+    store = Store(str(tmp_path / "unauthorized.sqlite3"))
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        UnauthorizedDevin(),
+        telegram,  # type: ignore[arg-type]
+    )
+    await runtime.handle_update({"update_id": 1, "message": message("hello")})
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert "👎" not in telegram.reactions
+    assert runtime.queued_count("222") == 1
+    assert store.list_pending_updates() != []
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_last_user_text_is_saved_before_send_failure(tmp_path: Path) -> None:
     class FailingSendDevin(_FakeDevin):
         async def send_message(self, _session_id: str, _text: str) -> None:
