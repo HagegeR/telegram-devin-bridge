@@ -137,8 +137,6 @@ def test_busy_marker_defers_automatic_update_but_not_check(deploy_clone):
 def test_late_busy_marker_defers_restart_and_retries_after_idle(
     deploy_clone, tmp_path: Path
 ):
-    import signal
-
     clone, _ = deploy_clone
     previous = git_out(clone, "rev-parse", "HEAD")
     (clone / ".self-update-rev").write_text(f"{previous}\n")
@@ -185,19 +183,16 @@ def test_late_busy_marker_defers_restart_and_retries_after_idle(
     assert (clone / ".bridge-busy").is_file()
 
     (clone / ".bridge-busy").unlink()
+    retry_env = {**env, "BRIDGE_PID": "2147483647"}
     retried = subprocess.run(
-        [
-            "sh",
-            "-c",
-            "sh deploy/self-update.sh main; exec sleep 30",
-        ],
+        ["sh", "deploy/self-update.sh", "main"],
         cwd=clone,
-        env=env,
+        env=retry_env,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert retried.returncode == -signal.SIGTERM
+    assert retried.returncode == 0, retried.stdout + retried.stderr
     assert "incomplete; retrying install" in retried.stdout
     assert "restarting telegram-devin-bridge (supervisor respawn)" in retried.stdout
     assert (
