@@ -193,7 +193,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     limit). Sessions
     persist in the CLI's own DB and are reloaded via `session/load` after a
     bridge restart (the in-memory map is only the live-process index; `/stop`
-    still deletes the record). Resume re-applies the chat's configured
+    still deletes the record). Startup skips idle local sessions unless they
+    have a pending prompt or undelivered stored events; a later user message
+    starts their watcher normally. Resume re-applies the chat's configured
     mode/model/thought_level (`session/set_mode` +
     `session/set_config_option`) since `session/load` restores CLI state
     only, and the replayed-history guard suppresses reply content only —

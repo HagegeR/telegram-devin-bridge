@@ -1346,6 +1346,55 @@ async def test_resume_watchers_covers_the_active_window(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resume_watchers_skips_idle_local_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = Store(":memory:")
+
+    def save_conversation(conv_key: str, session_id: str) -> None:
+        store.save_conversation(
+            conv_key=conv_key,
+            chat_id=int(conv_key),
+            thread_id=None,
+            session_id=session_id,
+            session_url=f"https://devin.test/{session_id}",
+            title=session_id,
+        )
+
+    save_conversation("222", "local:idle")
+    save_conversation("223", "local:pending")
+    store.set_pending_prompt("223", "local:pending", "interrupted")
+    save_conversation("224", "local:events")
+    store.append_local_event("local:events", "1", None, "undelivered")
+    save_conversation("225", "devin-cloud")
+    runtime = Bridge(
+        settings(tmp_path, admin_user_ids="111"),
+        store,
+        _FakeDevin(),
+        _FakeTelegram(),  # type: ignore[arg-type]
+    )
+    started: list[str] = []
+
+    async def record_start(conversation: object, **_kwargs: object) -> None:
+        started.append(conversation.session_id)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(runtime, "start_watcher", record_start)
+    await runtime._resume_watchers()
+    assert set(started) == {"local:pending", "local:events", "devin-cloud"}
+
+    async def not_finished(_session_id: str) -> bool:
+        return False
+
+    async def send_session_message(_session_id: str, _text: str) -> None:
+        return None
+
+    monkeypatch.setattr(runtime, "_is_finished", not_finished)
+    monkeypatch.setattr(runtime, "send_session_message", send_session_message)
+    await runtime.handle_user_turn(message("follow-up"), "follow-up")
+    assert started[-1] == "local:idle"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["blocked", "finished"])
 async def test_watcher_skips_finish_notice_when_turns_queued(
     status: str, tmp_path: Path
