@@ -201,7 +201,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     `session/new` gets the same 120s budget (`_NEW_TIMEOUT`): creation
     pays first-use costs the control timeout can't absorb (MCP
     description probes, skills discovery), and a timeout there kills the
-    subprocess mid-handshake and fails the whole turn.
+    subprocess mid-handshake and fails the whole turn. The `initialize`
+    handshake on the create path shares that budget for the same
+    reason — resume-time spawns keep the 30s control timeout.
     Startup skips idle local sessions unless they
     have a pending prompt or undelivered stored events; a later user message
     starts their watcher normally. Resume re-applies the chat's configured

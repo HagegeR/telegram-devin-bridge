@@ -140,6 +140,16 @@ and deployment update channels.
   `...`/`…` are now treated as provisionals on both paths, so truncated
   prompt or reply fragments never become the subject while short
   ellipsis-ended titles survive.
+- `session/new` shared the 30s ACP control timeout, but spawning the
+  acp process plus its plugin-content load outlasts that on a host
+  busy with agent sessions — creates kept failing and the requeued
+  turn used to leave a 👎 on the delivered message. Create now gets a
+  120s budget (`_CREATE_TIMEOUT`), matching the `_LOAD_TIMEOUT`
+  treatment `session/load` already had. A straggler local-event emit
+  that outlives `aclose()` during shutdown also used to log
+  `Cannot operate on a closed database` — the event store now drops
+  best-effort notices once closed instead of crashing on the closed
+  connection.
 
 ## [v3.0.0] - 2026-10-18
 

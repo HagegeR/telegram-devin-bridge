@@ -496,7 +496,7 @@ class LocalClient:
                 "protocolVersion": 1,
                 "clientCapabilities": {},
                 "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
-            })
+            }, timeout=_NEW_TIMEOUT)
             created = await self._request(sess, "session/new", {
                 "cwd": self._cwd(),
                 "mcpServers": [],
@@ -749,7 +749,7 @@ class LocalClient:
         **_: object,
     ) -> tuple[str, str]:
         cwd = self._cwd()
-        sess = await self._spawn()
+        sess = await self._spawn(init_timeout=_NEW_TIMEOUT)
         # set before session/new: a session_info_update can be read before
         # the response returns, and needs the prompt head for the
         # provisional-title check
@@ -1463,8 +1463,14 @@ class LocalClient:
             return None
         return await self.pr_fetcher(url, token)
 
-    async def _spawn(self) -> _AcpSession:
-        """Spawn a `devin acp` process and complete the ACP handshake."""
+    async def _spawn(self, init_timeout: float | None = None) -> _AcpSession:
+        """Spawn a `devin acp` process and complete the ACP handshake.
+
+        init_timeout bounds the initialize reply; None keeps the 30s
+        control timeout. Create paths pass _NEW_TIMEOUT — the CLI's init
+        handshake pays the same first-use costs as session/new on a busy
+        host, and a 30s abort here fails the turn before the create
+        budget can help."""
         proc = await asyncio.create_subprocess_exec(
             *self._argv,
             "acp",
@@ -1477,11 +1483,21 @@ class LocalClient:
         asyncio.create_task(self._reader(sess))
         sess.stderr_task = asyncio.create_task(self._drain_stderr(sess))
         try:
-            await self._request(sess, "initialize", {
-                "protocolVersion": 1,
-                "clientCapabilities": {},
-                "clientInfo": {"name": "telegram-devin-bridge", "version": "0"},
-            })
+            await self._request(
+                sess,
+                "initialize",
+                {
+                    "protocolVersion": 1,
+                    "clientCapabilities": {},
+                    "clientInfo": {
+                        "name": "telegram-devin-bridge",
+                        "version": "0",
+                    },
+                },
+                timeout=_CONTROL_TIMEOUT
+                if init_timeout is None
+                else init_timeout,
+            )
         except (RuntimeError, TimeoutError, asyncio.CancelledError):
             _terminate(sess.proc)
             raise
