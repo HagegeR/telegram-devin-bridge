@@ -249,6 +249,14 @@ def test_store_migrates_legacy_sessions(tmp_path: Path) -> None:
     store.close()
 
 
+def test_local_event_after_store_close_is_dropped(tmp_path: Path) -> None:
+    # a straggler emit can outlive aclose() during shutdown — it must not
+    # crash on the closed connection
+    store = Store(str(tmp_path / "closed.sqlite3"))
+    store.close()
+    store.append_local_event("local:late", "1", None, "late")
+
+
 def test_text_link_expansion_handles_emoji_offsets() -> None:
     from app.main import _expand_text_links
 

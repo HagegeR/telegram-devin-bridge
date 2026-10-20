@@ -118,6 +118,7 @@ class Store:
         row = self.connection.execute("PRAGMA database_list").fetchone()
         self.path = Path(row[2]).resolve() if row and row[2] else None
         self._last_processed_prune = 0.0
+        self._closed = False
         self._initialize()
 
     def integrity_check(self) -> list[str]:
@@ -465,6 +466,7 @@ class Store:
 
     def close(self) -> None:
         with self.lock:
+            self._closed = True
             self.connection.close()
 
     def get_conversation(self, conv_key: str) -> Conversation | None:
@@ -1221,13 +1223,19 @@ class Store:
         timestamp: str | None,
         message: str,
     ) -> None:
-        with self.lock, self.connection:
-            self.connection.execute(
-                "INSERT OR REPLACE INTO local_events"
-                " (session_id, event_id, timestamp, message, created_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (session_id, event_id, timestamp, message, time.time()),
-            )
+        with self.lock:
+            # a straggler emit can outlive aclose() during shutdown — the
+            # notice is best-effort, drop it instead of crashing on the
+            # closed connection
+            if self._closed:
+                return
+            with self.connection:
+                self.connection.execute(
+                    "INSERT OR REPLACE INTO local_events"
+                    " (session_id, event_id, timestamp, message, created_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (session_id, event_id, timestamp, message, time.time()),
+                )
 
     def local_events(self, session_id: str) -> list[tuple[str, str | None, str]]:
         with self.lock:
