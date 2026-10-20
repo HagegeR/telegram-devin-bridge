@@ -154,14 +154,19 @@ def test_late_busy_marker_defers_restart_and_retries_after_idle(
     pip.parent.mkdir(parents=True)
     pip.write_text("#!/bin/sh\nexit 0\n")
     pip.chmod(0o755)
+    bin_dir = _nonroot_id_stub(tmp_path)
+    timeout = bin_dir / "timeout"
+    timeout.write_text("#!/bin/sh\nshift\nexec \"$@\"\n")
+    timeout.chmod(0o755)
     env = {
         **os.environ,
         **GIT_ENV,
-        "PATH": f"{_nonroot_id_stub(tmp_path)}:{os.environ['PATH']}",
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "DEVIN_LOCAL_CLI": str(devin),
         "BRIDGE_SUPERVISED": "1",
+        "BRIDGE_PID": "2147483647",
     }
-    for var in ("INVOCATION_ID", "RC_SVCNAME", "BRIDGE_PID"):
+    for var in ("INVOCATION_ID", "RC_SVCNAME"):
         env.pop(var, None)
 
     deferred = subprocess.run(
@@ -183,11 +188,10 @@ def test_late_busy_marker_defers_restart_and_retries_after_idle(
     assert (clone / ".bridge-busy").is_file()
 
     (clone / ".bridge-busy").unlink()
-    retry_env = {**env, "BRIDGE_PID": "2147483647"}
     retried = subprocess.run(
         ["sh", "deploy/self-update.sh", "main"],
         cwd=clone,
-        env=retry_env,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
