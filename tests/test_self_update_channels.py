@@ -113,6 +113,27 @@ def test_channel_resolution(deploy_clone):
     assert track_of(check(clone, "v2")) == "v2.0.0"
 
 
+def test_busy_marker_defers_automatic_update_but_not_check(deploy_clone):
+    clone, _ = deploy_clone
+    (clone / ".bridge-busy").touch()
+    checked = check(clone, "main")
+    assert checked.returncode == 0, checked.stderr + checked.stdout
+    assert "deferring update" not in checked.stdout
+
+    env = {**os.environ, **GIT_ENV}
+    env.pop("SELF_UPDATE_FORCE", None)
+    result = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stdout.strip() == "deferring update: a local turn is in flight"
+
+
 def test_versionish_branch_name_stays_a_branch(deploy_clone):
     clone, _ = deploy_clone
     assert track_of(check(clone, "v2-hotfix")) == "v2-hotfix"

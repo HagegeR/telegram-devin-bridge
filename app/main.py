@@ -281,6 +281,7 @@ class Bridge:
             await self._flush_pending(conv_key)
         await self._resume_watchers()
         await self._replay_interrupted_turns()
+        self._sync_bridge_busy_marker()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
             self.background_tasks.add(task)
@@ -362,6 +363,22 @@ class Bridge:
         conv = self.store.get_conversation_for_session(session_id)
         if conv is not None:
             self.store.set_pending_prompt(conv.conv_key, conv.session_id, prompt)
+            self._sync_bridge_busy_marker()
+
+    def _sync_bridge_busy_marker(self) -> None:
+        marker = _REPO_ROOT / ".bridge-busy"
+        try:
+            busy = any(
+                conv.pending_prompt is not None
+                for conv in self.store.list_conversations()
+            )
+            if busy:
+                if not marker.exists():
+                    marker.touch()
+            else:
+                marker.unlink(missing_ok=True)
+        except Exception:
+            logger.exception("failed to sync bridge busy marker")
 
     def _local_resume_config(self, session_id: str) -> dict | None:
         conv = self.store.get_conversation_for_session(session_id)
@@ -2624,7 +2641,12 @@ class Bridge:
         if thread_id is not None:
             notify_target = f"{notify_target}:{thread_id}"
         exit_code, output = await self._run_command(
-            argv, _REPO_ROOT, env={"SELF_UPDATE_NOTIFY": notify_target}
+            argv,
+            _REPO_ROOT,
+            env={
+                "SELF_UPDATE_FORCE": "1",
+                "SELF_UPDATE_NOTIFY": notify_target,
+            },
         )
         tail = "\n".join(output.strip().splitlines()[-30:]) or "(no output)"
         if exit_code != 0:

@@ -248,6 +248,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     restart is scheduled — bounded by `timeout 300` where available and
     run as the `telegram-devin` service user on root-invoked updates —
     so a missing, failing, or slow CLI never stalls a bridge deploy.
+    Automatic updates defer for up to 120 minutes while `.bridge-busy`
+    marks an in-flight local turn; `/update` and admin-triggered updates
+    bypass the deferral.
     The CLI first reports a provisional title
     derived from the prompt itself — the bridge ignores any reported
     title that prefixes the whitespace-normalized prompt it sent (the

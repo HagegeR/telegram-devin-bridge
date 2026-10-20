@@ -56,6 +56,8 @@ and deployment update channels.
 
 ### Fixed
 
+- Automatic self-updates defer for up to 120 minutes while a local turn is
+  in flight; manual `/update` and admin-triggered updates force through.
 - A second `rc-service stop`/`restart` landing seconds after a boot used
   to kill the fresh bridge mid-startup-replay and burn its
   `pending_prompt`. The OpenRC watchdog now takes the same

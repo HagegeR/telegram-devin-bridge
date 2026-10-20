@@ -51,6 +51,13 @@ fi
 VENV_BIN=.venv/bin; [ -d .venv/Scripts ] && VENV_BIN=.venv/Scripts
 CHECK=0; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 CHANNEL="${1:-${SELF_UPDATE_CHANNEL:-${SELF_UPDATE_BRANCH:-main}}}"
+# Keep automatic updates bounded to a two-hour local-turn grace period.
+if [ "$CHECK" = 0 ] && [ -z "${SELF_UPDATE_FORCE:-}" ] \
+  && [ -f .bridge-busy ] \
+  && [ -z "$(find .bridge-busy -mmin +120)" ]; then
+  echo "deferring update: a local turn is in flight"
+  exit 0
+fi
 SERVICE="${SELF_UPDATE_SERVICE:-telegram-devin-bridge}"
 MARKER=.self-update-rev
 PREV=$(cat "$MARKER" 2>/dev/null || true)

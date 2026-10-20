@@ -11,7 +11,7 @@ import signal
 import tempfile
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,7 +76,16 @@ class AdminRuntime(Protocol):
     ) -> int: ...
 
 
-RunShell = Callable[[list[str], Path], Awaitable[tuple[int, str]]]
+class RunShell(Protocol):
+    async def __call__(
+        self,
+        argv: list[str],
+        cwd: Path,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> tuple[int, str]: ...
+
+
 SpawnShell = Callable[[str], Awaitable[object]]
 Clock = Callable[[], float]
 Sleep = Callable[[float], Awaitable[None]]
@@ -377,7 +386,9 @@ def register_admin_route(
                 .is_relative_to(_REPO_ROOT.resolve())
             ):
                 raise HTTPException(status_code=409, detail="not a git checkout")
-            exit_code, output = await run_shell(argv, _REPO_ROOT)
+            exit_code, output = await run_shell(
+                argv, _REPO_ROOT, env={"SELF_UPDATE_FORCE": "1"}
+            )
             return {
                 "exit_code": exit_code,
                 "output": _sanitize_update_output(output),
