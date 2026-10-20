@@ -134,6 +134,79 @@ def test_busy_marker_defers_automatic_update_but_not_check(deploy_clone):
     assert result.stdout.strip() == "deferring update: a local turn is in flight"
 
 
+def test_late_busy_marker_defers_restart_and_retries_after_idle(
+    deploy_clone, tmp_path: Path
+):
+    import signal
+
+    clone, _ = deploy_clone
+    previous = git_out(clone, "rev-parse", "HEAD")
+    (clone / ".self-update-rev").write_text(f"{previous}\n")
+    (clone / ".make-busy-once").touch()
+    devin = tmp_path / "devin"
+    devin.write_text(
+        "#!/bin/sh\n"
+        "if [ -f .make-busy-once ]; then\n"
+        "  touch .bridge-busy\n"
+        "  rm .make-busy-once\n"
+        "fi\n"
+    )
+    devin.chmod(0o755)
+    pip = clone / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    pip.chmod(0o755)
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{_nonroot_id_stub(tmp_path)}:{os.environ['PATH']}",
+        "DEVIN_LOCAL_CLI": str(devin),
+        "BRIDGE_SUPERVISED": "1",
+    }
+    for var in ("INVOCATION_ID", "RC_SVCNAME", "BRIDGE_PID"):
+        env.pop(var, None)
+
+    deferred = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert deferred.returncode == 0, deferred.stdout + deferred.stderr
+    assert (
+        "update installed; restart deferred: a local turn is in flight"
+        in deferred.stdout
+    )
+    assert "restarting telegram-devin-bridge" not in deferred.stdout
+    assert (clone / ".self-update-rev").read_text().strip() == previous
+    assert not (clone / ".self-update-pending").exists()
+    assert (clone / ".bridge-busy").is_file()
+
+    (clone / ".bridge-busy").unlink()
+    retried = subprocess.run(
+        [
+            "sh",
+            "-c",
+            "sh deploy/self-update.sh main; exec sleep 30",
+        ],
+        cwd=clone,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert retried.returncode == -signal.SIGTERM
+    assert "incomplete; retrying install" in retried.stdout
+    assert "restarting telegram-devin-bridge (supervisor respawn)" in retried.stdout
+    assert (
+        (clone / ".self-update-rev").read_text().strip()
+        == git_out(clone, "rev-parse", "origin/main")
+    )
+    assert (clone / ".self-update-pending").exists()
+
+
 def test_versionish_branch_name_stays_a_branch(deploy_clone):
     clone, _ = deploy_clone
     assert track_of(check(clone, "v2-hotfix")) == "v2-hotfix"

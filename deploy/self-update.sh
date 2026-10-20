@@ -51,10 +51,13 @@ fi
 VENV_BIN=.venv/bin; [ -d .venv/Scripts ] && VENV_BIN=.venv/Scripts
 CHECK=0; [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 CHANNEL="${1:-${SELF_UPDATE_CHANNEL:-${SELF_UPDATE_BRANCH:-main}}}"
-# Keep automatic updates bounded to a two-hour local-turn grace period.
-if [ "$CHECK" = 0 ] && [ -z "${SELF_UPDATE_FORCE:-}" ] \
-  && [ -f .bridge-busy ] \
-  && [ -z "$(find .bridge-busy -mmin +120)" ]; then
+busy_deferred() {
+  [ "$CHECK" = 0 ] \
+    && [ -z "${SELF_UPDATE_FORCE:-}" ] \
+    && [ -f .bridge-busy ] \
+    && [ -z "$(find .bridge-busy -mmin +120)" ]
+}
+if busy_deferred; then
   echo "deferring update: a local turn is in flight"
   exit 0
 fi
@@ -132,7 +135,6 @@ if [ -f requirements-transcription.txt ] \
   && ! git diff --quiet "$PREV" "$REMOTE" -- requirements-transcription.txt; then
   "$VENV_BIN/pip" install -q -r requirements-transcription.txt
 fi
-echo "$REMOTE" > "$MARKER"
 # the local backend runs `devin acp` — keep the CLI itself current on the
 # same cadence. Best-effort: a missing, failing or slow `devin update`
 # must never stall or fail a bridge deploy. It runs here, before the
@@ -164,6 +166,12 @@ if command -v "$DEVIN_CLI" >/dev/null 2>&1 \
     nohup sh -c "$DEVIN_UPDATE" >/dev/null 2>&1 </dev/null 9>&- &
   fi
 fi
+# shortcut: a turn starting in the ~2s before the detached restart can still be interrupted.
+if busy_deferred; then
+  echo "update installed; restart deferred: a local turn is in flight"
+  exit 0
+fi
+echo "$REMOTE" > "$MARKER"
 # restart detached so a caller running inside the service (the /update
 # command) can still reply before the process is recycled. Close the lock fd
 # (9>&-) so the restarted service does not inherit the flock and block every

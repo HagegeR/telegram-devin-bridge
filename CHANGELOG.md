@@ -56,8 +56,11 @@ and deployment update channels.
 
 ### Fixed
 
-- Automatic self-updates defer for up to 120 minutes while a local turn is
-  in flight; manual `/update` and admin-triggered updates force through.
+- Automatic self-updates defer for up to 120 minutes while a live local
+  session has a pending prompt. The bridge checks before installing and
+  again before restarting; if a turn starts during installation, the
+  revision marker stays unchanged so the next cron run retries and restarts
+  once idle. Manual `/update` and admin-triggered updates force through.
 - A second `rc-service stop`/`restart` landing seconds after a boot used
   to kill the fresh bridge mid-startup-replay and burn its
   `pending_prompt`. The OpenRC watchdog now takes the same

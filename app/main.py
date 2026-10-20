@@ -363,14 +363,14 @@ class Bridge:
         conv = self.store.get_conversation_for_session(session_id)
         if conv is not None:
             self.store.set_pending_prompt(conv.conv_key, conv.session_id, prompt)
-            self._sync_bridge_busy_marker()
+        self._sync_bridge_busy_marker()
 
     def _sync_bridge_busy_marker(self) -> None:
         marker = _REPO_ROOT / ".bridge-busy"
         try:
             busy = any(
-                conv.pending_prompt is not None
-                for conv in self.store.list_conversations()
+                session.pending_prompt is not None
+                for session in self.local.sessions.values()
             )
             if busy:
                 if not marker.exists():
@@ -1077,6 +1077,7 @@ class Bridge:
         while True:
             await asyncio.sleep(_JANITOR_INTERVAL_SECONDS)
             try:
+                self._sync_bridge_busy_marker()
                 now_monotonic = time.monotonic()
                 for user_id, window in list(self.rate_windows.items()):
                     while window and window[0] <= now_monotonic - 60:
