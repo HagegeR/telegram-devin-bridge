@@ -307,6 +307,9 @@ FAKE_ACP = textwrap.dedent(
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"stopReason": "end_turn"}}), flush=True)
         elif meth == "session/load":
+            delay = os.environ.get("FAKE_LOAD_DELAY")
+            if delay:
+                time.sleep(float(delay))
             # the real CLI replays persisted history as session/update
             # notifications during load — those must not be re-emitted
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
@@ -450,7 +453,11 @@ async def test_resume_once_reports_empty_timeout_error(
         return FakeSession()
 
     async def fail_load(
-        _session: object, _method: str, _params: dict[str, object]
+        _session: object,
+        _method: str,
+        _params: dict[str, object],
+        *,
+        timeout: float | None = None,
     ) -> dict[str, object]:
         raise TimeoutError
 
@@ -460,6 +467,23 @@ async def test_resume_once_reports_empty_timeout_error(
 
     with pytest.raises(RuntimeError, match="TimeoutError"):
         await shell_client._resume_once("local:s1")
+
+
+@pytest.mark.asyncio
+async def test_resume_survives_load_past_control_timeout(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a cold CLI spends longer than the control timeout inside
+    # session/load — the resume budget must outlive it or a slow host
+    # reads as "session gone" and eats the pending prompt
+    monkeypatch.setattr("app.local._CONTROL_TIMEOUT", 1.0)
+    monkeypatch.setattr("app.local._LOAD_TIMEOUT", 10.0)
+    monkeypatch.setenv("FAKE_LOAD_DELAY", "2.0")
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "echo: hi")
+    await shell_client.suspend(session_id)
+    await shell_client.send_message(session_id, "again")
+    await _wait_for(shell_client, session_id, "echo: again")
 
 
 @pytest.mark.asyncio

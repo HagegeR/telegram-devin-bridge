@@ -490,11 +490,25 @@ class Bridge:
                     )
                     self._consume_pending_turns(uids)
                 except Exception as exc:
+                    retryable = not _terminal(exc)
+                    # read the marks before a terminal consume drops the
+                    # update→message index they are resolved from
+                    turn_mids = self._turn_message_ids(uids)
+                    if not retryable:
+                        # a dead turn must not replay at boot either
+                        self._consume_pending_turns(uids)
                     logger.exception(
                         "Failed to deliver queued Telegram turn for %s",
                         conv_key,
                     )
-                    await self._report_processing_failure({"message": message}, exc)
+                    # unconsumed pending_update rows replay at next boot —
+                    # the failure is terminal only when they were dropped
+                    await self._report_processing_failure(
+                        {"message": message},
+                        exc,
+                        retryable=retryable,
+                        message_ids=turn_mids,
+                    )
         for task in self.watchers.values():
             task.cancel()
         if self.watchers:
@@ -924,10 +938,18 @@ class Bridge:
                     )
                     self._consume_pending_turns(batch_uids)
                 except Exception as exc:
-                    self.queued_turns[conv_key] = [
-                        batch,
-                        *self.queued_turns.get(conv_key, []),
-                    ]
+                    retryable = not _terminal(exc)
+                    # read the marks before a terminal consume drops the
+                    # update→message index they are resolved from
+                    turn_mids = self._turn_message_ids(batch_uids)
+                    if retryable:
+                        self.queued_turns[conv_key] = [
+                            batch,
+                            *self.queued_turns.get(conv_key, []),
+                        ]
+                    else:
+                        # a dead turn must not replay at boot either
+                        self._consume_pending_turns(batch_uids)
                     logger.exception(
                         "Failed to flush queued Telegram turn for %s",
                         conv_key,
@@ -935,20 +957,24 @@ class Bridge:
                     await self._report_processing_failure(
                         {"message": batch_message},
                         exc,
-                        retryable=True,
-                        message_ids=self._turn_message_ids(batch_uids),
+                        retryable=retryable,
+                        message_ids=turn_mids,
                     )
                     return
                 batches = self._coalesce_turns(self.queued_turns.pop(conv_key, []))
         except Exception as exc:
+            retryable = not _terminal(exc)
+            uids = [uid for *_, uid_list in fragments for uid in uid_list]
+            turn_mids = self._turn_message_ids(uids)
+            if not retryable:
+                # a dead turn must not replay at boot either
+                self._consume_pending_turns(uids)
             logger.exception("Failed to flush Telegram turn for %s", conv_key)
             await self._report_processing_failure(
                 {"message": message},
                 exc,
-                retryable=True,
-                message_ids=self._turn_message_ids(
-                    [uid for *_, uid_list in fragments for uid in uid_list]
-                ),
+                retryable=retryable,
+                message_ids=turn_mids,
             )
 
     def _conversation_busy(self, conv_key: str) -> bool:
@@ -1052,10 +1078,16 @@ class Bridge:
                     )
                     self._consume_pending_turns(uids)
                 except Exception as exc:
-                    self.queued_turns[conv_key] = [
-                        batch,
-                        *self.queued_turns.get(conv_key, []),
-                    ]
+                    retryable = not _terminal(exc)
+                    turn_mids = self._turn_message_ids(uids)
+                    if retryable:
+                        self.queued_turns[conv_key] = [
+                            batch,
+                            *self.queued_turns.get(conv_key, []),
+                        ]
+                    else:
+                        # a dead turn must not replay at boot either
+                        self._consume_pending_turns(uids)
                     logger.exception(
                         "Failed to drain Telegram turn for %s",
                         conv_key,
@@ -1063,8 +1095,8 @@ class Bridge:
                     await self._report_processing_failure(
                         {"message": message},
                         exc,
-                        retryable=True,
-                        message_ids=self._turn_message_ids(uids),
+                        retryable=retryable,
+                        message_ids=turn_mids,
                     )
                     return
                 batches = self._coalesce_turns(self.queued_turns.pop(conv_key, []))
@@ -3558,11 +3590,15 @@ class Bridge:
             mids = message_ids or [
                 _int(message.get("message_id"))
             ]
-            for mid in mids:
-                if mid:
-                    # best-effort per message — one rejection must not
-                    # strand the rest of the batch unmarked
-                    await self.telegram.react(chat_id, mid, "👎")
+            # 👎 is the terminal mark — a retryable failure keeps the
+            # queued turn (and its 🫡), so stamping 👎 on a message that
+            # may still be delivered would lie about its fate
+            if not retryable:
+                for mid in mids:
+                    if mid:
+                        # best-effort per message — one rejection must not
+                        # strand the rest of the batch unmarked
+                        await self.telegram.react(chat_id, mid, "👎")
         except Exception:
             logger.exception("Failed to report update processing error")
 
@@ -3906,6 +3942,19 @@ def _reaction_emojis(value: object) -> set[str]:
 def _command_name(text: str) -> str:
     first = text.split(maxsplit=1)[0]
     return first[1:].split("@", 1)[0].casefold().replace("_", "-")
+
+
+def _terminal(exc: Exception) -> bool:
+    # a client-side 4xx fails the same way on every retry — the turn is
+    # dead, not delayed; requeueing it would re-report the same failure
+    # on every later flush. Auth/config and transient 4xx stay retryable:
+    # 401/403 clear once credentials are fixed, 408 is a timeout, 429 is
+    # a rate limit — none of them are caused by the turn's input.
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and 400 <= exc.response.status_code < 500
+        and exc.response.status_code not in {401, 403, 408, 429}
+    )
 
 
 def _short_reason(exc: Exception) -> str:
