@@ -43,7 +43,10 @@ async def test_self_update_sends_ack_and_notify_env(tmp_path: Path) -> None:
     await runtime.self_update({"from": {"id": 42}, "chat": {"id": 123}}, "")
     assert sent[0] == "→ Checking for updates…"
     assert "```" in sent[-1]
-    assert calls[-1]["env"] == {"SELF_UPDATE_NOTIFY": "123"}
+    assert calls[-1]["env"] == {
+        "SELF_UPDATE_FORCE": "1",
+        "SELF_UPDATE_NOTIFY": "123",
+    }
 
     sent.clear()
     await runtime.self_update(
@@ -55,7 +58,10 @@ async def test_self_update_sends_ack_and_notify_env(tmp_path: Path) -> None:
         "check",
     )
     assert sent[0] == "→ Checking for updates…"
-    assert calls[-1]["env"] == {"SELF_UPDATE_NOTIFY": "123:7"}
+    assert calls[-1]["env"] == {
+        "SELF_UPDATE_FORCE": "1",
+        "SELF_UPDATE_NOTIFY": "123:7",
+    }
     assert calls[-1]["argv"][-1] == "--check"
 
 

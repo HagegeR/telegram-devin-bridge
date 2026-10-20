@@ -4,11 +4,13 @@ import asyncio
 import io
 import json
 import logging
+import os
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Self, cast
 
 import httpx
@@ -5325,6 +5327,51 @@ async def test_startup_resumes_watchers_for_recent_conversations(
 
 
 @pytest.mark.asyncio
+async def test_startup_syncs_bridge_busy_marker_after_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module, "_REPO_ROOT", tmp_path)
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    marker = tmp_path / ".bridge-busy"
+
+    async def no_watchers() -> None:
+        return None
+
+    async def replay() -> None:
+        assert not marker.exists()
+        runtime.local.sessions["local:x"] = SimpleNamespace(
+            pending_prompt="answer me"
+        )
+
+    async def announce() -> bool:
+        return True
+
+    async def no_close() -> None:
+        return None
+
+    monkeypatch.setattr(runtime, "_resume_watchers", no_watchers)
+    monkeypatch.setattr(runtime, "_replay_interrupted_turns", replay)
+    monkeypatch.setattr(runtime, "_announce_update", announce)
+    monkeypatch.setattr(runtime.local, "aclose", no_close)
+
+    await runtime.startup()
+    assert marker.is_file()
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_startup_resumes_watcher_without_cursor_delivers_downtime_reply(
     tmp_path: Path,
 ) -> None:
@@ -10637,8 +10684,9 @@ async def test_replay_interrupted_turns_continues_past_spawn_failure(
 
 
 def test_prompt_state_hook_persists_and_resume_config_reads_settings(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(main_module, "_REPO_ROOT", tmp_path)
     store = Store(":memory:")
     store.save_conversation(
         conv_key="222:9",
@@ -10655,12 +10703,23 @@ def test_prompt_state_hook_persists_and_resume_config_reads_settings(
         settings(tmp_path), Store(":memory:"), _FakeDevin(), _FakeTelegram()
     )  # type: ignore[arg-type]
     runtime.store = store
+    live_session = SimpleNamespace(pending_prompt="pending question")
+    runtime.local.sessions["local:x"] = live_session
     runtime._on_local_prompt_state("local:x", "pending question")
     conv = store.get_conversation("222:9")
     assert conv is not None and conv.pending_prompt == "pending question"
+    marker = tmp_path / ".bridge-busy"
+    assert marker.is_file()
+    os.utime(marker, (1_700_000_000, 1_700_000_000))
+    marker_mtime = marker.stat().st_mtime_ns
+    live_session.pending_prompt = "updated pending question"
+    runtime._on_local_prompt_state("local:x", "updated pending question")
+    assert marker.stat().st_mtime_ns == marker_mtime
+    live_session.pending_prompt = None
     runtime._on_local_prompt_state("local:x", None)
     conv = store.get_conversation("222:9")
     assert conv is not None and conv.pending_prompt is None
+    assert not marker.exists()
     assert runtime._local_resume_config("local:x") == {
         "mode": "bypass",
         "model": "m1",
@@ -10668,6 +10727,74 @@ def test_prompt_state_hook_persists_and_resume_config_reads_settings(
     }
     # unknown sessions return None, not a crash
     assert runtime._local_resume_config("local:missing") is None
+
+
+def test_prompt_state_hook_sets_marker_before_conversation_is_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module, "_REPO_ROOT", tmp_path)
+    runtime = Bridge(
+        settings(tmp_path), Store(":memory:"), _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    runtime.local.sessions["local:new"] = SimpleNamespace(
+        pending_prompt="first prompt"
+    )
+
+    runtime._on_local_prompt_state("local:new", "first prompt")
+
+    assert runtime.store.get_conversation("222") is None
+    assert (tmp_path / ".bridge-busy").is_file()
+
+
+@pytest.mark.asyncio
+async def test_janitor_clears_busy_marker_without_live_pending_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module, "_REPO_ROOT", tmp_path)
+    runtime = Bridge(
+        settings(tmp_path), Store(":memory:"), _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    marker = tmp_path / ".bridge-busy"
+    marker.touch()
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    async def stop_after_sweep() -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(main_module.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(runtime, "_redeliver_backlog", stop_after_sweep)
+    with pytest.raises(asyncio.CancelledError):
+        await runtime._janitor()
+
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_manual_update_forces_self_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = Bridge(
+        settings(tmp_path, admin_user_ids="111"),
+        Store(":memory:"),
+        _FakeDevin(),
+        _FakeTelegram(),
+    )  # type: ignore[arg-type]
+    captured_env: dict[str, str] = {}
+
+    async def run_update(
+        _argv: list[str],
+        _cwd: Path,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> tuple[int, str]:
+        captured_env.update(env or {})
+        return 0, "up to date"
+
+    monkeypatch.setattr(runtime, "_run_command", run_update)
+    await runtime.self_update(message("/update"), "")
+    assert captured_env["SELF_UPDATE_FORCE"] == "1"
 
 
 def test_save_conversation_drops_pending_prompt_on_session_swap() -> None:

@@ -56,6 +56,12 @@ and deployment update channels.
 
 ### Fixed
 
+- Automatic self-updates defer for up to 120 minutes while a live local
+  session has a pending prompt. The bridge checks before installing and
+  again before restarting; if a turn starts during installation, the
+  revision marker stays unchanged so the next cron run retries and restarts
+  once idle. Manual `/update` and admin-triggered updates force through.
+
 - New cloud sessions ignore a configured Devin mode the API doesn't accept
   (e.g. a local-only `bypass`), with a silent warning. Cloud HTTP errors
   include response details, and empty local-resume errors identify their
@@ -64,7 +70,6 @@ and deployment update channels.
 - Startup recovery no longer spawns ACP processes for idle local sessions
   without pending prompts or undelivered events. Those sessions still start a
   watcher normally when their next user message arrives.
-
 - A second `rc-service stop`/`restart` landing seconds after a boot used
   to kill the fresh bridge mid-startup-replay and burn its
   `pending_prompt`. The OpenRC watchdog now takes the same

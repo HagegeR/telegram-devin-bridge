@@ -59,7 +59,7 @@ def make_app(
     **overrides: object,
 ):
     spawned: list[str] = []
-    ran: list[tuple[str, Path]] = []
+    ran: list[tuple[str, Path, dict[str, str]]] = []
     notices: list[str] = []
     sleeps: list[float] = []
     clock = {"t": 1000.0}
@@ -68,8 +68,13 @@ def make_app(
         spawned.append(command)
         return None
 
-    async def fake_run(argv: list[str], cwd: Path) -> tuple[int, str]:
-        ran.append((" ".join(argv), cwd))
+    async def fake_run(
+        argv: list[str],
+        cwd: Path,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, str]:
+        ran.append((" ".join(argv), cwd, env or {}))
         return 0, "\x1b[31mup to date\x1b[0m"
 
     async def fake_notify(text: str, **kwargs) -> int:
@@ -502,6 +507,7 @@ async def test_admin_restart_and_update(tmp_path: Path) -> None:
         assert response.json()["exit_code"] == 0
         assert response.json()["output"] == "up to date"
         assert ran and "self-update" in ran[-1][0]
+        assert ran[-1][2]["SELF_UPDATE_FORCE"] == "1"
         await asyncio.sleep(0)
     assert any("Admin API" in n for n in notices)
     assert any("ok" in n for n in notices)
