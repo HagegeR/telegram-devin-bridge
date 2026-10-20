@@ -2230,67 +2230,6 @@ async def test_create_session_validates_cloud_mode(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("mode", "expected_mode", "expected_warning"),
-    [
-        (
-            "bypass",
-            None,
-            "⚠ mode bypass isn't available for local sessions — using the CLI default",
-        ),
-        ("smart", "smart", None),
-    ],
-)
-async def test_create_session_validates_local_mode(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mode: str,
-    expected_mode: str | None,
-    expected_warning: str | None,
-) -> None:
-    store = Store(":memory:")
-    store.update_settings("222", platform="local", devin_mode=mode)
-    telegram = _FakeTelegram()
-    runtime = Bridge(
-        settings(tmp_path, admin_user_ids="111"),
-        store,
-        _FakeDevin(),
-        telegram,
-    )  # type: ignore[arg-type]
-    created_modes: list[str | None] = []
-
-    async def modes() -> list[str]:
-        return ["accept-edits", "smart"]
-
-    async def create_session(
-        _prompt: str,
-        _title: str | None,
-        *,
-        mode: str | None = None,
-        **_options: object,
-    ) -> tuple[str, str]:
-        created_modes.append(mode)
-        return "local:s1", "https://local.test/s1"
-
-    monkeypatch.setattr(runtime.local, "modes", modes)
-    monkeypatch.setattr(runtime.local, "create_session", create_session)
-
-    await runtime.create_session_for_message(
-        message("hello"), "hello", None, start_watcher=False
-    )
-
-    assert created_modes == [expected_mode]
-    warnings = [
-        item for item in telegram.sent if "isn't available" in str(item["text"])
-    ]
-    if expected_warning is None:
-        assert warnings == []
-    else:
-        assert warnings[0]["text"] == expected_warning
-        assert warnings[0]["disable_notification"] is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     ("status", "new_sessions"),
     [("finished", 1), ("blocked", 1), ("expired", 2)],
 )

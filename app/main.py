@@ -1586,21 +1586,10 @@ class Bridge:
                     + ", ".join(ignored),
                     silent=True,
                 )
-            mode = conv_settings.devin_mode
-            if mode:
-                modes = await self.local.modes()
-                if modes and mode not in modes:
-                    await self.send_text(
-                        message,
-                        f"⚠ mode {mode} isn't available for local sessions — "
-                        "using the CLI default",
-                        silent=True,
-                    )
-                    mode = None
             session_id, session_url = await self.local.create_session(
                 prompt,
                 title,
-                mode=mode,
+                mode=conv_settings.devin_mode,
                 model=conv_settings.local_model,
                 thought_level=conv_settings.thought_level,
                 suppress_first=suppress_prompt,

@@ -56,9 +56,10 @@ and deployment update channels.
 
 ### Fixed
 
-- New sessions ignore a configured Devin mode that the selected backend
-  doesn't support, with a silent warning. Cloud HTTP errors include response
-  details, and empty local-resume errors identify their exception type.
+- New cloud sessions ignore a configured Devin mode the API doesn't accept
+  (e.g. a local-only `bypass`), with a silent warning. Cloud HTTP errors
+  include response details, and empty local-resume errors identify their
+  exception type.
 
 - A second `rc-service stop`/`restart` landing seconds after a boot used
   to kill the fresh bridge mid-startup-replay and burn its
