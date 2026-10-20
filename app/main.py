@@ -1631,11 +1631,29 @@ class Bridge:
                 suppress_first=suppress_prompt,
             )
         else:
+            devin_mode = conv_settings.devin_mode
+            if self.devin.v3_enabled and devin_mode:
+                modes = await self.devin.devin_modes()
+                if modes and devin_mode not in modes:
+                    try:
+                        await self.send_text(
+                            message,
+                            f"⚠ mode {devin_mode} isn't available for cloud "
+                            "sessions — using the org default",
+                            silent=True,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to send warning for unsupported cloud mode %s",
+                            devin_mode,
+                            exc_info=True,
+                        )
+                    devin_mode = None
             session_id, session_url = await self.devin.create_session(
                 prompt,
                 title,
                 playbook_id,
-                devin_mode=conv_settings.devin_mode,
+                devin_mode=devin_mode,
                 repos=conv_settings.repo_list,
                 platform=conv_settings.platform,
                 acu_limit=conv_settings.acu_limit,
@@ -3891,5 +3909,25 @@ def _command_name(text: str) -> str:
 
 
 def _short_reason(exc: Exception) -> str:
-    text = str(exc).strip().replace("\n", " ")
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        text = f"{response.status_code} {response.reason_phrase}"
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if isinstance(detail, str):
+            text += f": {detail}"
+        elif isinstance(detail, list):
+            messages = [
+                item["msg"]
+                for item in detail
+                if isinstance(item, dict) and isinstance(item.get("msg"), str)
+            ]
+            if messages:
+                text += f": {'; '.join(messages)}"
+    else:
+        text = str(exc).strip()
+    text = text.replace("\n", " ")
     return text[:120] or "temporary error"

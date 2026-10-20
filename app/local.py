@@ -1519,7 +1519,8 @@ class LocalClient:
         except (RuntimeError, TimeoutError) as exc:
             _terminate(sess.proc)
             raise RuntimeError(
-                f"local session {acp_id} couldn't resume: {exc}"
+                "local session "
+                f"{acp_id} couldn't resume: {str(exc) or type(exc).__name__}"
             ) from exc
         sess.acp_id = acp_id
         for opt in loaded.get("configOptions", []):
