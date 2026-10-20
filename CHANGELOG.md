@@ -107,14 +107,22 @@ and deployment update channels.
   session_db work routinely runs ~25-30s on a loaded host and past it
   under startup contention — so resumable sessions kept failing as
   "couldn't be resumed" and their pending prompts were dropped after
-  the resend notice. Load now gets a 120s budget (`_LOAD_TIMEOUT`).
+  the resend notice. Load now gets a 120s budget (`_LOAD_TIMEOUT`),
+  owed prompts replay before watchers resume so they don't race the
+  acp spawn herd, and a replay that still times out keeps the marker
+  for the next boot (the notice still goes out). The same timeout used
+  to surface as `Session expired` plus a 👎 on the turn's messages —
+  a resume that hits its deadline now propagates as a poll error so
+  the watcher retries within its error budget instead of closing the
+  turn.
 - A retryable turn failure (a flushed or drained batch that gets
   requeued) used to mark every feeding message 👎, so messages that
   later delivered fine still read as rejected. 👎 is now the terminal
   mark only — a turn that dies on a client-side 4xx is dropped with
   its durable rows and marked 👎 (credential/transient codes 401, 403,
-  408, 429 stay retryable since fixing the key or waiting clears them);
-  a retryable failure keeps its 🫡 and retries without the false verdict.
+  408, 425, 429 stay retryable since fixing the key or waiting clears
+  them); a retryable failure keeps its 🫡 and retries without the
+  false verdict.
 - Local sessions could still be titled by the CLI's ~80-char
   provisional: a `session_info_update` title derived from the agent's
   own reply head (rather than the prompt) slipped past the prefix check,

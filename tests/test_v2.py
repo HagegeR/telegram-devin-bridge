@@ -2556,6 +2556,91 @@ async def test_auth_failure_keeps_queued_turn(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [408, 425])
+async def test_retry_later_status_keeps_queued_turn(
+    tmp_path: Path, status_code: int
+) -> None:
+    # 408/425 ask the client to retry later — classifying them terminal
+    # drops a prompt that was never invalid
+    class RejectingDevin(_FakeDevin):
+        async def create_session(
+            self,
+            prompt: str,
+            title: str | None,
+            playbook_id: str | None = None,
+            devin_mode: str | None = None,
+            repos: list[str] | None = None,
+            platform: str | None = None,
+            **options: object,
+        ) -> tuple[str, str]:
+            request = httpx.Request("POST", "https://api.devin.ai/v3/x")
+            raise httpx.HTTPStatusError(
+                "retry later",
+                request=request,
+                response=httpx.Response(status_code, request=request),
+            )
+
+    store = Store(str(tmp_path / f"retry-{status_code}.sqlite3"))
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        RejectingDevin(),
+        telegram,  # type: ignore[arg-type]
+    )
+    await runtime.handle_update({"update_id": 1, "message": message("hello")})
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # the turn stays queued and durable — 👎 is the terminal mark and
+    # would lie about a prompt the next flush can still deliver
+    assert "👎" not in telegram.reactions
+    assert runtime.queued_count("222") == 1
+    assert store.list_pending_updates() != []
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [408, 425])
+async def test_retry_later_status_keeps_drained_turn(
+    tmp_path: Path, status_code: int
+) -> None:
+    # same classification on the drain path: a queued batch whose send
+    # hits a retry-later status requeues instead of being dropped
+    class RejectingDevin(_FakeDevin):
+        async def send_message(self, _session_id: str, _text: str) -> None:
+            request = httpx.Request("POST", "https://api.devin.ai/v3/x")
+            raise httpx.HTTPStatusError(
+                "retry later",
+                request=request,
+                response=httpx.Response(status_code, request=request),
+            )
+
+    store = Store(str(tmp_path / f"drain-{status_code}.sqlite3"))
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path),
+        store,
+        RejectingDevin(),
+        telegram,  # type: ignore[arg-type]
+    )
+    runtime.queued_turns["222"] = [
+        (message("queued", message_id=8), "queued", None, []),
+    ]
+    await runtime._drain_queue("222")
+    assert runtime.queued_count("222") == 1
+    assert "👎" not in telegram.reactions
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_last_user_text_is_saved_before_send_failure(tmp_path: Path) -> None:
     class FailingSendDevin(_FakeDevin):
         async def send_message(self, _session_id: str, _text: str) -> None:
@@ -10846,6 +10931,53 @@ async def test_telegram_client_errors_never_carry_token() -> None:
         assert "bot0:REDACTED" in str(exc)
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_replay_interrupted_turns_keeps_prompt_on_resume_timeout(
+    tmp_path: Path,
+) -> None:
+    # a session/load timeout means "not yet", not "unresumable" — burning
+    # the durable prompt drops a turn the next boot could have replayed,
+    # so it must survive (a user resend overwrites the row in the
+    # meantime) while the notice still tells the user the turn died
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222:9",
+        chat_id=222,
+        thread_id=9,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:9", "local:x", "answer me")
+    store.save_conversation(
+        conv_key="222:10",
+        chat_id=222,
+        thread_id=10,
+        session_id="local:y",
+        session_url="local:y · local CLI",
+        title="t",
+    )
+    store.set_pending_prompt("222:10", "local:y", "answer me too")
+    tg = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), tg
+    )  # type: ignore[arg-type]
+
+    async def slow_send(session_id: str, message: str) -> None:
+        # a session/load or spawn/handshake deadline propagates unwrapped
+        # — the bridge must read either as "not yet"
+        raise TimeoutError()
+
+    runtime.local.send_message = slow_send  # type: ignore[method-assign]
+    await runtime._replay_interrupted_turns()
+    conv = store.get_conversation("222:9")
+    assert conv is not None and conv.pending_prompt == "answer me"
+    conv = store.get_conversation("222:10")
+    assert conv is not None and conv.pending_prompt == "answer me too"
+    # both still get the notice — the turn did not run
+    assert sum("resend" in m["text"] for m in tg.sent if m["chat_id"] == 222) == 2
 
 
 @pytest.mark.asyncio

@@ -307,8 +307,11 @@ class Bridge:
         # fragment before anything reaches Devin
         for conv_key in list(self.pending_turns):
             await self._flush_pending(conv_key)
-        await self._resume_watchers()
+        # owed prompts go first: every resumed watcher spawns an acp
+        # process on its first poll, and replays racing that herd were
+        # burning their session/load deadline
         await self._replay_interrupted_turns()
+        await self._resume_watchers()
         self._sync_bridge_busy_marker()
         if not await self._announce_update():
             task = asyncio.create_task(self._retry_announce_update())
@@ -367,7 +370,7 @@ class Bridge:
                 continue
             try:
                 await self.local.send_message(conv.session_id, prompt)
-            except Exception:
+            except Exception as exc:
                 # a shutdown landing mid-replay is not a failed replay: keep
                 # the prompt for the next boot and skip the "resend" notice
                 if self.shutting_down:
@@ -399,6 +402,11 @@ class Bridge:
                         "replay-failure notice failed for %s", conv.conv_key
                     )
                 else:
+                    # a timed-out resume is "not yet", not "gone" — keep
+                    # the prompt so the next boot retries it; a resend
+                    # overwrites the row before then
+                    if isinstance(exc, TimeoutError):
+                        continue
                     self.store.set_pending_prompt(
                         conv.conv_key, conv.session_id, None
                     )
@@ -3555,9 +3563,14 @@ class Bridge:
     async def _is_finished(self, session_id: str) -> bool:
         # "finished" (idle, awaiting input) and suspended sessions resume when
         # messaged, keeping the conversation's context; only expired ones don't.
-        return (
-            await self._session_client(session_id).get_session(session_id, fetch_messages=False)
-        ).status_enum == "expired"
+        try:
+            return (
+                await self._session_client(session_id).get_session(session_id, fetch_messages=False)
+            ).status_enum == "expired"
+        except (OSError, TimeoutError):
+            # unreachable ≠ finished — the send path retries the resume
+            # and classifies the failure retryable, not terminal
+            return False
 
     @asynccontextmanager
     async def _lock(self, conv_key: str) -> AsyncIterator[None]:
@@ -3976,12 +3989,12 @@ def _terminal(exc: Exception) -> bool:
     # a client-side 4xx fails the same way on every retry — the turn is
     # dead, not delayed; requeueing it would re-report the same failure
     # on every later flush. Auth/config and transient 4xx stay retryable:
-    # 401/403 clear once credentials are fixed, 408 is a timeout, 429 is
-    # a rate limit — none of them are caused by the turn's input.
+    # 401/403 clear once credentials are fixed, 408 is a timeout, 425 asks
+    # for a retry, 429 is a rate limit — none are caused by the turn's input.
     return (
         isinstance(exc, httpx.HTTPStatusError)
         and 400 <= exc.response.status_code < 500
-        and exc.response.status_code not in {401, 403, 408, 429}
+        and exc.response.status_code not in {401, 403, 408, 425, 429}
     )
 
 

@@ -443,9 +443,12 @@ async def test_modes_and_models_probe(
 
 
 @pytest.mark.asyncio
-async def test_resume_once_reports_empty_timeout_error(
+async def test_resume_once_propagates_load_timeout(
     shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # a session/load deadline is "not yet", not "gone" — it must reach
+    # callers unwrapped so they retry instead of reading the session as
+    # expired and closing the turn
     class FakeSession:
         proc = object()
 
@@ -465,8 +468,36 @@ async def test_resume_once_reports_empty_timeout_error(
     monkeypatch.setattr(shell_client, "_request", fail_load)
     monkeypatch.setattr("app.local._terminate", lambda _proc: None)
 
-    with pytest.raises(RuntimeError, match="TimeoutError"):
+    with pytest.raises(TimeoutError):
         await shell_client._resume_once("local:s1")
+
+
+@pytest.mark.asyncio
+async def test_get_session_propagates_resume_timeout(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a load that outlives its deadline is slow, not gone — reporting a
+    # status at all lets the watcher settle-close the turn; propagating
+    # the timeout keeps it a poll error the watcher retries within its
+    # budget instead of marking the user's messages 👎
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "echo: hi")
+    sess = shell_client.sessions.pop(session_id)
+    sess.proc.terminate()
+
+    async def slow_load(self, sid):  # type: ignore[no-untyped-def]
+        raise TimeoutError()
+
+    monkeypatch.setattr(LocalClient, "_resume", slow_load)
+    with pytest.raises(TimeoutError):
+        await shell_client.get_session(session_id)
+
+    async def gone(self, sid):  # type: ignore[no-untyped-def]
+        raise RuntimeError("session not found")
+
+    monkeypatch.setattr(LocalClient, "_resume", gone)
+    state = await shell_client.get_session(session_id)
+    assert state.status_enum == "expired"
 
 
 @pytest.mark.asyncio
