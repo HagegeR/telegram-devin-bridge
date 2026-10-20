@@ -32,6 +32,37 @@ PR_CACHE_TTL_SECONDS = 60.0
 PR_CACHE_MAX = 256
 T = TypeVar("T")
 
+# the bot token is part of every Bot API URL, so any httpx failure bakes
+# it into its message — scrub before a log line, notice, or stderr
+# traceback can render the credential. `bot0:REDACTED` stays URL-safe
+# and can't re-match the pattern.
+_BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]{10,}")
+_BOT_TOKEN_STUB = "bot0:REDACTED"
+
+
+def _scrub_bot_token(exc: BaseException) -> None:
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        cur.args = tuple(
+            _BOT_TOKEN_RE.sub(_BOT_TOKEN_STUB, a) if isinstance(a, str) else a
+            for a in cur.args
+        )
+        cur = cur.__cause__ or cur.__context__
+
+
+def _redact_request_url(response: httpx.Response) -> None:
+    # raise_for_status at the call site embeds request.url in the raised
+    # message — blank the token on the request now that it has been sent
+    try:
+        request = response.request
+    except RuntimeError:
+        return
+    request.url = httpx.URL(
+        _BOT_TOKEN_RE.sub(_BOT_TOKEN_STUB, str(request.url))
+    )
+
 
 def _caption(caption: str | None) -> str | None:
     if caption is None or len(caption) <= CAPTION_LIMIT:
@@ -74,18 +105,27 @@ async def _with_transport_retry(
                 # changes nothing even if the server did honor the first
                 await sleep(RETRY_BACKOFF[attempt])
                 continue
+            if isinstance(response, httpx.Response):
+                _redact_request_url(response)
             return response
-        except (httpx.ConnectError, httpx.ConnectTimeout):
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             # failed before anything was transmitted — always safe to retry
             if attempt == RETRY_ATTEMPTS - 1:
+                _scrub_bot_token(exc)
                 raise
             await sleep(RETRY_BACKOFF[attempt])
-        except httpx.TransportError:
+        except httpx.TransportError as exc:
             # mid-flight failure: retry only for idempotent requests so
             # mutations are never duplicated
             if not idempotent or attempt == RETRY_ATTEMPTS - 1:
+                _scrub_bot_token(exc)
                 raise
             await sleep(RETRY_BACKOFF[attempt])
+        except httpx.HTTPError as exc:
+            # e.g. raise_for_status inside a send lambda — the token is
+            # still in the request URL baked into the message
+            _scrub_bot_token(exc)
+            raise
     raise AssertionError("unreachable")
 
 
@@ -1427,11 +1467,18 @@ class TelegramClient:
         }
         if offset is not None:
             body["offset"] = offset
-        response = await self.client.post(
-            "/getUpdates",
-            json=body,
-            timeout=timeout + 10,
-        )
+        # long-poll bypasses _with_transport_retry (own deadline) — scrub
+        # raised errors and the response URL the same way
+        try:
+            response = await self.client.post(
+                "/getUpdates",
+                json=body,
+                timeout=timeout + 10,
+            )
+        except httpx.HTTPError as exc:
+            _scrub_bot_token(exc)
+            raise
+        _redact_request_url(response)
         response.raise_for_status()
         payload = self._json_object(response)
         if payload.get("ok") is False:

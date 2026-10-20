@@ -30,6 +30,7 @@ from app.access import (
     strip_bot_mention,
 )
 from app.admin import _sanitize_update_output, drain_tasks, register_admin_route
+from app.clients import _BOT_TOKEN_RE, _BOT_TOKEN_STUB, _scrub_bot_token
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.crawlers import CRAWLER_NAMES, crawl_text
@@ -76,22 +77,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # the bot token is part of the API URL, so any failed Telegram call's
 # httpx message — and any traceback embedding it — logs the credential.
-# Scrub it at the root handlers everything propagates to.
-_BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]{10,}")
+# clients.py scrubs raised errors at the boundary; this filter is the
+# backstop for anything logged through the root handlers everything
+# propagates to.
 
 
 class _BotTokenScrub(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = _BOT_TOKEN_RE.sub("bot<REDACTED>", record.getMessage())
+        record.msg = _BOT_TOKEN_RE.sub(_BOT_TOKEN_STUB, record.getMessage())
         record.args = ()
-        exc = record.exc_info[1] if record.exc_info else None
-        if exc is not None:
-            exc.args = tuple(
-                _BOT_TOKEN_RE.sub("bot<REDACTED>", a)
-                if isinstance(a, str)
-                else a
-                for a in exc.args
-            )
+        if record.exc_info is not None:
+            _scrub_bot_token(record.exc_info[1])
+            # a handler that formatted the record first cached the raw
+            # traceback — force re-render from the scrubbed exception
+            record.exc_text = None
         return True
 
 
@@ -104,9 +103,12 @@ logger = logging.getLogger(__name__)
 def _stamp_uvicorn_loggers() -> None:
     """Prefix uvicorn's handler formatters with %(asctime)s. Config installs
     them before app.main is even imported, so only the app lifespan can
-    restamp them — call before startup work begins."""
+    restamp them — call before startup work begins. Uvicorn's own handlers
+    also get the token scrub: a startup failure logged straight to them
+    never reaches the root filter."""
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         for handler in logging.getLogger(name).handlers:
+            handler.addFilter(_BotTokenScrub())
             old = handler.formatter
             fmt = getattr(old, "_fmt", "")
             if not fmt or fmt.startswith("%(asctime)s"):

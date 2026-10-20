@@ -57,9 +57,11 @@ and deployment update channels.
 ### Fixed
 
 - Failed Telegram API calls used to log the bot token: httpx error
-  messages embed the request URL, which carries `/bot<token>/`. A root
-  log-handler filter now redacts `bot<id>:<token>` in both the rendered
-  message and the exception traceback.
+  messages embed the request URL, which carries `/bot<token>/`. The
+  client now strips the token out of raised errors at the boundary —
+  including stderr tracebacks from `python -m app.set_webhook` — and a
+  log filter backstops rendered messages, exception chains, cached
+  `exc_text`, and uvicorn's own handlers.
 - Automatic self-updates defer for up to 120 minutes while a live local
   session has a pending prompt. The bridge checks before installing and
   again before restarting; if a turn starts during installation, the
