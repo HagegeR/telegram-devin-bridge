@@ -97,6 +97,17 @@ and deployment update channels.
   mid-turn exit the bridge didn't order still does), and a startup
   replay that can't resume the session now tells the chat to resend
   instead of dropping the prompt silently.
+- `session/load` shared the 30s ACP control timeout, but a cold CLI's
+  session_db work routinely runs ~25-30s on a loaded host and past it
+  under startup contention — so resumable sessions kept failing as
+  "couldn't be resumed" and their pending prompts were dropped after
+  the resend notice. Load now gets a 120s budget (`_LOAD_TIMEOUT`).
+- A retryable turn failure (a flushed or drained batch that gets
+  requeued) used to mark every feeding message 👎, so messages that
+  later delivered fine still read as rejected. 👎 is now the terminal
+  mark only — a turn that dies on a client-side 4xx (except 429) is
+  dropped with its durable rows and marked 👎; a retryable failure
+  keeps its 🫡 and retries without the false verdict.
 - Local sessions could still be titled by the CLI's ~80-char
   provisional: a `session_info_update` title derived from the agent's
   own reply head (rather than the prompt) slipped past the prefix check,

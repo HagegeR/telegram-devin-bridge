@@ -153,6 +153,16 @@ _MAX_SESSIONS = 32
 # turns can run for a long time; prompts get no deadline (they end on
 # stopReason or terminate), everything else uses the control timeout
 _CONTROL_TIMEOUT = 30
+# session/load replays the persisted history on a fresh process — the
+# CLI's session_db work runs well past the control timeout on a busy
+# host (observed ~25s/resume at startup, over 30s under contention),
+# and a load timeout reads as "session gone" and eats the pending
+# prompt. Load gets its own budget.
+_LOAD_TIMEOUT = 120
+# _request's default-timeout marker — resolves to _CONTROL_TIMEOUT at
+# call time (a def-time default would freeze the constant for tests);
+# an explicit None still means "no deadline" for long-running prompts
+_CONTROL_DEFAULT = object()
 # pause before the single retry a retryable session/prompt error earns —
 # instant re-issue can hit the same just-closed agent channel
 _RETRY_BACKOFF = 1.0
@@ -1515,7 +1525,7 @@ class LocalClient:
                 "sessionId": acp_id,
                 "cwd": self._cwd(),
                 "mcpServers": [],
-            })
+            }, timeout=_LOAD_TIMEOUT)
         except (RuntimeError, TimeoutError) as exc:
             _terminate(sess.proc)
             raise RuntimeError(
@@ -1656,8 +1666,10 @@ class LocalClient:
         method: str,
         params: dict,
         *,
-        timeout: float | None = _CONTROL_TIMEOUT,
+        timeout: float | None = _CONTROL_DEFAULT,
     ) -> dict:
+        if timeout is _CONTROL_DEFAULT:
+            timeout = _CONTROL_TIMEOUT
         req_id, fut = self._send(sess, method, params)
         try:
             result = await fut if timeout is None else await asyncio.wait_for(fut, timeout)
