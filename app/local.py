@@ -1216,7 +1216,10 @@ class LocalClient:
     ) -> SessionState:
         try:
             # a watcher may outlive the process after a bridge restart —
-            # resume so polls keep tracking instead of going expired
+            # resume so polls keep tracking instead of going expired. A
+            # resume deadline propagates as TimeoutError so the watcher
+            # retries within its poll-error budget instead of closing
+            # the turn on a transiently slow load.
             sess = await self._get_or_resume(session_id)
         except RuntimeError:
             sess = None
@@ -1526,7 +1529,13 @@ class LocalClient:
                 "cwd": self._cwd(),
                 "mcpServers": [],
             }, timeout=_LOAD_TIMEOUT)
-        except (RuntimeError, TimeoutError) as exc:
+        except TimeoutError:
+            _terminate(sess.proc)
+            # propagate unwrapped: a deadline is "not yet", not "gone" —
+            # callers retry it (watcher poll budget, next contact) instead
+            # of reading the session as expired
+            raise
+        except RuntimeError as exc:
             _terminate(sess.proc)
             raise RuntimeError(
                 "local session "
