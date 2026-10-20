@@ -825,6 +825,32 @@ async def test_devin_client_create_session_sends_new_options() -> None:
 
 
 @pytest.mark.asyncio
+async def test_devin_modes_probes_once_and_caches() -> None:
+    calls = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            422,
+            json={"detail": "devin_mode: Input should be 'normal' or 'fast'"},
+        )
+
+    devin = DevinClient(
+        "key",
+        "https://devin.test",
+        3,
+        service_user_api_key="svc",
+        org_id="o1",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await devin.devin_modes() == ["normal", "fast"]
+    assert await devin.devin_modes() == ["normal", "fast"]
+    assert calls == 1
+    await devin.close()
+
+
+@pytest.mark.asyncio
 async def test_devin_client_create_session_clamps_acu_limit() -> None:
     bodies = []
 
@@ -2107,6 +2133,32 @@ class _FakeDevin:
         return None
 
 
+def test_short_reason_includes_http_status_detail_without_url() -> None:
+    detail = (
+        "devin_mode: Input should be 'normal', 'fast', 'fusion', 'lite', "
+        "'ultra', 'swe-2-medium', 'swe-2-high' or 'swe-2-max'"
+    )
+    request = httpx.Request("POST", "https://devin.test/v3/sessions")
+    response = httpx.Response(422, json={"detail": detail}, request=request)
+    error = httpx.HTTPStatusError(
+        "request failed", request=request, response=response
+    )
+
+    reason = main_module._short_reason(error)
+    status = f"{response.status_code} {response.reason_phrase}"
+    assert reason.startswith(f"{status}: devin_mode:")
+    assert len(reason) == 120
+    assert "https://" not in reason
+
+    response = httpx.Response(422, json={}, request=request)
+    error = httpx.HTTPStatusError(
+        "request failed", request=request, response=response
+    )
+    assert main_module._short_reason(error) == (
+        f"{response.status_code} {response.reason_phrase}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> None:
     store = Store(str(tmp_path / "lock.sqlite3"))
@@ -2131,6 +2183,110 @@ async def test_concurrent_first_messages_share_one_session(tmp_path: Path) -> No
     assert stored is not None
     assert stored.title_pending is True
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("v3_enabled", "mode", "expected_mode", "expected_warning"),
+    [
+        (
+            True,
+            "bypass",
+            None,
+            "⚠ mode bypass isn't available for cloud sessions — using the org default",
+        ),
+        (True, "fast", "fast", None),
+        (False, "bypass", "bypass", None),
+    ],
+)
+async def test_create_session_validates_cloud_mode(
+    tmp_path: Path,
+    v3_enabled: bool,
+    mode: str,
+    expected_mode: str | None,
+    expected_warning: str | None,
+) -> None:
+    store = Store(":memory:")
+    store.update_settings("222", devin_mode=mode)
+    devin = _FakeDevin()
+    devin.v3_enabled = v3_enabled
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+
+    await runtime.create_session_for_message(
+        message("hello"), "hello", None, start_watcher=False
+    )
+
+    assert devin.created_modes == [expected_mode]
+    warnings = [
+        item for item in telegram.sent if "isn't available" in str(item["text"])
+    ]
+    if expected_warning is None:
+        assert warnings == []
+    else:
+        assert warnings[0]["text"] == expected_warning
+        assert warnings[0]["disable_notification"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_mode", "expected_warning"),
+    [
+        (
+            "bypass",
+            None,
+            "⚠ mode bypass isn't available for local sessions — using the CLI default",
+        ),
+        ("smart", "smart", None),
+    ],
+)
+async def test_create_session_validates_local_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    expected_mode: str | None,
+    expected_warning: str | None,
+) -> None:
+    store = Store(":memory:")
+    store.update_settings("222", platform="local", devin_mode=mode)
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, admin_user_ids="111"),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    created_modes: list[str | None] = []
+
+    async def modes() -> list[str]:
+        return ["accept-edits", "smart"]
+
+    async def create_session(
+        _prompt: str,
+        _title: str | None,
+        *,
+        mode: str | None = None,
+        **_options: object,
+    ) -> tuple[str, str]:
+        created_modes.append(mode)
+        return "local:s1", "https://local.test/s1"
+
+    monkeypatch.setattr(runtime.local, "modes", modes)
+    monkeypatch.setattr(runtime.local, "create_session", create_session)
+
+    await runtime.create_session_for_message(
+        message("hello"), "hello", None, start_watcher=False
+    )
+
+    assert created_modes == [expected_mode]
+    warnings = [
+        item for item in telegram.sent if "isn't available" in str(item["text"])
+    ]
+    if expected_warning is None:
+        assert warnings == []
+    else:
+        assert warnings[0]["text"] == expected_warning
+        assert warnings[0]["disable_notification"] is True
 
 
 @pytest.mark.asyncio

@@ -1586,20 +1586,42 @@ class Bridge:
                     + ", ".join(ignored),
                     silent=True,
                 )
+            mode = conv_settings.devin_mode
+            if mode:
+                modes = await self.local.modes()
+                if modes and mode not in modes:
+                    await self.send_text(
+                        message,
+                        f"⚠ mode {mode} isn't available for local sessions — "
+                        "using the CLI default",
+                        silent=True,
+                    )
+                    mode = None
             session_id, session_url = await self.local.create_session(
                 prompt,
                 title,
-                mode=conv_settings.devin_mode,
+                mode=mode,
                 model=conv_settings.local_model,
                 thought_level=conv_settings.thought_level,
                 suppress_first=suppress_prompt,
             )
         else:
+            devin_mode = conv_settings.devin_mode
+            if self.devin.v3_enabled and devin_mode:
+                modes = await self.devin.devin_modes()
+                if modes and devin_mode not in modes:
+                    await self.send_text(
+                        message,
+                        f"⚠ mode {devin_mode} isn't available for cloud "
+                        "sessions — using the org default",
+                        silent=True,
+                    )
+                    devin_mode = None
             session_id, session_url = await self.devin.create_session(
                 prompt,
                 title,
                 playbook_id,
-                devin_mode=conv_settings.devin_mode,
+                devin_mode=devin_mode,
                 repos=conv_settings.repo_list,
                 platform=conv_settings.platform,
                 acu_limit=conv_settings.acu_limit,
@@ -3850,5 +3872,17 @@ def _command_name(text: str) -> str:
 
 
 def _short_reason(exc: Exception) -> str:
-    text = str(exc).strip().replace("\n", " ")
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        text = f"{response.status_code} {response.reason_phrase}"
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if isinstance(detail, str):
+            text += f": {detail}"
+    else:
+        text = str(exc).strip()
+    text = text.replace("\n", " ")
     return text[:120] or "temporary error"
