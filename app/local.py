@@ -63,6 +63,14 @@ def is_local(session_id: str) -> bool:
 # access, so selecting one is an admin decision.
 APPROVAL_SKIPPING_MODES = frozenset({"bypass", "smart"})
 
+# Every mode the local ACP backend offers. The cloud v3 API shares some
+# names ('smart', 'ask', 'plan' overlap with devin modes) but never
+# accepts an ACP-only mode — cloud creation rejects these even when the
+# org's mode list can't be probed.
+ACP_SESSION_MODES = frozenset(
+    {"accept-edits", "smart", "ask", "plan", "bypass"}
+)
+
 
 @dataclass
 class _AcpSession:

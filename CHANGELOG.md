@@ -72,9 +72,11 @@ and deployment update channels.
   (e.g. a local-only `bypass`), with a silent warning. Cloud HTTP errors
   include response details, and empty local-resume errors identify their
   exception type.
-- A local-only mode such as `bypass` stored on a chat is now rejected for
-  cloud sessions even when the org's mode-list probe fails — previously an
-  empty probe let it through and the create call 422'd the whole turn.
+- A local-only ACP mode such as `bypass` stored on a chat is now rejected
+  for cloud sessions even when the org's mode-list probe fails —
+  previously an empty probe let it through and the create call 422'd the
+  whole turn. Org-specific cloud modes still pass through on a failed
+  probe (the empty list stays non-authoritative).
 - Local session creation no longer dies at 30s on a busy host: `session/new`
   carries first-use costs (MCP server probes, skills discovery) and now
   gets the same 120s budget as `session/load` instead of the 30s control

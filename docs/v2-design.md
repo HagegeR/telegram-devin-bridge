@@ -198,6 +198,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     (`_LOAD_TIMEOUT`) instead of the 30s control timeout — a cold CLI's
     session_db work runs well past 30s on a loaded host, and a load
     timeout reads as "session gone" and eats the pending prompt.
+    `session/new` gets the same 120s budget (`_NEW_TIMEOUT`): creation
+    pays first-use costs the control timeout can't absorb (MCP
+    description probes, skills discovery), and a timeout there kills the
+    subprocess mid-handshake and fails the whole turn.
     Startup skips idle local sessions unless they
     have a pending prompt or undelivered stored events; a later user message
     starts their watcher normally. Resume re-applies the chat's configured
@@ -375,7 +379,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     session's live mode/model/thinking (`config_option_update` +
     `current_mode_update` tracked per session, rendered as
     `local: mode X · model Y · thought_level Z`).
-- `/mode [name]` – per-chat Devin mode for new sessions (`/mode default` resets). No-arg prints the current mode plus `Available: …` from `DevinClient.devin_modes()`; a name not in that list is rejected with `Unknown mode` (empty probe = accepted, Devin arbitrates). Same option list as the /settings 🤖 Devin mode submenu. For cloud session creation, a configured mode excluded by a non-empty Devin mode list is omitted with a silent warning, so the organization default applies. The v1 API path is unchanged.
+- `/mode [name]` – per-chat Devin mode for new sessions (`/mode default` resets). No-arg prints the current mode plus `Available: …` from `DevinClient.devin_modes()`; a name not in that list is rejected with `Unknown mode` (empty probe = accepted, Devin arbitrates). Same option list as the /settings 🤖 Devin mode submenu. For cloud session creation, a configured mode excluded by a non-empty Devin mode list is omitted with a silent warning, so the organization default applies. An empty probe stays non-authoritative for unknown modes but still rejects the ACP session modes (`accept-edits`, `smart`, `ask`, `plan`, `bypass`), which only ever come from `/platform local` and 422 the cloud create. The v1 API path is unchanged.
 - `/acu [n]` – per-chat `max_acu_limit` for new sessions, 1-1000 (`/acu default` resets). `/settings` ⚡ ACU limit submenu offers preset values; the value is clamped to 1-1000 before it is sent.
 - `/tags [a,b]` – extra tags merged into `tags` on create (`telegram-bridge` is always included; `/tags clear` resets).
 - `/secrets [KEY,KEY2]` – per-chat secrets for new sessions, given as secret *keys*; resolved to IDs via `DevinClient.secrets()` (`GET /v3/organizations/{org}/secrets`, cached 5 min) and stored as `secret_ids`. `/settings` 🔑 Secrets submenu toggles them (✓ marks selected; ids whose callback would exceed the 64-byte `callback_data` cap are skipped). Unknown keys are rejected; `/secrets clear` resets.
