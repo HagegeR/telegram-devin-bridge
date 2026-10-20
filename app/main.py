@@ -34,7 +34,13 @@ from app.clients import _BOT_TOKEN_RE, _BOT_TOKEN_STUB, _scrub_bot_token
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings, get_settings
 from app.crawlers import CRAWLER_NAMES, crawl_text
-from app.devin import MAX_ACU_LIMIT, DevinClient, Playbook, SessionState
+from app.devin import (
+    DEVIN_MODES,
+    MAX_ACU_LIMIT,
+    DevinClient,
+    Playbook,
+    SessionState,
+)
 from app.doctor import register_doctor_route
 from app.formatting import (
     chunk,
@@ -1702,7 +1708,10 @@ class Bridge:
             devin_mode = conv_settings.devin_mode
             if self.devin.v3_enabled and devin_mode:
                 modes = await self.devin.devin_modes()
-                if modes and devin_mode not in modes:
+                # an empty probe (transient failure) can't veto modes, but
+                # the static list still can — a local ACP mode like
+                # 'bypass' sent to the cloud API 422s the session create
+                if devin_mode not in (modes or DEVIN_MODES):
                     try:
                         await self.send_text(
                             message,

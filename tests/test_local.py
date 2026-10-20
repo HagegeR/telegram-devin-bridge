@@ -43,6 +43,9 @@ FAKE_ACP = textwrap.dedent(
             print(json.dumps({"jsonrpc": "2.0", "id": i,
                               "result": {"protocolVersion": 1}}), flush=True)
         elif meth == "session/new":
+            new_delay = float(os.environ.get("FAKE_NEW_DELAY", "0"))
+            if new_delay:
+                time.sleep(new_delay)
             if os.environ.get("FAKE_JUNK_LINES"):
                 print("X" * 200_000, flush=True)      # under the stream limit
                 print("Y" * 5_000_000, flush=True)    # over it — skipped
@@ -515,6 +518,20 @@ async def test_resume_survives_load_past_control_timeout(
     await shell_client.suspend(session_id)
     await shell_client.send_message(session_id, "again")
     await _wait_for(shell_client, session_id, "echo: again")
+
+
+@pytest.mark.asyncio
+async def test_create_survives_new_past_control_timeout(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a cold CLI burns the control timeout inside session/new on MCP
+    # retries + skills scans — the create budget must outlive it or a
+    # busy host reads as a hard failure and the subprocess is killed
+    monkeypatch.setattr("app.local._CONTROL_TIMEOUT", 1.0)
+    monkeypatch.setattr("app.local._NEW_TIMEOUT", 10.0)
+    monkeypatch.setenv("FAKE_NEW_DELAY", "2.0")
+    session_id, _ = await shell_client.create_session("hi")
+    await _wait_for(shell_client, session_id, "echo: hi")
 
 
 @pytest.mark.asyncio
