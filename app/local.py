@@ -63,6 +63,14 @@ def is_local(session_id: str) -> bool:
 # access, so selecting one is an admin decision.
 APPROVAL_SKIPPING_MODES = frozenset({"bypass", "smart"})
 
+# Every mode the local ACP backend offers. The cloud v3 API shares some
+# names ('smart', 'ask', 'plan' overlap with devin modes) but never
+# accepts an ACP-only mode — cloud creation rejects these even when the
+# org's mode list can't be probed.
+ACP_SESSION_MODES = frozenset(
+    {"accept-edits", "smart", "ask", "plan", "bypass"}
+)
+
 
 @dataclass
 class _AcpSession:
@@ -159,6 +167,12 @@ _CONTROL_TIMEOUT = 30
 # and a load timeout reads as "session gone" and eats the pending
 # prompt. Load gets its own budget.
 _LOAD_TIMEOUT = 120
+# session/new pays first-use costs the control timeout can't absorb:
+# MCP description probes (a broken stdio server retries for ~15-30s)
+# and skills-discovery scans. A timeout here kills the subprocess
+# mid-handshake, so the turn reads as a hard failure — give it the
+# same budget as session/load.
+_NEW_TIMEOUT = 120
 # _request's default-timeout marker — resolves to _CONTROL_TIMEOUT at
 # call time (a def-time default would freeze the constant for tests);
 # an explicit None still means "no deadline" for long-running prompts
@@ -486,7 +500,7 @@ class LocalClient:
             created = await self._request(sess, "session/new", {
                 "cwd": self._cwd(),
                 "mcpServers": [],
-            })
+            }, timeout=_NEW_TIMEOUT)
             probe_id = str(created.get("sessionId") or "") or None
             modes = [
                 str(m["id"])
@@ -744,7 +758,7 @@ class LocalClient:
             created = await self._request(sess, "session/new", {
                 "cwd": cwd,
                 "mcpServers": [],
-            })
+            }, timeout=_NEW_TIMEOUT)
         except (RuntimeError, TimeoutError, asyncio.CancelledError):
             _terminate(sess.proc)
             raise

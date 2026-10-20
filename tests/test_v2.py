@@ -2337,6 +2337,36 @@ async def test_create_session_continues_when_cloud_mode_warning_fails(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("mode", "expected_mode"),
+    [("bypass", None), ("org-turbo", "org-turbo")],
+)
+async def test_create_session_drops_local_mode_when_probe_fails(
+    tmp_path: Path, mode: str, expected_mode: str | None
+) -> None:
+    # devin_modes() returns [] on a failed probe — an ACP-only mode like
+    # 'bypass' must still be rejected or the cloud create 422s the whole
+    # turn, but an org-specific mode the static list doesn't know has to
+    # pass through and let the API arbitrate
+    class UnprobedDevin(_FakeDevin):
+        async def devin_modes(self) -> list[str]:
+            return []
+
+    store = Store(":memory:")
+    store.update_settings("222", devin_mode=mode)
+    devin = UnprobedDevin()
+    devin.v3_enabled = True
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+
+    await runtime.create_session_for_message(
+        message("hello"), "hello", None, start_watcher=False
+    )
+
+    assert devin.created_modes == [expected_mode]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("status", "new_sessions"),
     [("finished", 1), ("blocked", 1), ("expired", 2)],
 )

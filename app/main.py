@@ -44,6 +44,7 @@ from app.formatting import (
     split_long_text,
 )
 from app.local import (
+    ACP_SESSION_MODES,
     APPROVAL_SKIPPING_MODES,
     MODEL_TIER_ICONS,
     LocalClient,
@@ -1702,7 +1703,14 @@ class Bridge:
             devin_mode = conv_settings.devin_mode
             if self.devin.v3_enabled and devin_mode:
                 modes = await self.devin.devin_modes()
-                if modes and devin_mode not in modes:
+                # an empty probe (transient failure) is not an
+                # authoritative mode list — it can't veto org-specific
+                # modes. It still vetoes ACP session modes: a mode like
+                # 'bypass' can only ever come from /platform local and
+                # 422s the cloud create
+                if (modes and devin_mode not in modes) or (
+                    not modes and devin_mode in ACP_SESSION_MODES
+                ):
                     try:
                         await self.send_text(
                             message,
