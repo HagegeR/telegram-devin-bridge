@@ -10727,6 +10727,127 @@ async def test_replay_interrupted_turns_keeps_prompt_when_notice_fails(
     assert conv is not None and conv.pending_prompt == "answer me"
 
 
+def test_bot_token_scrub_redacts_message_and_exception() -> None:
+    # the API URL embeds the bot token — an httpx failure logged raw
+    # (message or traceback) would leak the credential into the bridge log
+    req = httpx.Request(
+        "GET",
+        "https://api.telegram.org/bot12345:SECRETTOKENXYZ/getUpdates",
+    )
+    resp = httpx.Response(429, request=req)
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        record = logging.LogRecord(
+            "app.polling",
+            logging.WARNING,
+            __file__,
+            80,
+            "Telegram polling failed: %s",
+            (exc,),
+            (type(exc), exc, None),
+        )
+        assert main_module._BotTokenScrub().filter(record)
+        rendered = record.getMessage()
+        assert "SECRETTOKENXYZ" not in rendered
+        assert "bot0:REDACTED" in rendered
+        # traceback text comes from the exception itself — it must be
+        # scrubbed too, not just the log line
+        assert "SECRETTOKENXYZ" not in str(exc)
+
+
+def test_bot_token_scrub_walks_exception_chain() -> None:
+    # logger.exception wraps the httpx error in __context__ — the
+    # traceback renders the chain, so scrubbing only the outer exception
+    # still leaks the token
+    req = httpx.Request(
+        "GET",
+        "https://api.telegram.org/bot12345:SECRETTOKENXYZ/getUpdates",
+    )
+    try:
+        try:
+            httpx.Response(429, request=req).raise_for_status()
+        except httpx.HTTPStatusError:
+            raise RuntimeError("polling failed")
+    except RuntimeError as outer:
+        record = logging.LogRecord(
+            "app.polling",
+            logging.WARNING,
+            __file__,
+            80,
+            "wrap",
+            (),
+            (type(outer), outer, None),
+        )
+        assert main_module._BotTokenScrub().filter(record)
+        assert "SECRETTOKENXYZ" not in str(outer.__context__)
+        rendered = logging.Formatter().format(record)
+        assert "SECRETTOKENXYZ" not in rendered
+
+
+def test_bot_token_scrub_invalidates_cached_exc_text() -> None:
+    # a handler that formats the record first caches exc_text with the
+    # raw token — the scrub must force a re-render, not emit the cache
+    req = httpx.Request(
+        "GET",
+        "https://api.telegram.org/bot12345:SECRETTOKENXYZ/getUpdates",
+    )
+    resp = httpx.Response(429, request=req)
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        record = logging.LogRecord(
+            "app.polling",
+            logging.WARNING,
+            __file__,
+            80,
+            "poll failed",
+            (),
+            (type(exc), exc, None),
+        )
+        first = logging.Formatter().format(record)  # caches exc_text raw
+        assert "SECRETTOKENXYZ" in first
+        assert main_module._BotTokenScrub().filter(record)
+        second = logging.Formatter().format(record)
+        assert "SECRETTOKENXYZ" not in second
+
+
+def test_bot_token_scrub_reaches_uvicorn_handlers() -> None:
+    # a startup failure logs through uvicorn's own handlers — records
+    # emitted there never touch the root filter
+    handler = logging.StreamHandler(io.StringIO())
+    uvicorn_error = logging.getLogger("uvicorn.error")
+    uvicorn_error.addHandler(handler)
+    try:
+        main_module._stamp_uvicorn_loggers()
+        assert any(
+            isinstance(f, main_module._BotTokenScrub) for f in handler.filters
+        )
+    finally:
+        uvicorn_error.removeHandler(handler)
+
+
+@pytest.mark.asyncio
+async def test_telegram_client_errors_never_carry_token() -> None:
+    # the boundary scrub means the token can't reach a log, a notice, or
+    # a stderr traceback at all — even with no logging filter installed
+    def telegram_api(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={}, request=request)
+
+    client = TelegramClient(
+        "12345:SECRETTOKENXYZ",
+        transport=httpx.MockTransport(telegram_api),
+    )
+    try:
+        await client.send_message(1, "hi")
+        raise AssertionError("expected HTTPStatusError")
+    except httpx.HTTPStatusError as exc:
+        assert "SECRETTOKENXYZ" not in str(exc)
+        assert "bot0:REDACTED" in str(exc)
+    finally:
+        await client.close()
+
+
 @pytest.mark.asyncio
 async def test_replay_interrupted_turns_continues_past_spawn_failure(
     tmp_path: Path,
