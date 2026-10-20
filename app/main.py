@@ -72,6 +72,32 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s:%(name)s %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+# the bot token is part of the API URL, so any failed Telegram call's
+# httpx message — and any traceback embedding it — logs the credential.
+# Scrub it at the root handlers everything propagates to.
+_BOT_TOKEN_RE = re.compile(r"bot\d+:[A-Za-z0-9_-]{10,}")
+
+
+class _BotTokenScrub(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _BOT_TOKEN_RE.sub("bot<REDACTED>", record.getMessage())
+        record.args = ()
+        exc = record.exc_info[1] if record.exc_info else None
+        if exc is not None:
+            exc.args = tuple(
+                _BOT_TOKEN_RE.sub("bot<REDACTED>", a)
+                if isinstance(a, str)
+                else a
+                for a in exc.args
+            )
+        return True
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_BotTokenScrub())
+
 logger = logging.getLogger(__name__)
 
 

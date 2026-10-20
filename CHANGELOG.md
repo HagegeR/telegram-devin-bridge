@@ -56,6 +56,10 @@ and deployment update channels.
 
 ### Fixed
 
+- Failed Telegram API calls used to log the bot token: httpx error
+  messages embed the request URL, which carries `/bot<token>/`. A root
+  log-handler filter now redacts `bot<id>:<token>` in both the rendered
+  message and the exception traceback.
 - Automatic self-updates defer for up to 120 minutes while a live local
   session has a pending prompt. The bridge checks before installing and
   again before restarting; if a turn starts during installation, the

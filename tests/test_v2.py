@@ -10641,6 +10641,35 @@ async def test_replay_interrupted_turns_keeps_prompt_when_notice_fails(
     assert conv is not None and conv.pending_prompt == "answer me"
 
 
+def test_bot_token_scrub_redacts_message_and_exception() -> None:
+    # the API URL embeds the bot token — an httpx failure logged raw
+    # (message or traceback) would leak the credential into the bridge log
+    req = httpx.Request(
+        "GET",
+        "https://api.telegram.org/bot12345:SECRETTOKENXYZ/getUpdates",
+    )
+    resp = httpx.Response(429, request=req)
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        record = logging.LogRecord(
+            "app.polling",
+            logging.WARNING,
+            __file__,
+            80,
+            "Telegram polling failed: %s",
+            (exc,),
+            (type(exc), exc, None),
+        )
+        assert main_module._BotTokenScrub().filter(record)
+        rendered = record.getMessage()
+        assert "SECRETTOKENXYZ" not in rendered
+        assert "bot<REDACTED>" in rendered
+        # traceback text comes from the exception itself — it must be
+        # scrubbed too, not just the log line
+        assert "SECRETTOKENXYZ" not in str(exc)
+
+
 @pytest.mark.asyncio
 async def test_replay_interrupted_turns_continues_past_spawn_failure(
     tmp_path: Path,
