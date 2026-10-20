@@ -412,8 +412,21 @@ async def test_send_message_appends_events(shell_client: LocalClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_modes_and_models_probe(shell_client: LocalClient) -> None:
+async def test_modes_and_models_probe(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+    original = asyncio.create_subprocess_exec
+
+    async def counted_create_subprocess_exec(*args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", counted_create_subprocess_exec)
     assert await shell_client.modes() == ["accept-edits", "smart"]
+    assert await shell_client.modes() == ["accept-edits", "smart"]
+    assert calls == 1
     assert await shell_client.models() == ["swe-2-high", "swe-2-low"]
     details = await shell_client.mode_details()
     assert {d["id"] for d in details} == {"accept-edits", "smart"}
@@ -424,6 +437,29 @@ async def test_modes_and_models_probe(shell_client: LocalClient) -> None:
     assert commands["fast"]["category"] == "Session"
     assert commands["fast"]["hint"] == "[prompt]"
     assert commands["ponytail"]["category"] == "Skills"
+
+
+@pytest.mark.asyncio
+async def test_resume_once_reports_empty_timeout_error(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeSession:
+        proc = object()
+
+    async def spawn() -> FakeSession:
+        return FakeSession()
+
+    async def fail_load(
+        _session: object, _method: str, _params: dict[str, object]
+    ) -> dict[str, object]:
+        raise TimeoutError
+
+    monkeypatch.setattr(shell_client, "_spawn", spawn)
+    monkeypatch.setattr(shell_client, "_request", fail_load)
+    monkeypatch.setattr("app.local._terminate", lambda _proc: None)
+
+    with pytest.raises(RuntimeError, match="TimeoutError"):
+        await shell_client._resume_once("local:s1")
 
 
 @pytest.mark.asyncio

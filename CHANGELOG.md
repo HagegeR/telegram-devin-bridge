@@ -56,6 +56,11 @@ and deployment update channels.
 
 ### Fixed
 
+- New cloud sessions ignore a configured Devin mode the API doesn't accept
+  (e.g. a local-only `bypass`), with a silent warning. Cloud HTTP errors
+  include response details, and empty local-resume errors identify their
+  exception type.
+
 - Startup recovery no longer spawns ACP processes for idle local sessions
   without pending prompts or undelivered events. Those sessions still start a
   watcher normally when their next user message arrives.
