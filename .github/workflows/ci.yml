@@ -192,6 +192,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: pipx run yamllint -d relaxed .github/workflows/
 
+  openrc:
+    # deploy/self-update.sh's OpenRC restart branch is root-only; a
+    # container's default root user exercises it. The tests stub
+    # rc-service/pkill, so no real service access is needed.
+    runs-on: ubuntu-latest
+    container: python:3.12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: pip install --quiet pytest pytest-timeout
+      - run: >-
+          python -m pytest tests/test_self_update_channels.py
+          -k "openrc or lock_fd" --timeout=300
+
   deps-audit:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -214,6 +227,7 @@ jobs:
       - linux-install
       - macos
       - windows
+      - openrc
       - yamllint
     steps:
       - name: Every gated job must succeed
