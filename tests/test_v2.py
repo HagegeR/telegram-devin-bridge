@@ -11104,6 +11104,11 @@ def test_prompt_state_hook_persists_and_resume_config_reads_settings(
     }
     # unknown sessions return None, not a crash
     assert runtime._local_resume_config("local:missing") is None
+    # a CLI-side mode switch persists for this topic only
+    runtime._on_local_mode_change("local:x", "smart")
+    assert runtime._local_resume_config("local:x")["mode"] == "smart"  # type: ignore[index]
+    assert store.get_settings("222").devin_mode == "bypass"
+    runtime._on_local_mode_change("local:missing", "smart")
 
 
 def test_prompt_state_hook_sets_marker_before_conversation_is_saved(
