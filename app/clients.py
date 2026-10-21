@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TypeVar, cast
+from typing import cast
 from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
@@ -30,7 +30,6 @@ RETRY_BACKOFF = (1.0, 2.0, 4.0, 8.0)  # ~15s total, covers DNS/route blips
 CAPTION_LIMIT = 1024  # https://core.telegram.org/bots/api#sendphoto
 PR_CACHE_TTL_SECONDS = 60.0
 PR_CACHE_MAX = 256
-T = TypeVar("T")
 
 # the bot token is part of every Bot API URL, so any httpx failure bakes
 # it into its message — scrub before a log line, notice, or stderr
@@ -86,7 +85,7 @@ async def _is_public_host(hostname: str) -> bool:
     return bool(addresses) and all(address.is_global for address in addresses)
 
 
-async def _with_transport_retry(
+async def _with_transport_retry[T](
     send: Callable[[], Awaitable[T]],
     *,
     idempotent: bool = False,

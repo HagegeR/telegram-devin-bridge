@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY pyproject.toml deploy/requirements.py deploy/
+COPY pyproject.toml .
+COPY deploy/requirements.py deploy/
 RUN pip install --no-cache-dir $(python deploy/requirements.py)
 
 COPY app ./app

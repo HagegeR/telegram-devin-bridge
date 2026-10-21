@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Print pyproject.toml requirements for plain `pip install`.
 
 Deploy hosts can carry a pip too old for `--group` (PEP 735) and the app is
