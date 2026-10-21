@@ -419,6 +419,17 @@ class Bridge:
         conv = self.store.get_conversation_for_session(session_id)
         if conv is not None:
             self.store.set_pending_prompt(conv.conv_key, conv.session_id, prompt)
+            if prompt is None and self.queued_turns.get(conv.conv_key):
+                # a local turn that outlived its watcher still queues —
+                # the turn-settle hook is the only drain trigger left
+                try:
+                    drain = asyncio.create_task(
+                        self._drain_queue(conv.conv_key)
+                    )
+                except RuntimeError:
+                    return
+                self.background_tasks.add(drain)
+                drain.add_done_callback(self.background_tasks.discard)
         self._sync_bridge_busy_marker()
 
     def _sync_bridge_busy_marker(self) -> None:
@@ -932,14 +943,15 @@ class Bridge:
             if (
                 self.settings.telegram_queue_while_busy
                 and not self.shutting_down
-                # local turns stay open for a whole goal run — queueing
-                # follow-ups would lock /goal pause|resume|clear and
-                # ordinary steering text out until the goal finishes.
-                # LocalClient.send_message steers concurrent prompts
-                # instead, so busy only queues for cloud sessions
+                # local slash commands still steer — queueing them
+                # would lock /goal pause|resume|clear out for the whole
+                # run. Ordinary text queues like cloud sessions: users
+                # reported mid-turn messages injected as steers they
+                # never intended
                 and not (
                     conversation is not None
                     and is_local(conversation.session_id)
+                    and text.startswith("/")
                 )
                 and self._conversation_busy(conv_key)
             ):
@@ -1020,10 +1032,35 @@ class Bridge:
                 message_ids=turn_mids,
             )
 
+    def _schedule_rate_limit_retry(
+        self, session_id: str, prompt: str, reset_at: float | None
+    ) -> None:
+        async def retry() -> None:
+            await asyncio.sleep(
+                max(0.0, (reset_at or time.time() + 60) - time.time())
+            )
+            try:
+                await self.local.send_message(session_id, prompt)
+            except Exception:
+                logger.exception("rate-limit retry failed for %s", session_id)
+
+        task = asyncio.create_task(retry())
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
+
     def _conversation_busy(self, conv_key: str) -> bool:
         conversation = self.store.get_conversation(conv_key)
         if conversation is None:
             return False
+        if is_local(conversation.session_id):
+            # a CLI turn can outlive its watcher — without this check a
+            # long-running goal stops queueing and follow-ups steer into
+            # it uninvited
+            sess = self.local.sessions.get(conversation.session_id)
+            if sess is not None and (
+                sess.inflight or sess.pending_prompt is not None
+            ):
+                return True
         task = self.watchers.get(conversation.session_id)
         watcher = self.active_watchers.get(conversation.session_id)
         return (
@@ -2006,6 +2043,7 @@ class Bridge:
                 return
             choices = self.store.list_choices(conv_key, callback_message_id)
             plain_option = not option.startswith("__cmd:")
+            model_menu = False
             if option.startswith("__cmd:terminate:"):
                 await self.stop_conversation(active)
                 updated = "Session terminated."
@@ -2050,14 +2088,31 @@ class Bridge:
                         "Admins only — this session runs on the bridge host.",
                     )
                     return
-                self.store.update_conversation(
-                    conv_key,
-                    session_id,
-                    last_user_text=option,
-                    last_user_message_id=None,
-                )
-                await self._session_client(session_id).send_message(session_id, option)
-                updated = f"✅ {option}"
+                recovery = self.local.rate_limit_choice(session_id, option)
+                if recovery is not None and recovery[0] == "wait":
+                    _, failed, reset_at = recovery
+                    self._schedule_rate_limit_retry(
+                        session_id, failed, reset_at
+                    )
+                    updated = f"✅ {option}"
+                elif recovery is not None:
+                    # "switch" keeps the stash — cfg:model:<x> retries the
+                    # prompt once the user picks; show the model keyboard
+                    updated = (
+                        "Pick a model — the failed prompt retries on its own."
+                    )
+                    model_menu = True
+                else:
+                    self.store.update_conversation(
+                        conv_key,
+                        session_id,
+                        last_user_text=option,
+                        last_user_message_id=None,
+                    )
+                    await self._session_client(session_id).send_message(
+                        session_id, option
+                    )
+                    updated = f"✅ {option}"
             # only this keyboard's rows, and only now — an unrelated
             # prompt (another permission request, a confirm) stays
             # answerable, and deleting above the admin gate would let a
@@ -2110,6 +2165,14 @@ class Bridge:
                         callback_message_id,
                     )
             await self.telegram.answer_callback_query(callback_id)
+            if model_menu:
+                await self._handle_settings_callback(
+                    callback_id,
+                    callback_message,
+                    conv_key,
+                    "cfg:model:menu",
+                    user_id=user_id,
+                )
             if active is not None:
                 await self.start_watcher(active)
 
@@ -3318,6 +3381,15 @@ class Bridge:
                             await self.local.set_model(conversation.session_id, value)
                     except (KeyError, RuntimeError):
                         pass
+                    retry = self.local.pop_rate_limit_retry(
+                        conversation.session_id
+                    )
+                    if retry is not None:
+                        # picked from the rate-limit "switch model" option —
+                        # the stash's prompt is owed a resend, not a wait
+                        await self.local.send_message(
+                            conversation.session_id, retry
+                        )
             elif field == "think":
                 if (
                     self.store.get_settings(conv_key).platform == "local"

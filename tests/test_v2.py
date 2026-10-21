@@ -7857,6 +7857,198 @@ async def test_rate_limit_blocks_choice_callback(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_wait_choice_resends_failed_prompt(
+    tmp_path: Path,
+) -> None:
+    # tapping "Wait until … and retry" must reschedule the stashed prompt,
+    # not send the button's label as a new turn
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_admin_user_ids="111"),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    sess = SimpleNamespace(
+        inflight=0,
+        pending_prompt=None,
+        rate_limit=(
+            "redo me",
+            "Wait until 21:04 UTC and retry",
+            time.time() - 1,
+        ),
+    )
+    runtime.local.sessions["local:x"] = sess  # type: ignore[assignment]
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, text: str, **_kw: object) -> None:
+        sent.append((session_id, text))
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+
+    async def no_watcher(*_a: object, **_kw: object) -> None:
+        pass
+
+    runtime.start_watcher = no_watcher  # type: ignore[method-assign]
+    store.add_choice(
+        "wait-id", "222", "local:x", 222,
+        "Wait until 21:04 UTC and retry", message_id=4,
+    )
+    await runtime.handle_callback({
+        "id": "cb",
+        "data": "wait-id",
+        "from": {"id": 111},
+        "message": {"message_id": 4, "chat": {"id": 222, "type": "private"}},
+    })
+    for _ in range(50):
+        if sent:
+            break
+        await asyncio.sleep(0.02)
+    assert sent == [("local:x", "redo me")]
+    assert sess.rate_limit is None
+    runtime.local.sessions.pop("local:x")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_switch_choice_opens_model_menu(
+    tmp_path: Path,
+) -> None:
+    # "Switch to a different model" opens the model picker; the pick
+    # applies the model and resends the stashed prompt
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_admin_user_ids="111"),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    sess = SimpleNamespace(
+        inflight=0,
+        pending_prompt=None,
+        rate_limit=("redo me", "Wait until 21:04 UTC and retry", None),
+    )
+    runtime.local.sessions["local:x"] = sess  # type: ignore[assignment]
+    runtime.local.models = lambda: _async(["m1"])  # type: ignore[method-assign]
+    runtime.local.model_costs = lambda: _async({})  # type: ignore[method-assign]
+    sent: list[tuple[str, str]] = []
+    models: list[str] = []
+
+    async def fake_send(session_id: str, text: str, **_kw: object) -> None:
+        sent.append((session_id, text))
+
+    async def fake_set_model(session_id: str, model: str) -> None:
+        models.append(model)
+
+    runtime.local.send_message = fake_send  # type: ignore[method-assign]
+    runtime.local.set_model = fake_set_model  # type: ignore[method-assign]
+
+    async def no_watcher(*_a: object, **_kw: object) -> None:
+        pass
+
+    runtime.start_watcher = no_watcher  # type: ignore[method-assign]
+    store.add_choice(
+        "sw-id", "222", "local:x", 222,
+        "Switch to a different model", message_id=4,
+    )
+    await runtime.handle_callback({
+        "id": "cb",
+        "data": "sw-id",
+        "from": {"id": 111},
+        "message": {"message_id": 4, "chat": {"id": 222, "type": "private"}},
+    })
+    rows = telegram.markup_edits[-1]["inline_keyboard"]
+    callbacks = [b["callback_data"] for row in rows for b in row]
+    assert "cfg:model:m1" in callbacks
+    # the stash survives the menu — the model pick consumes it
+    assert sess.rate_limit is not None
+    await runtime.handle_callback({
+        "id": "cb2",
+        "data": "cfg:model:m1",
+        "from": {"id": 111},
+        "message": {"message_id": 4, "chat": {"id": 222, "type": "private"}},
+    })
+    assert models == ["m1"]
+    assert sent == [("local:x", "redo me")]
+    assert sess.rate_limit is None
+    runtime.local.sessions.pop("local:x")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_local_turn_still_queues_after_watcher_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a CLI turn can outlive its watcher — busy detection must read the
+    # local session's turn state, not just the watcher task, or queued
+    # follow-ups steer into a running goal
+    monkeypatch.setattr(main_module, "_REPO_ROOT", tmp_path)
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(tmp_path, telegram_queue_while_busy=True),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    sess = SimpleNamespace(inflight=1, pending_prompt="goal")
+    runtime.local.sessions["local:x"] = sess  # type: ignore[assignment]
+
+    async def no_send(*_a: object, **_kw: object) -> None:
+        pass
+
+    runtime.local.send_message = no_send  # type: ignore[method-assign]
+    runtime.local.get_session = lambda *a, **k: _async(  # type: ignore[method-assign]
+        SessionState(status_enum="working", title="t", pr_url=None, messages=[])
+    )
+    assert runtime._conversation_busy("222")
+    await runtime._queue_turn(message("later", message_id=9), "later", None)
+    assert runtime.queued_count("222") == 1
+    # turn settling (pending_prompt -> None) drains even with no watcher
+    sess.inflight = 0
+    drained: list[str] = []
+
+    async def spy(conv_key: str) -> None:
+        drained.append(conv_key)
+
+    runtime._drain_queue = spy  # type: ignore[method-assign]
+    runtime._on_local_prompt_state("local:x", None)
+    for _ in range(50):
+        if drained:
+            break
+        await asyncio.sleep(0.02)
+    assert drained == ["222"]
+    runtime.local.sessions.pop("local:x")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_stop_cancel_keeps_queued_turns(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
@@ -9437,13 +9629,13 @@ async def test_racing_goal_commands_create_one_local_session(
 
 
 @pytest.mark.asyncio
-async def test_busy_local_turn_steers_instead_of_queueing(
+async def test_busy_local_turn_queues_text_but_steers_commands(
     tmp_path: Path,
 ) -> None:
-    # a goal turn keeps a local session "busy" for its whole run —
-    # queueing follow-ups there would lock /goal pause|resume|clear and
-    # steering text out until the goal ends; local bypasses the busy
-    # queue because LocalClient steers concurrent prompts instead
+    # ordinary text on a busy local session queues like cloud (users
+    # reported mid-turn messages landing as unintended steers); slash
+    # commands still go straight through — queueing them would lock
+    # /goal pause|resume|clear out for the whole run
     store = Store(":memory:")
     store.save_conversation(
         conv_key="222",
@@ -9486,15 +9678,28 @@ async def test_busy_local_turn_steers_instead_of_queueing(
         return SessionState("working", "t", None, [])
 
     runtime.local.get_session = fake_get  # type: ignore[method-assign]
-    await runtime._queue_turn(message("steer me", message_id=9), "steer me", None)
+    await runtime._queue_turn(message("/goal pause", message_id=9), "/goal pause", None)
     for _ in range(50):
         if sent:
             break
         await asyncio.sleep(0.05)
-    # same shape as the cloud test above: busy -> queued. Here it must
-    # have gone straight through instead
+    # a slash command reaches the CLI mid-turn — queueing it would
+    # strand /goal controls behind the run they are meant to stop
     assert runtime.queued_count("222") == 0
-    assert sent == ["steer me"]
+    assert sent == ["/goal pause"]
+    await runtime._queue_turn(message("queue me", message_id=10), "queue me", None)
+    for _ in range(50):
+        if runtime.queued_count("222"):
+            break
+        await asyncio.sleep(0.05)
+    assert runtime.queued_count("222") == 1
+    assert sent == ["/goal pause"]
+    assert any(
+        emoji == "🤔" and mid == 10
+        for emoji, mid in zip(
+            telegram.reactions, telegram.reaction_targets, strict=False
+        )
+    )
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     await runtime.shutdown()
