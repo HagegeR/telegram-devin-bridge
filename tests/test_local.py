@@ -76,11 +76,13 @@ FAKE_ACP = textwrap.dedent(
                                       {"value": "swe-2-low"},
                                   ]}, {
                                   "id": "thought_level",
-                                  "currentValue": "high",
+                                  "currentValue": os.environ.get(
+                                      "FAKE_THINK_CURRENT", "high"),
                                   "options": [
-                                      {"value": "medium"},
-                                      {"value": "high"},
-                                      {"value": "max"},
+                                      {"value": v}
+                                      for v in os.environ.get(
+                                          "FAKE_THINK_OPTIONS",
+                                          "medium,high,max").split(",")
                                   ]}]}}), flush=True)
             if os.environ.get("FAKE_TOOL_TITLE"):
                 # the first activity can also seed the provisional title
@@ -158,6 +160,15 @@ FAKE_ACP = textwrap.dedent(
                                           "agent_channel_closed",
                                           "cognition.ai/retryable":
                                           True}}}), flush=True)
+                continue
+            if os.environ.get("FAKE_RATELIMIT"):
+                print(json.dumps({"jsonrpc": "2.0", "id": i,
+                                  "error": {"code": -32010,
+                                      "message": "Reached free model rate"
+                                      " limit. Please switch to a different"
+                                      " model. Your limit will reset in 21"
+                                      " minutes (at 21:04 UTC)."}}),
+                      flush=True)
                 continue
             if os.environ.get("FAKE_WEDGE"):
                 once = os.environ.get("FAKE_WEDGE_ONCE")
@@ -1118,6 +1129,54 @@ async def test_retryable_prompt_error_fails_after_second_error(
         await asyncio.sleep(0.1)
     assert any("prompt failed" in m.message for m in sess.events)
     assert marker.read_text() == "xx"
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_prompt_error_offers_options(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # -32010 (free model rate limit) is fatal, not retryable — the user
+    # gets the wait/switch buttons parsed from the reset hint
+    monkeypatch.setenv("FAKE_RATELIMIT", "1")
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if any("prompt failed" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    failure = next(
+        m.message for m in sess.events if "prompt failed" in m.message
+    )
+    assert "-32010" in failure
+    assert "OPTIONS: Wait until 21:04 UTC and retry" in failure
+    assert "Switch to a different model" in failure
+
+
+@pytest.mark.asyncio
+async def test_stale_thought_level_falls_back_to_default(
+    shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a stored level the current CLI no longer accepts must not fail the
+    # apply — the CLI's own default is substituted with a warning
+    monkeypatch.setenv("FAKE_THINK_OPTIONS", "medium,max")
+    monkeypatch.setenv("FAKE_THINK_CURRENT", "max")
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    await shell_client.set_thought_level(session_id, "high")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if any("not available" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert any(
+        "thought_level 'high' is not available — using 'max'" in m.message
+        for m in sess.events
+    )
+    for _ in range(50):
+        if sess.config.get("thought_level") == "max":
+            break
+        await asyncio.sleep(0.1)
+    assert sess.config["thought_level"] == "max"
 
 
 def _wedge_constants(monkeypatch: pytest.MonkeyPatch) -> None:

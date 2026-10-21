@@ -9437,13 +9437,13 @@ async def test_racing_goal_commands_create_one_local_session(
 
 
 @pytest.mark.asyncio
-async def test_busy_local_turn_steers_instead_of_queueing(
+async def test_busy_local_turn_queues_text_but_steers_commands(
     tmp_path: Path,
 ) -> None:
-    # a goal turn keeps a local session "busy" for its whole run —
-    # queueing follow-ups there would lock /goal pause|resume|clear and
-    # steering text out until the goal ends; local bypasses the busy
-    # queue because LocalClient steers concurrent prompts instead
+    # ordinary text on a busy local session queues like cloud (users
+    # reported mid-turn messages landing as unintended steers); slash
+    # commands still go straight through — queueing them would lock
+    # /goal pause|resume|clear out for the whole run
     store = Store(":memory:")
     store.save_conversation(
         conv_key="222",
@@ -9486,15 +9486,28 @@ async def test_busy_local_turn_steers_instead_of_queueing(
         return SessionState("working", "t", None, [])
 
     runtime.local.get_session = fake_get  # type: ignore[method-assign]
-    await runtime._queue_turn(message("steer me", message_id=9), "steer me", None)
+    await runtime._queue_turn(message("/goal pause", message_id=9), "/goal pause", None)
     for _ in range(50):
         if sent:
             break
         await asyncio.sleep(0.05)
-    # same shape as the cloud test above: busy -> queued. Here it must
-    # have gone straight through instead
+    # a slash command reaches the CLI mid-turn — queueing it would
+    # strand /goal controls behind the run they are meant to stop
     assert runtime.queued_count("222") == 0
-    assert sent == ["steer me"]
+    assert sent == ["/goal pause"]
+    await runtime._queue_turn(message("queue me", message_id=10), "queue me", None)
+    for _ in range(50):
+        if runtime.queued_count("222"):
+            break
+        await asyncio.sleep(0.05)
+    assert runtime.queued_count("222") == 1
+    assert sent == ["/goal pause"]
+    assert any(
+        emoji == "🤔" and mid == 10
+        for emoji, mid in zip(
+            telegram.reactions, telegram.reaction_targets, strict=False
+        )
+    )
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     await runtime.shutdown()

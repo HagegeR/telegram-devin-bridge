@@ -932,14 +932,15 @@ class Bridge:
             if (
                 self.settings.telegram_queue_while_busy
                 and not self.shutting_down
-                # local turns stay open for a whole goal run — queueing
-                # follow-ups would lock /goal pause|resume|clear and
-                # ordinary steering text out until the goal finishes.
-                # LocalClient.send_message steers concurrent prompts
-                # instead, so busy only queues for cloud sessions
+                # local slash commands still steer — queueing them
+                # would lock /goal pause|resume|clear out for the whole
+                # run. Ordinary text queues like cloud sessions: users
+                # reported mid-turn messages injected as steers they
+                # never intended
                 and not (
                     conversation is not None
                     and is_local(conversation.session_id)
+                    and text.startswith("/")
                 )
                 and self._conversation_busy(conv_key)
             ):

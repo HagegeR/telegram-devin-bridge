@@ -259,6 +259,28 @@ def _clean_reason(exc: BaseException) -> str:
     return text[:160].rstrip() + ("…" if len(text) > 160 else "")
 
 
+_RATE_LIMIT_CODE = -32010
+_RATE_LIMIT_RESET = re.compile(
+    r"reset in (\d+) minutes \(at ([0-9]{1,2}:[0-9]{2})", re.IGNORECASE
+)
+
+
+def _rate_limit_options(exc: BaseException) -> str | None:
+    # -32010 = free model rate limit — offer the two sane recoveries as
+    # buttons instead of making the user retype the intent
+    if not (
+        isinstance(exc, _RpcError) and exc.error.get("code") == _RATE_LIMIT_CODE
+    ):
+        return None
+    match = _RATE_LIMIT_RESET.search(str(exc))
+    wait = (
+        f"Wait until {match.group(2)} UTC and retry"
+        if match
+        else "Wait for the rate limit reset and retry"
+    )
+    return f"{wait} | Switch to a different model"
+
+
 def _exit_detail(stderr_tail: str) -> str:
     # the tail is mostly the agent's own structured logs — surface only
     # non-log lines (panics, tracebacks); the first line can be a
@@ -727,6 +749,23 @@ class LocalClient:
         sess = await self._get_or_resume(session_id)
         if sess is None:
             raise RuntimeError(f"local session {session_id} is gone")
+        # a stored value can outlive the CLI's accepted set (a model or
+        # CLI update removed it) — substitute the CLI's own default with
+        # a warning instead of failing the apply with Invalid params
+        if config_id in ("model", "thought_level"):
+            await self.modes()  # fills the option caches (one probe)
+            options, fallback = (
+                (self._model_options, self._default_model)
+                if config_id == "model"
+                else (self._think_options, self._default_thought)
+            )
+            if options and value not in options and fallback in options:
+                self._emit(
+                    sess,
+                    f"⚠ {config_id} '{value}' is not available — "
+                    f"using '{fallback}'",
+                )
+                value = fallback
         result = await self._request(sess, "session/set_config_option", {
             "sessionId": sess.acp_id,
             "configId": config_id,
@@ -1043,7 +1082,11 @@ class LocalClient:
                 logger.warning(
                     "local prompt failed for %s: %s", sess.acp_id, exc
                 )
-                self._emit(sess, f"⚠ prompt failed: {_clean_reason(exc)}")
+                options = _rate_limit_options(exc)
+                suffix = f"\nOPTIONS: {options}" if options else ""
+                self._emit(
+                    sess, f"⚠ prompt failed: {_clean_reason(exc)}{suffix}"
+                )
         elif fut.result().get("error"):
             self._emit(sess, f"⚠ {fut.result()['error'].get('message', 'error')}")
         if sess.inflight:

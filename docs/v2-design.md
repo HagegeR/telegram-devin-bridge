@@ -213,7 +213,11 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     control updates still apply. A mode change the CLI reports mid-turn
     (e.g. the "Yes, switch to bypass mode" permission option) is saved as
     that conversation's `devin_mode` (`on_mode_change`), so the next resume
-    re-applies it. While a `session/prompt` call is in
+    re-applies it. A stored `model`/`thought_level` value
+    the CLI's advertised `configOptions` no longer contains (stale after
+    a model or CLI update) is substituted with the CLI's reported
+    `currentValue` default and a `⚠ … is not available` notice rather
+    than failing the apply with `Invalid params`. While a `session/prompt` call is in
     flight the prompt is kept in `conversations.pending_prompt`; a
     shutdown that cancels the turn leaves the marker, and the next boot
     replays it (`_replay_interrupted_turns`) so a self-update deploy
@@ -239,7 +243,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     (`cognition.ai/retryable`, e.g. `agent_channel_closed`) is retried
     once after ~1s on the same process — a second failure reports like
     any other error, and a prompt that overtakes it during the backoff
-    simply lands first as a steer. Requests issued to a dead process
+    simply lands first as a steer. A `session/prompt` error with code
+    `-32010` (free model rate limit) attaches `OPTIONS:` wait/switch
+    buttons — `Wait until <reset> UTC and retry` parsed from the CLI's
+    reset hint, or `Switch to a different model`. Requests issued to a dead process
     fail fast instead of waiting on a reply that can't arrive. A resume
     that runs before its conversation is active (`/resume` of a history
     entry) applies the chat config on the first prompt instead. A wedge
@@ -364,10 +371,11 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     continuation turn (`Continuing goal (turn N)` lines and tool output all
     stream on the same update channel and deliver like any other turn), so
     queuing would lock out `/goal pause`, `/goal resume`, `/goal clear`, and
-    `/steer` text for the whole run — which is also why the busy queue
-    (`telegram_queue_while_busy`) never applies to local conversations:
-    follow-ups reach `LocalClient.send_message` and steer instead of
-    waiting out the run. Whether a prompt steers or owns the run is
+    `/steer` text for the whole run. The busy queue
+    (`telegram_queue_while_busy`) therefore applies to local
+    conversations only for ordinary text — it queues (🤔) and flushes in
+    order like cloud sessions — while `/`-prefixed messages bypass it
+    and still steer mid-turn, keeping goal controls reachable. Whether a prompt steers or owns the run is
     decided on live request count (`sess.inflight`), not on the tail
     task — a quick steer can finish while an earlier goal request is
     still open, and deciding on `tail.done()` made the next prompt reset
