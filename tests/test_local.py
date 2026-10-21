@@ -861,6 +861,32 @@ def test_deny_permission_without_reject_option_cancels(tmp_path: Path) -> None:
     assert written["result"]["outcome"] == {"outcome": "cancelled"}
 
 
+def test_mid_turn_mode_switch_fires_hook_once(tmp_path: Path) -> None:
+    # "Yes, switch to bypass mode" flips the CLI mode mid-turn (it sends
+    # config_option_update then current_mode_update) — the bridge must
+    # learn it once so a resume re-applies bypass instead of reverting
+    sess = _AcpSession(proc=None, acp_id="x")  # type: ignore[arg-type]
+    client = LocalClient(cli_command="devin", cwd=str(tmp_path))
+    seen: list[tuple[str, str]] = []
+    client.on_mode_change = lambda sid, mode: seen.append((sid, mode))
+
+    def update(**u: object) -> None:
+        client._handle(sess, {"method": "session/update", "params": {"update": u}})
+
+    def both(mode: str) -> None:
+        update(
+            sessionUpdate="config_option_update",
+            configOptions=[{"id": "mode", "currentValue": mode}],
+        )
+        update(sessionUpdate="current_mode_update", currentModeId=mode)
+
+    both("accept-edits")  # session/new: between turns, not a user choice
+    sess.inflight = 1
+    both("bypass")
+    assert seen == [("local:x", "bypass")]
+    assert sess.config["mode"] == "bypass"
+
+
 def test_save_attachment_writes_on_host(tmp_path: Path) -> None:
     client = LocalClient(cli_command="devin", cwd=str(tmp_path))
     dest = client.save_attachment("my file!.txt", b"data")

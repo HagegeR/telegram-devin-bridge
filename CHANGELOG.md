@@ -56,6 +56,9 @@ and deployment update channels.
 
 ### Fixed
 
+- Local sessions: picking "Yes, switch to bypass mode" (or any mid-turn
+  CLI mode switch) now persists as the conversation's mode, so a bridge
+  restart or session resume no longer reverts to asking for approvals.
 - Failed Telegram API calls used to log the bot token: httpx error
   messages embed the request URL, which carries `/bot<token>/`. The
   client now strips the token out of raised errors at the boundary —

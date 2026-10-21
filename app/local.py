@@ -449,6 +449,7 @@ class LocalClient:
         # configured values)
         self.on_prompt_state: Callable[[str, str | None], None] | None = None
         self.resume_config: Callable[[str], dict | None] | None = None
+        self.on_mode_change: Callable[[str, str], None] | None = None
         self._terminated: set[str] = set()
         self._resuming: dict[str, asyncio.Task] = {}
         self._wedge_task: asyncio.Task | None = None
@@ -1771,6 +1772,20 @@ class LocalClient:
             if not fut.done():
                 fut.set_exception(RuntimeError(f"acp process exited{detail}"))
 
+    def _mode_update(self, sess: _AcpSession, mode: str) -> None:
+        prev = sess.config.get("mode")
+        sess.config["mode"] = mode
+        # only a mid-turn switch is the user's choice (e.g. the "switch to
+        # bypass mode" permission option) — session/new, session/load and
+        # the bridge's own set_mode run between turns. Persist it so the
+        # resume re-apply restores it instead of reverting the mode.
+        if prev == mode or not sess.inflight or self.on_mode_change is None:
+            return
+        try:
+            self.on_mode_change(f"{LOCAL_PREFIX}{sess.acp_id}", mode)
+        except Exception:
+            logger.exception("on_mode_change hook failed for %s", sess.acp_id)
+
     def _drop_line(self, sess: _AcpSession, data: bytes) -> None:
         logger.warning("dropping oversized acp line (%d bytes)", len(data))
         # the line may carry the only response a pending request waits
@@ -1881,12 +1896,15 @@ class LocalClient:
         if kind == "config_option_update":
             for opt in update.get("configOptions") or []:
                 if isinstance(opt, dict) and opt.get("currentValue") is not None:
-                    sess.config[str(opt["id"])] = str(opt["currentValue"])
+                    if opt["id"] == "mode":
+                        self._mode_update(sess, str(opt["currentValue"]))
+                    else:
+                        sess.config[str(opt["id"])] = str(opt["currentValue"])
             return
         if kind == "current_mode_update":
             mode = update.get("currentModeId")
             if mode:
-                sess.config["mode"] = str(mode)
+                self._mode_update(sess, str(mode))
             return
         if kind == "agent_message_chunk":
             text = update.get("content", {}).get("text", "")

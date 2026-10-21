@@ -210,7 +210,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     mode/model/thought_level (`session/set_mode` +
     `session/set_config_option`) since `session/load` restores CLI state
     only, and the replayed-history guard suppresses reply content only —
-    control updates still apply. While a `session/prompt` call is in
+    control updates still apply. A mode change the CLI reports mid-turn
+    (e.g. the "Yes, switch to bypass mode" permission option) is saved as
+    that conversation's `devin_mode` (`on_mode_change`), so the next resume
+    re-applies it. While a `session/prompt` call is in
     flight the prompt is kept in `conversations.pending_prompt`; a
     shutdown that cancels the turn leaves the marker, and the next boot
     replays it (`_replay_interrupted_turns`) so a self-update deploy

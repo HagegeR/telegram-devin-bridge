@@ -204,6 +204,7 @@ class Bridge:
         self.local.on_permission = self._on_local_permission
         self.local.on_prompt_state = self._on_local_prompt_state
         self.local.resume_config = self._local_resume_config
+        self.local.on_mode_change = self._on_local_mode_change
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.bot_topics_enabled = False
@@ -434,6 +435,11 @@ class Bridge:
                 marker.unlink(missing_ok=True)
         except Exception:
             logger.exception("failed to sync bridge busy marker")
+
+    def _on_local_mode_change(self, session_id: str, mode: str) -> None:
+        conv = self.store.get_conversation_for_session(session_id)
+        if conv is not None and self.store.get_settings(conv.conv_key).devin_mode != mode:
+            self.store.update_settings(conv.conv_key, devin_mode=mode)
 
     def _local_resume_config(self, session_id: str) -> dict | None:
         conv = self.store.get_conversation_for_session(session_id)
