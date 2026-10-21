@@ -36,6 +36,25 @@ jobs:
           sudo apt-get install -y ffmpeg
       - run: .venv/bin/python -m pytest --timeout=300
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv venv --python 3.12 .venv
+      - run: >-
+          uv pip install -r requirements.txt -r requirements-dev.txt
+          --python .venv/bin/python
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - run: >-
+          .venv/bin/python -m pytest --timeout=300
+          --cov=app --cov-report=term-missing --cov-fail-under=80
+
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -179,3 +198,29 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: pipx run pip-audit -r requirements.txt
+
+  # single required check for branch protection — fails when any gated
+  # job does. deps-audit stays advisory and is not a gate input
+  ci:
+    name: ci gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - ruff
+      - test
+      - coverage
+      - docker
+      - shellcheck
+      - linux-install
+      - macos
+      - windows
+      - yamllint
+    steps:
+      - name: Every gated job must succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" |
+            jq -e 'to_entries |
+              all(.value.result == "success" or .value.result == "skipped")'
