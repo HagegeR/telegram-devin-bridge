@@ -23,7 +23,7 @@ python3 -m venv --help   # sanity check
 git clone https://github.com/HagegeR/telegram-devin-bridge /root/telegram-devin-bridge
 cd /root/telegram-devin-bridge
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/python deploy/requirements.py | .venv/bin/pip install -r /dev/stdin
 ```
 
 ## 3. Configure `.env`
@@ -173,7 +173,7 @@ resolves the update channel (`SELF_UPDATE_CHANNEL`: a branch like `main`,
 `stable`, `v1`, `v1.2`, or a `vX.Y.Z` pin — see
 [versioning.md](versioning.md)), checks out the target revision — the host
 checkout is deploy-only and local changes are discarded on purpose —
-reinstalls requirements if `requirements.txt` changed, and restarts the
+reinstalls requirements if `pyproject.toml` changed, and restarts the
 service detached. Admins can trigger it from Telegram with
 `/update` (or `/update check` for a dry run, `/update <channel>` for a
 one-shot switch; requires `TELEGRAM_ADMIN_USER_IDS`).

@@ -44,12 +44,12 @@ TELEGRAM_ADMIN_USER_IDS=<your numeric user id>
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+python deploy/requirements.py | pip install -r /dev/stdin   # or: uv pip install -r pyproject.toml
 python -m app.poll
 ```
 
 On Windows (PowerShell): `py -3.12 -m venv .venv`, then
-`.venv\Scripts\pip install -r requirements.txt` and
+`$deps = .venv\Scripts\python deploy\requirements.py; .venv\Scripts\pip install $deps` and
 `.venv\Scripts\python -m app.poll`.
 
 To keep it running as a service that `/update` can restart:

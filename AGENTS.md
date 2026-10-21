@@ -21,7 +21,7 @@ the deploy).
 ## Commands
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+python -m venv .venv && .venv/bin/python deploy/requirements.py dev | .venv/bin/pip install -r /dev/stdin
 PYTHONPATH=. .venv/bin/pytest -q      # ~75s, ~375 tests, httpx.MockTransport — no live APIs
 .venv/bin/ruff check app/ tests/
 .venv/bin/prek install                # git hooks (once per clone); `prek run --all-files` on demand

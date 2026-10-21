@@ -24,6 +24,7 @@ from app.clients import (
     MAX_ACU_LIMIT,
     DevinClient,
     DevinMessage,
+    Playbook,
     SessionState,
     TelegramClient,
 )
@@ -703,6 +704,127 @@ async def test_session_options_commands_round_trip(tmp_path: Path) -> None:
     assert current.acu_limit is None
     assert current.tags is None
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_playbook_command_lists_and_launches(tmp_path: Path) -> None:
+    # /playbook lists numbered titles, validates the pick, and hands the
+    # chosen playbook_id to create_session with the prompt
+    devin = _FakeDevin()
+    # a "working" watcher would spin for the whole test — close it fast
+    devin.get_session = lambda *_a, **_k: _async(  # type: ignore[method-assign]
+        SessionState("blocked", "t", None, [])
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/playbook"), "/playbook")
+    assert "No playbooks" in telegram.sent[-1]["text"]
+
+    async def two_playbooks() -> list[Playbook]:
+        return [Playbook("pb-1", "Deploy"), Playbook("pb-2", "Migrate")]
+
+    devin.list_playbooks = two_playbooks  # type: ignore[method-assign]
+    await handle_command(runtime, message("/playbook"), "/playbook")
+    listing = telegram.sent[-1]["text"]
+    assert "1. Deploy" in listing and "2. Migrate" in listing
+    await handle_command(runtime, message("/playbook 9"), "/playbook 9")
+    assert "not found" in telegram.sent[-1]["text"]
+    await handle_command(runtime, message("/playbook nope"), "/playbook nope")
+    assert "Usage" in telegram.sent[-1]["text"]
+    await handle_command(
+        runtime, message("/playbook 1 ship it"), "/playbook 1 ship it"
+    )
+    assert devin.created_playbooks == ["pb-1"]
+    assert devin.created_titles == ["Deploy"]
+    assert "ship it" in devin.created[-1]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_revoke_command(tmp_path: Path) -> None:
+    # /revoke is admin-only: strangers get silence, admins get a parse
+    # check, and a valid id drops both the live approval and the stored
+    # request
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    config = settings(
+        tmp_path,
+        telegram_allowed_users="900",
+        telegram_admin_user_ids="900",
+    )
+    runtime = Bridge(config, store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    store.save_access_request(333, "bob", "Bob")
+    store.decide_access_request(333, "approved", 900)
+    runtime.approved_users.add(333)
+
+    await handle_command(runtime, message("/revoke 333", user_id=111), "/revoke 333")
+    assert telegram.sent == []
+    await handle_command(runtime, message("/revoke nope", user_id=900), "/revoke nope")
+    assert "Usage" in telegram.sent[-1]["text"]
+    await handle_command(runtime, message("/revoke 333", user_id=900), "/revoke 333")
+    assert telegram.sent[-1]["text"] == "Revoked access for 333."
+    assert 333 not in runtime.approved_users
+    denied = store.list_access_requests("denied")
+    assert [r.user_id for r in denied] == [333]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_retry_command(tmp_path: Path) -> None:
+    # /retry resends the last user text on the active session — and, like
+    # every local-session control, is admin-gated on /platform local
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    store.update_conversation("222", "s1", last_user_text="again")
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    devin.get_session = lambda *_a, **_k: _async(  # type: ignore[method-assign]
+        SessionState("blocked", "t", None, [])
+    )
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/retry"), "/retry")
+    for _ in range(50):
+        if ("s1", "again") in devin.sent:
+            break
+        await asyncio.sleep(0.02)
+    assert ("s1", "again") in devin.sent
+    await runtime.shutdown()
+
+    lonely_telegram = _FakeTelegram()
+    lonely = Bridge(
+        settings(tmp_path), Store(":memory:"), _FakeDevin(), lonely_telegram  # type: ignore[arg-type]
+    )
+    await handle_command(lonely, message("/retry"), "/retry")
+    assert "Nothing to retry" in lonely_telegram.sent[-1]["text"]
+    await lonely.shutdown()
+
+    local_store = Store(":memory:")
+    local_store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x",
+        title="t",
+    )
+    local_store.update_conversation("222", "local:x", last_user_text="again")
+    local_telegram = _FakeTelegram()
+    local_runtime = Bridge(
+        settings(tmp_path, telegram_admin_user_ids="900"),
+        local_store,
+        _FakeDevin(),
+        local_telegram,  # type: ignore[arg-type]
+    )
+    await handle_command(local_runtime, message("/retry", user_id=111), "/retry")
+    assert "admins only" in local_telegram.sent[-1]["text"]
+    await local_runtime.shutdown()
 
 
 @pytest.mark.asyncio
@@ -6366,6 +6488,201 @@ async def test_busy_turn_is_queued_and_drained(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_busy_queue_marks_via_real_update_path(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_queue_while_busy=True,
+            telegram_debounce_seconds=0,
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    )
+    watcher.last_status = "working"
+    runtime.active_watchers["s1"] = watcher
+    task = asyncio.create_task(asyncio.sleep(60))
+    runtime.watchers["s1"] = task
+    await runtime.handle_update(
+        {"update_id": 500, "message": message("queued one", message_id=9)}
+    )
+    await runtime._update_queue.join()
+    marks = list(zip(telegram.reaction_targets, telegram.reactions))
+    assert runtime.queued_count("222") == 1
+    assert (9, "🫡") in marks
+    assert marks[-1] == (9, "🤔")
+    # durable row survives while the turn waits behind the busy session
+    assert [u.get("update_id") for u in store.list_pending_updates()] == [500]
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    runtime.watchers.pop("s1", None)
+    runtime.active_watchers.pop("s1", None)
+    await runtime._drain_queue("222")
+    assert runtime.queued_count("222") == 0
+    assert ("s1", "queued one") in devin.sent
+    marks = list(zip(telegram.reaction_targets, telegram.reactions))
+    assert marks[-1] == (9, "👀")
+    assert store.list_pending_updates() == []
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_busy_queue_debounced_batch_marks_every_message(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_queue_while_busy=True,
+            telegram_debounce_seconds=0.01,
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    )
+    watcher.last_status = "working"
+    runtime.active_watchers["s1"] = watcher
+    task = asyncio.create_task(asyncio.sleep(60))
+    runtime.watchers["s1"] = task
+    await runtime.handle_update(
+        {"update_id": 500, "message": message("first", message_id=9)}
+    )
+    await runtime.handle_update(
+        {"update_id": 501, "message": message("second", message_id=10)}
+    )
+    await runtime._update_queue.join()
+    await asyncio.sleep(0.05)  # debounce fires → merge → queue
+    assert runtime.queued_count("222") == 1
+    marks = list(zip(telegram.reaction_targets, telegram.reactions))
+    assert (9, "🤔") in marks and (10, "🤔") in marks
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    runtime.watchers.pop("s1", None)
+    runtime.active_watchers.pop("s1", None)
+    await runtime._drain_queue("222")
+    assert runtime.queued_count("222") == 0
+    assert ("s1", "first\n\nsecond") in devin.sent
+    marks = list(zip(telegram.reaction_targets, telegram.reactions))
+    assert (9, "👀") in marks and (10, "👀") in marks
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queued_turn_drains_when_real_watcher_finishes(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+
+    class BlockedDevin(_FakeDevin):
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            return SessionState("blocked", "title", None, [])
+
+    devin = BlockedDevin()
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_queue_while_busy=True,
+            telegram_debounce_seconds=0,
+            devin_settle_seconds=0,
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    # start the watcher while the session is "busy": force last_status by
+    # parking a live task, queue the message, then swap in the real watcher
+    runtime.watchers["s1"] = asyncio.create_task(asyncio.sleep(60))
+    busy_probe = SessionWatcher(
+        conversation,
+        store,
+        devin,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    )
+    busy_probe.last_status = "working"
+    runtime.active_watchers["s1"] = busy_probe
+    await runtime.handle_update(
+        {"update_id": 500, "message": message("queued", message_id=9)}
+    )
+    await runtime._update_queue.join()
+    assert runtime.queued_count("222") == 1
+    runtime.watchers["s1"].cancel()
+    await asyncio.gather(runtime.watchers["s1"], return_exceptions=True)
+    runtime.watchers.pop("s1", None)
+    runtime.active_watchers.pop("s1", None)
+    # now a REAL watcher over the blocked session: it should close and its
+    # done-callback should drain the queued turn without a manual call
+    await runtime.start_watcher(conversation)
+    watcher_task = runtime.watchers["s1"]
+    await watcher_task
+    for _ in range(50):
+        if runtime.queued_count("222") == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert runtime.queued_count("222") == 0
+    assert ("s1", "queued") in devin.sent
+    marks = list(zip(telegram.reaction_targets, telegram.reactions))
+    assert marks[-1] == (9, "👀")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_queue_drain_coalesces_turns_into_one_send(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
@@ -8017,7 +8334,7 @@ async def test_local_turn_still_queues_after_watcher_exits(
         _FakeDevin(),
         telegram,
     )  # type: ignore[arg-type]
-    sess = SimpleNamespace(inflight=1, pending_prompt="goal")
+    sess = SimpleNamespace(inflight=1, running=True, pending_prompt="goal")
     runtime.local.sessions["local:x"] = sess  # type: ignore[assignment]
 
     async def no_send(*_a: object, **_kw: object) -> None:
@@ -8032,6 +8349,7 @@ async def test_local_turn_still_queues_after_watcher_exits(
     assert runtime.queued_count("222") == 1
     # turn settling (pending_prompt -> None) drains even with no watcher
     sess.inflight = 0
+    sess.running = False
     drained: list[str] = []
 
     async def spy(conv_key: str) -> None:
@@ -8046,6 +8364,257 @@ async def test_local_turn_still_queues_after_watcher_exits(
     assert drained == ["222"]
     runtime.local.sessions.pop("local:x")
     await runtime.shutdown()
+
+
+class _FakeLocalSession:
+    """_AcpSession-shaped fake — the bridge only reads a handful of fields."""
+
+    def __init__(self) -> None:
+        self.turns = 0
+        self.inflight = 0
+        self.pending_prompt: str | None = None
+        self.tail: asyncio.Task | None = None
+        self.dead = False
+        self.events: list[DevinMessage] = []
+        self.title = "fake"
+
+    @property
+    def running(self) -> bool:
+        return self.turns > 0
+
+
+class _FakeLocal:
+    """LocalClient-shaped fake — send_message chains prompts the way the
+    real sess.tail does: it returns once the prompt is chained, long before
+    it actually reaches the agent."""
+
+    def __init__(self, cwd: Path) -> None:
+        self.sessions: dict[str, _FakeLocalSession] = {}
+        self.on_emit = None
+        self.on_permission = None
+        self.on_prompt_state = None
+        self.on_mode_change = None
+        self.resume_config = None
+        self.cwd = cwd
+        self.prompts: list[str] = []
+        self.gate = asyncio.Event()
+        self.gate.set()
+        self._tasks: set[asyncio.Task] = set()
+
+    async def create_session(
+        self, prompt: str, title: str | None = None, **_: object
+    ) -> tuple[str, str]:
+        session_id = "local:fake-sid"
+        self.sessions[session_id] = _FakeLocalSession()
+        await self.send_message(session_id, prompt)
+        return session_id, "local-url"
+
+    async def send_message(self, session_id: str, text: str) -> None:
+        sess = self.sessions[session_id]
+        sess.turns += 1
+        prev = sess.tail
+
+        async def _turn() -> None:
+            if prev is not None:
+                try:
+                    await prev
+                except (RuntimeError, asyncio.CancelledError):
+                    pass
+            await self.gate.wait()
+            sess.inflight += 1
+            sess.pending_prompt = text
+            self.prompts.append(text)
+
+        task = asyncio.create_task(_turn())
+        sess.tail = task
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(
+            lambda f, t=text: self._done(session_id, sess, t)
+        )
+
+    def _done(
+        self, session_id: str, sess: _FakeLocalSession, text: str
+    ) -> None:
+        sess.turns -= 1
+        sess.inflight = max(0, sess.inflight - 1)
+        if sess.pending_prompt == text:
+            sess.pending_prompt = None
+        if not sess.turns and self.on_prompt_state is not None:
+            # the real client fires prompt_state(None) as the turn-settle
+            # hook — it is what drains the busy queue with no watcher left
+            self.on_prompt_state(session_id, None)
+
+    async def get_session(
+        self,
+        session_id: str,
+        *,
+        since_event_id: str | None = None,
+        fetch_messages: bool = True,
+    ) -> SessionState:
+        sess = self.sessions.get(session_id)
+        status = (
+            "expired"
+            if sess is None or sess.dead
+            else ("working" if sess.running else "blocked")
+        )
+        return SessionState(status, "title", None, [])
+
+    def save_attachment(self, filename: str, content: bytes) -> Path:
+        dest = self.cwd / filename
+        dest.write_bytes(content)
+        return dest
+
+    async def aclose(self) -> None:
+        self.gate.set()
+        for sess in self.sessions.values():
+            sess.dead = True
+        for task in list(self._tasks):
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self.sessions.clear()
+
+    async def terminate(self, session_id: str) -> None:
+        self.sessions.pop(session_id, None)
+
+
+async def _local_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Store, _FakeTelegram, Bridge, _FakeLocal, str]:
+    """Bridge wired to a _FakeLocal with a turn in flight: the gate stays
+    closed so sess.turns > 0 — a real busy session — until the test opens
+    it to release the chain."""
+    # _on_local_prompt_state syncs a .bridge-busy marker under _REPO_ROOT —
+    # point it at tmp so the test can't touch the real checkout's marker
+    monkeypatch.setattr(main_module, "_REPO_ROOT", tmp_path)
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:fake-sid",
+        session_url="local:fake-sid",
+        title="title",
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_queue_while_busy=True,
+            telegram_debounce_seconds=0,
+            devin_settle_seconds=0,
+        ),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    local = _FakeLocal(tmp_path)
+    local.on_emit = runtime._on_local_emit
+    local.on_permission = runtime._on_local_permission
+    local.on_prompt_state = runtime._on_local_prompt_state
+    local.on_mode_change = runtime._on_local_mode_change
+    local.resume_config = runtime._local_resume_config
+    runtime.local = local
+    local.gate.clear()  # every prompt now occupies the session until opened
+    session_id, _ = await local.create_session("first", "first")
+    assert local.sessions[session_id].turns == 1
+    return store, telegram, runtime, local, session_id
+
+
+@pytest.mark.asyncio
+async def test_local_busy_check_sees_turns_behind_stale_watcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the watcher only refreshes last_status on a poll — between the turn
+    # starting and the next poll it still reports the pre-turn "blocked".
+    # The turn is chained but not yet writing (inflight/pending_prompt are
+    # empty), so only sess.running keeps it visibly busy
+    store, telegram, runtime, local, session_id = await _local_bridge(
+        tmp_path, monkeypatch
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        local,  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+    )
+    watcher.last_status = "blocked"
+    runtime.active_watchers[session_id] = watcher
+    runtime.watchers[session_id] = asyncio.create_task(asyncio.sleep(60))
+    try:
+        await runtime._queue_turn(
+            message("second", message_id=10), "second", None
+        )
+        marks = list(zip(telegram.reaction_targets, telegram.reactions))
+        assert runtime.queued_count("222") == 1
+        assert (10, "🤔") in marks
+        assert (10, "👀") not in marks
+        # the message must not have entered the session's turn chain
+        assert local.sessions[session_id].turns == 1
+    finally:
+        runtime.watchers[session_id].cancel()
+        await asyncio.gather(
+            runtime.watchers[session_id], return_exceptions=True
+        )
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_flush_requeues_later_batches_when_turn_starts_mid_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # attachment turns can't coalesce: once the first batch's send makes
+    # the session busy, the next batch must re-queue visibly (🤔) instead
+    # of chaining into sess.tail under a premature 👀
+    _store, telegram, runtime, local, session_id = await _local_bridge(
+        tmp_path, monkeypatch
+    )
+    try:
+        local.gate.set()  # let "first" finish so the session starts idle
+        for _ in range(50):
+            if local.sessions[session_id].turns == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert local.prompts == ["first"]
+        attachment_a = ("a.txt", b"a", "text/plain")
+        attachment_b = ("b.txt", b"b", "text/plain")
+        runtime._update_msg[101] = 1
+        runtime.queued_turns["222"] = [
+            (message("one", message_id=1), "one", attachment_a, [101])
+        ]
+        local.gate.clear()  # sends now occupy the session
+        runtime._update_msg[102] = 2
+        await runtime._flush_fragments(
+            "222",
+            [(message("two", message_id=2), "two", attachment_b, [102])],
+        )
+        # "one" sent and holds the session; "two" must be visibly queued
+        sess = local.sessions[session_id]
+        marks = list(zip(telegram.reaction_targets, telegram.reactions))
+        assert sess.turns == 1
+        assert runtime.queued_count("222") == 1
+        assert (2, "🤔") in marks
+        assert (2, "👀") not in marks
+
+        local.gate.set()
+        for _ in range(100):
+            if not runtime.queued_count("222"):
+                break
+            await asyncio.sleep(0.02)
+        assert runtime.queued_count("222") == 0
+        marks = list(zip(telegram.reaction_targets, telegram.reactions))
+        assert (2, "👀") in marks
+        for _ in range(100):
+            if local.prompts[-1].endswith("(b.txt — saved on the bridge host)"):
+                break
+            await asyncio.sleep(0.02)
+        assert any("b.txt" in prompt for prompt in local.prompts)
+    finally:
+        await runtime.shutdown()
 
 
 @pytest.mark.asyncio

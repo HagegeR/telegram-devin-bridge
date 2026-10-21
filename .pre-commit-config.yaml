@@ -67,7 +67,7 @@ repos:
         files: ^deploy/.*\.sh$
         priority: 10
       # Managed env with the real deps — pinned runtime deps mirror
-      # requirements.txt (keep in sync; pip/uv can't read the file from a
+      # pyproject.toml (keep in sync; pip/uv can't read the file from a
       # local hook env). `python -m pytest` puts the repo root on sys.path.
       - id: pytest
         name: pytest
@@ -76,7 +76,7 @@ repos:
         additional_dependencies:
           - fastapi==0.143.0
           - httpx==0.28.1
-          - Pillow==12.3.0
+          - Pillow==13.0.0
           - pydantic-settings==2.15.0
           - uvicorn[standard]==0.54.0
           - pytest

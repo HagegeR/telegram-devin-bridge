@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 
 from app.local import (
+    _ACP_MAX_LINE,
     LocalClient,
     _AcpSession,
     _clean_reason,
@@ -872,6 +873,38 @@ def test_deny_permission_without_reject_option_cancels(tmp_path: Path) -> None:
     assert written["result"]["outcome"] == {"outcome": "cancelled"}
 
 
+@pytest.mark.asyncio
+async def test_reader_drops_oversized_line_and_settles_pending(
+    tmp_path: Path,
+) -> None:
+    # a >16MB acp line must not kill the reader: it is dropped, the
+    # pending request it answered settles with an error instead of
+    # hanging its turn, and the next well-formed line still parses
+    client = LocalClient(cli_command="devin", cwd=str(tmp_path))
+    sess = _AcpSession(proc=None, acp_id="x")  # type: ignore[arg-type]
+    stream = asyncio.StreamReader()
+    oversized = (
+        b'{"id": 7, "result": "' + b"x" * (_ACP_MAX_LINE + 1) + b'"}'
+    )
+    stream.feed_data(oversized + b"\n")
+    stream.feed_data(b'{"id": 9, "result": {"ok": true}}\n')
+    stream.feed_eof()
+    sess.proc = type("P", (), {"stdout": stream, "stderr": None})()  # type: ignore[assignment]
+    loop = asyncio.get_running_loop()
+    pending_seven = loop.create_future()
+    pending_nine = loop.create_future()
+    sess.pending[7] = pending_seven
+    sess.pending[9] = pending_nine
+    await client._reader(sess)
+    assert sess.dead
+    assert 7 not in sess.pending
+    with pytest.raises(RuntimeError, match="line limit"):
+        pending_seven.result()
+    # the small line after the giant one still reached its waiter
+    assert pending_nine.done()
+    assert pending_nine.result()["id"] == 9
+
+
 def test_mid_turn_mode_switch_fires_hook_once(tmp_path: Path) -> None:
     # "Yes, switch to bypass mode" flips the CLI mode mid-turn (it sends
     # config_option_update then current_mode_update) — the bridge must
@@ -946,6 +979,29 @@ async def test_pending_prompt_hook_tracks_turn(shell_client: LocalClient) -> Non
     assert (session_id, "hello") in states
     assert states[-1] == (session_id, None)
     assert shell_client.sessions[session_id].pending_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_prompt_state_reannounces_after_final_turn_count_drops(
+    shell_client: LocalClient,
+) -> None:
+    # the settle hook runs while the turn still counts in `turns`, so a
+    # queue drain scheduled from it sees running=True and exits — the
+    # done callback must re-announce the settled state after the
+    # decrement or a watcherless backlog stays queued
+    snapshots: list[tuple[str | None, int]] = []
+
+    def record(session_id: str, prompt: str | None) -> None:
+        snapshots.append((prompt, shell_client.sessions[session_id].turns))
+
+    shell_client.on_prompt_state = record
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    for _ in range(50):
+        if snapshots and snapshots[-1] == (None, 0):
+            break
+        await asyncio.sleep(0.1)
+    assert snapshots[-1] == (None, 0)
 
 
 @pytest.mark.asyncio

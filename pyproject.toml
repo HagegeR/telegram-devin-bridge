@@ -1,0 +1,27 @@
+[project]
+name = "telegram-devin-bridge"
+version = "0.0.0"
+description = "Telegram chat <-> Devin sessions bridge"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.143.0",
+    "httpx==0.28.1",
+    "Pillow==13.0.0",
+    "pydantic-settings==2.15.0",
+    "uvicorn[standard]==0.54.0",
+]
+
+# the app runs from a checkout and is never packaged, so non-runtime deps
+# live in dependency groups (PEP 735): `pip install --group`/`uv pip install
+# --group` install them deps-only without building the project
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout",
+    "pytest-cov",
+    "anyio",
+    "ruff",
+    "prek",
+]
+transcription = ["faster-whisper==1.2.1"]

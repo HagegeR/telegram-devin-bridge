@@ -978,12 +978,38 @@ class Bridge:
             queued = self.queued_turns.pop(conv_key, [])
             batches = self._coalesce_turns([*queued, turn])
             while batches:
-                batch = batches.pop(0)
+                batch = batches[0]
+                batch_message, batch_text, batch_attachment, batch_uids = batch
+                if (
+                    self.settings.telegram_queue_while_busy
+                    and not self.shutting_down
+                    and conversation is not None
+                    # /-commands still steer mid-flush — parking them
+                    # would lock /goal controls out for the whole run
+                    and not (
+                        is_local(conversation.session_id)
+                        and batch_text.startswith("/")
+                    )
+                    and self._conversation_busy(conv_key)
+                ):
+                    # a batch sent this flush made the session busy
+                    # (e.g. a local prompt now writing to ACP) — park the
+                    # rest behind it instead of chaining them invisibly
+                    self.queued_turns[conv_key] = [
+                        *batches,
+                        *self.queued_turns.get(conv_key, []),
+                    ]
+                    chat = _int(_mapping(message.get("chat")).get("id"))
+                    for parked in batches:
+                        for mid in self._turn_message_ids(parked[3]):
+                            if mid:
+                                await self.telegram.react(chat, mid, "🤔")
+                    return
+                batches.pop(0)
                 if batches:
                     self.queued_turns[conv_key] = batches
                 else:
                     self.queued_turns.pop(conv_key, None)
-                batch_message, batch_text, batch_attachment, batch_uids = batch
                 try:
                     await self.handle_user_turn(
                         batch_message,
@@ -1055,10 +1081,12 @@ class Bridge:
         if is_local(conversation.session_id):
             # a CLI turn can outlive its watcher — without this check a
             # long-running goal stops queueing and follow-ups steer into
-            # it uninvited
+            # it uninvited. `running` (not just `inflight`) also covers a
+            # turn still chained behind tail: it clears its inflight and
+            # pending markers when the owner settles, before it writes
             sess = self.local.sessions.get(conversation.session_id)
             if sess is not None and (
-                sess.inflight or sess.pending_prompt is not None
+                sess.running or sess.pending_prompt is not None
             ):
                 return True
         task = self.watchers.get(conversation.session_id)

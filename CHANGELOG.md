@@ -29,8 +29,8 @@ and deployment update channels.
   prompts sent while a turn is in flight now issue a concurrent
   `session/prompt`, which the CLI hands to the running turn as a steer;
   queued, replayed, and suppressed turns keep their send-order chaining,
-  and the busy queue (`TELEGRAM_QUEUE_WHILE_BUSY`) never applies to
-  local sessions so ordinary follow-ups steer too. The durable
+  and `/`-prefixed messages bypass the busy queue so goal controls stay
+  reachable mid-run. The durable
   `pending_prompt` marker follows the oldest in-flight prompt, so a
   crash or restart replays the run owner ahead of its steers instead of
   inverting their order. Sending a CLI slash command on a
@@ -63,6 +63,12 @@ and deployment update channels.
   scheduled — under `timeout 300` where available, as the `telegram-devin`
   service user on root-invoked updates — so a missing, failing, or slow
   CLI never fails or stalls a bridge deploy.
+- Python dependencies moved from `requirements*.txt` into
+  `pyproject.toml`: runtime pins under `[project.dependencies]`, dev and
+  transcription sets under PEP 735 `[dependency-groups]`. CI installs them
+  with uv/`--group`; deploy hosts use `deploy/requirements.py`, which
+  emits the pins for any pip version, and `deploy/self-update.sh` now
+  watches `pyproject.toml` to decide when to reinstall.
 - Forum topic names are capped at five words (plus an ellipsis) when the
   bridge derives them — generated session titles run to sentence length,
   which made every subject unreadable in the topic list. Explicit names
@@ -71,6 +77,18 @@ and deployment update channels.
 
 ### Fixed
 
+- The ACP stdout reader no longer stalls tens of seconds on a single
+  multi-MB line: the line buffer accumulated with `buf += chunk` on
+  `bytes` (quadratic recopying — ~50s for a 16MB line) before the 16MB
+  drop check could run. The buffer is now a `bytearray` with amortized
+  appends, so oversized lines drop in milliseconds.
+- Local sessions: two more gaps in the busy queue closed. A turn still
+  chained behind `tail` (chained prompts whose `inflight`/`pending_prompt`
+  markers already cleared when the owner settled) no longer reads as idle
+  — the busy check now also reads `sess.running`. And turns that can't
+  coalesce (attachment-bearing sends) now re-queue 🤔 when an earlier
+  batch in the same flush made the session busy, instead of chaining
+  invisibly into the running turn under a premature 👀.
 - Local sessions: picking "Yes, switch to bypass mode" (or any mid-turn
   CLI mode switch) now persists as the conversation's mode, so a bridge
   restart or session resume no longer reverts to asking for approvals.

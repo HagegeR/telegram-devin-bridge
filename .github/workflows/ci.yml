@@ -28,13 +28,32 @@ jobs:
           enable-cache: true
       - run: uv venv --python ${{ matrix.python-version }} .venv
       - run: >-
-          uv pip install -r requirements.txt -r requirements-dev.txt
+          uv pip install -r pyproject.toml --group dev
           --python .venv/bin/python
       - name: Install ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
       - run: .venv/bin/python -m pytest --timeout=300
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv venv --python 3.12 .venv
+      - run: >-
+          uv pip install -r pyproject.toml --group dev
+          --python .venv/bin/python
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - run: >-
+          .venv/bin/python -m pytest --timeout=300
+          --cov=app --cov-report=term-missing --cov-fail-under=80
 
   docker:
     runs-on: ubuntu-latest
@@ -103,7 +122,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: uv venv --python 3.12 .venv
       - run: >-
-          uv pip install -r requirements.txt -r requirements-dev.txt
+          uv pip install -r pyproject.toml --group dev
           --python .venv/bin/python
       # macOS has no flock: exercises the self-update mkdir lock fallback
       - run: .venv/bin/python -m pytest --timeout=300
@@ -139,7 +158,9 @@ jobs:
       - name: pytest
         shell: powershell
         run: |
-          .venv\Scripts\python -m pip install -r requirements-dev.txt
+          $deps = .venv\Scripts\python deploy\requirements.py dev
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .venv\Scripts\python -m pip install $deps
           .venv\Scripts\python -m pytest --timeout=300
       - name: Self-update check under Git Bash
         shell: bash
@@ -173,9 +194,51 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: pipx run yamllint -d relaxed .github/workflows/
 
+  openrc:
+    # deploy/self-update.sh's OpenRC restart branch is root-only; a
+    # container's default root user exercises it. The tests stub
+    # rc-service/pkill, so no real service access is needed.
+    runs-on: ubuntu-latest
+    container: python:3.12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: pip install --quiet pytest pytest-timeout
+      - run: >-
+          python -m pytest tests/test_self_update_channels.py
+          -k "openrc or lock_fd" --timeout=300
+
   deps-audit:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: pipx run pip-audit -r requirements.txt
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv pip compile pyproject.toml --quiet --output-file /tmp/bridge-deps.txt
+      - run: pipx run pip-audit -r /tmp/bridge-deps.txt
+
+  # single required check for branch protection — fails when any gated
+  # job does. deps-audit stays advisory and is not a gate input
+  ci:
+    name: ci gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - ruff
+      - test
+      - coverage
+      - docker
+      - shellcheck
+      - linux-install
+      - macos
+      - windows
+      - openrc
+      - yamllint
+    steps:
+      - name: Every gated job must succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" |
+            jq -e 'to_entries |
+              all(.value.result == "success" or .value.result == "skipped")'

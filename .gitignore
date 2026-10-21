@@ -11,3 +11,6 @@ __pycache__/
 .self-update-rev
 .self-update-pending
 .bridge-busy
+.coverage
+.coverage.*
+htmlcov/

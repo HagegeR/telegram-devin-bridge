@@ -86,7 +86,7 @@ Tailscale SSH as fallback. Command and path keys can never be set via the API.
 
 `deploy/self-update.sh` takes a host-wide lock and records a deploy marker,
 resolves the configured **update channel** to a revision, checks it out,
-reinstalls requirements when `requirements.txt` changed, and restarts the
+reinstalls requirements when `pyproject.toml` changed, and restarts the
 OpenRC/systemd service detached (or exits for a launchd/Windows supervisor
 to respawn). It uses `flock` when present and a `mkdir` lock otherwise.
 The detached restart re-acquires the same lock before running, so
@@ -268,8 +268,8 @@ Stop-ScheduledTask telegram-devin-bridge; Start-ScheduledTask telegram-devin-bri
 A scheduled task starts `deploy\windows\run.ps1` at logon; it reruns the
 bridge 5 s after every exit, which is how `/update` and `restart` take effect.
 Windows locks loaded `.pyd` files, so an update that changes compiled
-dependencies may need a manual stop, `pip install -r requirements.txt`, and
-start.
+dependencies may need a manual stop, a dependency reinstall from
+`pyproject.toml`, and start.
 
 ## Devin Knowledge
 
