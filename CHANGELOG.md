@@ -71,6 +71,13 @@ and deployment update channels.
 
 ### Fixed
 
+- Local sessions: two more gaps in the busy queue closed. A turn still
+  chained behind `tail` (chained prompts whose `inflight`/`pending_prompt`
+  markers already cleared when the owner settled) no longer reads as idle
+  — the busy check now also reads `sess.running`. And turns that can't
+  coalesce (attachment-bearing sends) now re-queue 🤔 when an earlier
+  batch in the same flush made the session busy, instead of chaining
+  invisibly into the running turn under a premature 👀.
 - Local sessions: picking "Yes, switch to bypass mode" (or any mid-turn
   CLI mode switch) now persists as the conversation's mode, so a bridge
   restart or session resume no longer reverts to asking for approvals.

@@ -379,8 +379,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     order like cloud sessions — while `/`-prefixed messages bypass it
     and still steer mid-turn, keeping goal controls reachable. For local
     conversations the busy check also reads the session's own turn
-    state (`inflight`/`pending_prompt`), so a turn that outlived its
-    watcher still queues and its settle hook drains the backlog. Whether a prompt steers or owns the run is
+    state (`running`/`pending_prompt` — `running` covers a turn still
+    chained behind `tail` whose `inflight`/prompt markers already
+    cleared when the owner settled), so a turn that outlived its
+    watcher still queues and its settle hook drains the backlog. The
+    same busy check gates every batch mid-flush: turns that can't
+    coalesce (e.g. attachment-bearing sends) re-queue 🤔 behind a turn
+    the same flush just started instead of chaining invisibly into it. Whether a prompt steers or owns the run is
     decided on live request count (`sess.inflight`), not on the tail
     task — a quick steer can finish while an earlier goal request is
     still open, and deciding on `tail.done()` made the next prompt reset
