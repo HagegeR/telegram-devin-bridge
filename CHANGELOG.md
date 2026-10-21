@@ -29,8 +29,8 @@ and deployment update channels.
   prompts sent while a turn is in flight now issue a concurrent
   `session/prompt`, which the CLI hands to the running turn as a steer;
   queued, replayed, and suppressed turns keep their send-order chaining,
-  and the busy queue (`TELEGRAM_QUEUE_WHILE_BUSY`) never applies to
-  local sessions so ordinary follow-ups steer too. The durable
+  and `/`-prefixed messages bypass the busy queue so goal controls stay
+  reachable mid-run. The durable
   `pending_prompt` marker follows the oldest in-flight prompt, so a
   crash or restart replays the run owner ahead of its steers instead of
   inverting their order. Sending a CLI slash command on a
