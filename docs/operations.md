@@ -86,9 +86,13 @@ Tailscale SSH as fallback. Command and path keys can never be set via the API.
 
 `deploy/self-update.sh` takes a host-wide lock and records a deploy marker,
 resolves the configured **update channel** to a revision, checks it out,
-reinstalls requirements when `pyproject.toml` changed, and restarts the
-OpenRC/systemd service detached (or exits for a launchd/Windows supervisor
-to respawn). It uses `flock` when present and a `mkdir` lock otherwise.
+then re-execs the checked-out file — a running shell keeps reading the old
+inode, so without the hand-off a deploy that changed install mechanics
+would execute the previous revision's logic against the new tree. The
+re-entered run reinstalls requirements when `pyproject.toml` changed and
+restarts the OpenRC/systemd service detached (or exits for a
+launchd/Windows supervisor to respawn). It uses `flock` when present and a
+`mkdir` lock otherwise.
 The detached restart re-acquires the same lock before running, so
 concurrent updates (e.g. `/update` racing the cron pull) can't overlap
 stop+start pairs and spawn duplicate `supervise-daemon` processes; the

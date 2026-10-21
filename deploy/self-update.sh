@@ -123,6 +123,19 @@ git reset -q --hard
 # refs only buys name/dir conflicts when channels switch nesting
 git checkout -q -f --detach "$REMOTE"
 [ "$(git rev-parse HEAD)" = "$REMOTE" ] || { echo "checkout failed"; exit 1; }
+# a checkout that replaced this script leaves the running shell reading
+# the old inode — every line from here on would be the OLD revision's
+# logic applied to the NEW tree (the requirements.txt -> pyproject.toml
+# switch broke an update exactly that way). Hand install + restart to the
+# new revision's own text; the update lock is released first because the
+# re-entry takes it again and the mkdir lock can't tell us from a stale
+# owner. _SELF_UPDATE_RESTARTED bounds this to a single re-exec.
+if [ -z "${_SELF_UPDATE_RESTARTED:-}" ]; then
+  exec 9>&- 2>/dev/null || true
+  rm -f "$LOCK.d/pid" 2>/dev/null && rmdir "$LOCK.d" 2>/dev/null || true
+  _SELF_UPDATE_RESTARTED=1 _SELF_UPDATE_FROM="$LOCAL" \
+    exec sh deploy/self-update.sh "$@"
+fi
 if [ -z "$PREV" ] || ! git cat-file -e "$PREV^{commit}" 2>/dev/null; then
   # shellcheck disable=SC2046
   "$VENV_BIN/pip" install -q $("$VENV_BIN/python" deploy/requirements.py)
@@ -182,7 +195,7 @@ echo "$REMOTE" > "$MARKER"
 # leave a pending-notification marker for the restarted process: old rev,
 # new rev, an optional chat target ($SELF_UPDATE_NOTIFY, empty for cron); the
 # bridge appends a delivery attempt count and removes the file once announced
-write_pending() { printf '%s\n%s\n%s\n' "$LOCAL" "$REMOTE" "${SELF_UPDATE_NOTIFY:-}" > .self-update-pending; }
+write_pending() { printf '%s\n%s\n%s\n' "${_SELF_UPDATE_FROM:-$LOCAL}" "$REMOTE" "${SELF_UPDATE_NOTIFY:-}" > .self-update-pending; }
 restart_after() {
   write_pending
   if command -v flock >/dev/null 2>&1; then

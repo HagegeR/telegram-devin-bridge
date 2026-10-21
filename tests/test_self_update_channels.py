@@ -283,6 +283,38 @@ def test_real_update_survives_branch_nesting_switch(deploy_clone, tmp_path: Path
     assert head == git_out(clone, "rev-parse", "origin/release/v2")
 
 
+def test_update_reexecs_post_checkout_script_text(deploy_clone, tmp_path: Path):
+    # a checkout that replaces this very script must not let the running
+    # shell keep executing the OLD revision's install/restart logic against
+    # the new tree (the requirements.txt -> pyproject.toml switch broke a
+    # live update exactly that way): post-checkout the script re-execs the
+    # file on disk. Here the next rev replaces the updater with a sentinel —
+    # if the hand-off happens, only the sentinel's side effect appears.
+    clone, work = deploy_clone
+    # the clone's updater must be tracked for `checkout -f` to replace it
+    git(clone, "add", "deploy/self-update.sh")
+    git(clone, "commit", "-qm", "track updater")
+    (work / "deploy").mkdir()
+    (work / "deploy" / "self-update.sh").write_text(
+        "#!/bin/sh\necho new-revision-ran > .reexeced\n"
+    )
+    git(work, "add", "deploy/self-update.sh")
+    git(work, "commit", "-qm", "replace updater")
+    git(work, "push", "-q", "origin", "main")
+    env = {
+        **os.environ,
+        **GIT_ENV,
+        "PATH": f"{_nonroot_id_stub(tmp_path)}:{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        ["sh", "deploy/self-update.sh", "main"],
+        cwd=clone, env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "update available:" in result.stdout
+    assert (clone / ".reexeced").read_text() == "new-revision-ran\n"
+
+
 def test_supervised_caller_gets_termed(deploy_clone, tmp_path: Path):
     # when the caller IS the service's MainPID the script arms a detached TERM
     # for supervisor respawn — here a sacrificial wrapper shell plays the
