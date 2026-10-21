@@ -428,7 +428,7 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
 `TELEGRAM_ALLOWED_USERS` (csv ints), `TELEGRAM_ALLOW_ALL_USERS` (bool, default false), `TELEGRAM_FREE_RESPONSE_CHATS` (csv), `TELEGRAM_HOME_CHANNEL` (int|None), `TELEGRAM_NOTIFICATION_MODE` (`all|important`, default `important`), `TELEGRAM_RICH_MESSAGES` (bool, default true), `TELEGRAM_DRAFTS` (bool, default false), `NOTIFY_SECRET` (str|None), `DEVIN_WATCH_TIMEOUT_SECONDS` (1800), `DEVIN_POLL_SECONDS` (3), `BOT_USERNAME` (optional; if unset call `getMe` at startup). Keep existing ones; `DEVIN_REPLY_TIMEOUT_SECONDS` is removed.
 Existing deploy has `TELEGRAM_ALLOWED_CHAT_IDS` unset; keep supporting it.
 
-### Tests (pytest, httpx.MockTransport – no new runtime deps; add `requirements-dev.txt` with pytest + pytest-asyncio + anyio)
+### Tests (pytest, httpx.MockTransport – no new runtime deps; dev dependency group in `pyproject.toml` with pytest + pytest-asyncio + anyio)
 - formatting: bold/italic/code/fence/link conversion; escaping of reserved chars; chunking never splits a fence and adds (i/N); `extract_options` happy path + ignore when >8 or absent.
 - access: allowlist deny/allow, allow_all, group mention gating, bot messages ignored.
 - store: conv_key for forum topic vs DM; dedupe of update_id; history + resume.

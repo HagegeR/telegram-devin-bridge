@@ -8,7 +8,7 @@ development setup and the expectations for pull requests.
 ```bash
 python -m venv .venv        # Python >= 3.12
 source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
+python deploy/requirements.py dev | pip install -r /dev/stdin   # or: uv pip install -r pyproject.toml --group dev
 ```
 
 Copy `.env.example` to `.env` for local runs; never commit `.env` or any real
@@ -22,7 +22,7 @@ ruff check .    # lint
 ```
 
 Git hooks ([prek](https://github.com/j178/prek), a fast pre-commit drop-in
-shipped in `requirements-dev.txt`) run the same ruff, yamllint, shellcheck,
+shipped in `pyproject.toml`'s dev group) run the same ruff, yamllint, shellcheck,
 actionlint, gitleaks, and file checks — plus the test suite on `app|tests`
 changes — before each commit. Install once per clone:
 

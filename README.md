@@ -58,7 +58,7 @@ Requires Python ≥ 3.12, a Telegram bot token, and a Devin **v1** API key
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python deploy/requirements.py | pip install -r /dev/stdin   # or: uv pip install -r pyproject.toml
 python -m app.setup    # interactive .env writer (or: cp .env.example .env)
 ```
 
@@ -182,7 +182,7 @@ SQLite is a single-writer store. Run one instance per deployment; see
 ## Development
 
 ```bash
-pip install -r requirements-dev.txt
+python deploy/requirements.py dev | pip install -r /dev/stdin   # or: uv pip install -r pyproject.toml --group dev
 pytest          # test suite
 ruff check .    # lint
 ```

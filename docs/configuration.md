@@ -101,7 +101,8 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 ### Backends
 
 - **`api`** — any OpenAI-compatible transcription endpoint; needs `TRANSCRIPTION_API_KEY`.
-- **`local`** — key-free faster-whisper: `pip install -r requirements-transcription.txt`.
+- **`local`** — key-free faster-whisper: `python deploy/requirements.py transcription | pip install -r /dev/stdin`
+  (or `uv pip install --group transcription`).
   Models `tiny` (~75 MB), `base` (~150 MB, recommended on CPU), `small`
   (~500 MB), `medium`, `large-v3`; the first request downloads the model.
 - **`whispercpp`** — for musl/Alpine hosts where faster-whisper has no wheels.

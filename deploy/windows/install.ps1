@@ -53,7 +53,9 @@ if (-not (Test-Path (Join-Path $root '.git'))) {
 
 Set-Location $root
 if (-not (Test-Path '.venv\Scripts\python.exe')) { & $python -m venv .venv }
-& .venv\Scripts\python.exe -m pip install -r requirements.txt
+$deps = & .venv\Scripts\python.exe deploy\requirements.py
+if ($LASTEXITCODE -ne 0) { throw 'failed to resolve pyproject.toml deps' }
+& .venv\Scripts\python.exe -m pip install $deps
 if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
 
 if (-not (Test-Path '.env')) { Copy-Item '.env.example' '.env' }

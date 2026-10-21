@@ -63,6 +63,12 @@ and deployment update channels.
   scheduled — under `timeout 300` where available, as the `telegram-devin`
   service user on root-invoked updates — so a missing, failing, or slow
   CLI never fails or stalls a bridge deploy.
+- Python dependencies moved from `requirements*.txt` into
+  `pyproject.toml`: runtime pins under `[project.dependencies]`, dev and
+  transcription sets under PEP 735 `[dependency-groups]`. CI installs them
+  with uv/`--group`; deploy hosts use `deploy/requirements.py`, which
+  emits the pins for any pip version, and `deploy/self-update.sh` now
+  watches `pyproject.toml` to decide when to reinstall.
 - Forum topic names are capped at five words (plus an ellipsis) when the
   bridge derives them — generated session titles run to sentence length,
   which made every subject unreadable in the topic list. Explicit names

@@ -170,7 +170,8 @@ if [ ! -x .venv/bin/python ]; then
     fi
 fi
 .venv/bin/python -m pip --version >/dev/null 2>&1 || .venv/bin/python -m ensurepip --upgrade
-.venv/bin/python -m pip install -r requirements.txt
+# shellcheck disable=SC2046
+.venv/bin/python -m pip install $(.venv/bin/python deploy/requirements.py)
 
 if [ ! -f .env ]; then
     cp .env.example .env

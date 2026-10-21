@@ -51,7 +51,8 @@ cd "$BRIDGE_HOME"
 [ -x .venv/bin/python ] || "$PYTHON" -m venv .venv
 # a venv made by uv has no pip; deploy/self-update.sh needs it
 .venv/bin/python -m pip --version >/dev/null 2>&1 || .venv/bin/python -m ensurepip --upgrade
-.venv/bin/python -m pip install -r requirements.txt
+# shellcheck disable=SC2046
+.venv/bin/python -m pip install $(.venv/bin/python deploy/requirements.py)
 
 [ -f .env ] || cp .env.example .env
 set_env_value() {

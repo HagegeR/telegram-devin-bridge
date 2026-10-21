@@ -1,7 +1,0 @@
-pytest
-pytest-asyncio
-pytest-timeout
-pytest-cov
-anyio
-ruff
-prek

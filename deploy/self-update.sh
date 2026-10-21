@@ -124,16 +124,19 @@ git reset -q --hard
 git checkout -q -f --detach "$REMOTE"
 [ "$(git rev-parse HEAD)" = "$REMOTE" ] || { echo "checkout failed"; exit 1; }
 if [ -z "$PREV" ] || ! git cat-file -e "$PREV^{commit}" 2>/dev/null; then
-  "$VENV_BIN/pip" install -q -r requirements.txt
-elif ! git diff --quiet "$PREV" "$REMOTE" -- requirements.txt; then
-  "$VENV_BIN/pip" install -q -r requirements.txt
+  # shellcheck disable=SC2046
+  "$VENV_BIN/pip" install -q $("$VENV_BIN/python" deploy/requirements.py)
+elif ! git diff --quiet "$PREV" "$REMOTE" -- pyproject.toml; then
+  # shellcheck disable=SC2046
+  "$VENV_BIN/pip" install -q $("$VENV_BIN/python" deploy/requirements.py)
 fi
-if [ -f requirements-transcription.txt ] \
+if [ -f pyproject.toml ] \
   && "$VENV_BIN/python" -c "import faster_whisper" >/dev/null 2>&1 \
   && [ -n "$PREV" ] \
   && git cat-file -e "$PREV^{commit}" 2>/dev/null \
-  && ! git diff --quiet "$PREV" "$REMOTE" -- requirements-transcription.txt; then
-  "$VENV_BIN/pip" install -q -r requirements-transcription.txt
+  && ! git diff --quiet "$PREV" "$REMOTE" -- pyproject.toml; then
+  # shellcheck disable=SC2046
+  "$VENV_BIN/pip" install -q $("$VENV_BIN/python" deploy/requirements.py transcription)
 fi
 # the local backend runs `devin acp` — keep the CLI itself current on the
 # same cadence. Best-effort: a missing, failing or slow `devin update`
