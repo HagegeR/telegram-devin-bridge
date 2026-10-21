@@ -43,13 +43,16 @@ and deployment update channels.
 ### Changed
 
 - Busy local sessions now queue ordinary text messages (🤔, flushed in
-  order on turn end) instead of injecting them mid-turn as steers.
-  `/`-prefixed messages still steer, so `/goal pause|resume|clear` and
-  `/steer` reach a running turn.
+  order on turn end) instead of injecting them mid-turn as steers —
+  including turns that outlive their watcher, which are detected from
+  the local session's in-flight state. `/`-prefixed messages still
+  steer, so `/goal pause|resume|clear` and `/steer` reach a running
+  turn.
 - A `session/prompt` failure with code `-32010` (free model rate limit)
   now attaches `Wait until <reset> UTC and retry | Switch to a different
   model` option buttons instead of leaving the user to retype the
-  recovery.
+  recovery. The failed prompt is stashed: *wait* resends it at the reset
+  time, *switch* opens the model picker and resends on the pick.
 - A stored `model`/`thought_level` the CLI no longer accepts (a model or
   CLI update removed the value) no longer fails session apply with
   `Invalid params` — `_set_config` substitutes the CLI's own default and

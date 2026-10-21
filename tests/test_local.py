@@ -1150,6 +1150,21 @@ async def test_rate_limit_prompt_error_offers_options(
     assert "-32010" in failure
     assert "OPTIONS: Wait until 21:04 UTC and retry" in failure
     assert "Switch to a different model" in failure
+    # the failed prompt is stashed so a button tap can act on it — the
+    # generic option path would otherwise send the label as a new turn
+    assert sess.rate_limit is not None and sess.rate_limit[0] == "hello"
+    choice = shell_client.rate_limit_choice(
+        session_id, "Switch to a different model"
+    )
+    assert choice is not None and choice[0] == "switch"
+    assert shell_client.rate_limit_choice(session_id, "unrelated") is None
+    picked = shell_client.rate_limit_choice(
+        session_id, "Wait until 21:04 UTC and retry"
+    )
+    assert picked is not None
+    assert picked[0] == "wait" and picked[1] == "hello"
+    assert picked[2] is not None and picked[2] > time.time() + 15 * 60
+    assert shell_client.pop_rate_limit_retry(session_id) is None
 
 
 @pytest.mark.asyncio

@@ -245,8 +245,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     any other error, and a prompt that overtakes it during the backoff
     simply lands first as a steer. A `session/prompt` error with code
     `-32010` (free model rate limit) attaches `OPTIONS:` wait/switch
-    buttons — `Wait until <reset> UTC and retry` parsed from the CLI's
-    reset hint, or `Switch to a different model`. Requests issued to a dead process
+    buttons and stashes the failed prompt (`sess.rate_limit`): `Wait
+    until <reset> UTC and retry` schedules a resend at the reset time,
+    `Switch to a different model` opens the model menu and resends once
+    the user picks. Requests issued to a dead process
     fail fast instead of waiting on a reply that can't arrive. A resume
     that runs before its conversation is active (`/resume` of a history
     entry) applies the chat config on the first prompt instead. A wedge
@@ -375,7 +377,10 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     (`telegram_queue_while_busy`) therefore applies to local
     conversations only for ordinary text — it queues (🤔) and flushes in
     order like cloud sessions — while `/`-prefixed messages bypass it
-    and still steer mid-turn, keeping goal controls reachable. Whether a prompt steers or owns the run is
+    and still steer mid-turn, keeping goal controls reachable. For local
+    conversations the busy check also reads the session's own turn
+    state (`inflight`/`pending_prompt`), so a turn that outlived its
+    watcher still queues and its settle hook drains the backlog. Whether a prompt steers or owns the run is
     decided on live request count (`sess.inflight`), not on the tail
     task — a quick steer can finish while an earlier goal request is
     still open, and deciding on `tail.done()` made the next prompt reset
