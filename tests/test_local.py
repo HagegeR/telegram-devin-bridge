@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 
 from app.local import (
+    _ACP_MAX_LINE,
     LocalClient,
     _AcpSession,
     _clean_reason,
@@ -870,6 +871,38 @@ def test_deny_permission_without_reject_option_cancels(tmp_path: Path) -> None:
     written = json.loads(proc.stdin.readline())
     assert written["id"] == 7
     assert written["result"]["outcome"] == {"outcome": "cancelled"}
+
+
+@pytest.mark.asyncio
+async def test_reader_drops_oversized_line_and_settles_pending(
+    tmp_path: Path,
+) -> None:
+    # a >16MB acp line must not kill the reader: it is dropped, the
+    # pending request it answered settles with an error instead of
+    # hanging its turn, and the next well-formed line still parses
+    client = LocalClient(cli_command="devin", cwd=str(tmp_path))
+    sess = _AcpSession(proc=None, acp_id="x")  # type: ignore[arg-type]
+    stream = asyncio.StreamReader()
+    oversized = (
+        b'{"id": 7, "result": "' + b"x" * (_ACP_MAX_LINE + 1) + b'"}'
+    )
+    stream.feed_data(oversized + b"\n")
+    stream.feed_data(b'{"id": 9, "result": {"ok": true}}\n')
+    stream.feed_eof()
+    sess.proc = type("P", (), {"stdout": stream, "stderr": None})()  # type: ignore[assignment]
+    loop = asyncio.get_running_loop()
+    pending_seven = loop.create_future()
+    pending_nine = loop.create_future()
+    sess.pending[7] = pending_seven
+    sess.pending[9] = pending_nine
+    await client._reader(sess)
+    assert sess.dead
+    assert 7 not in sess.pending
+    with pytest.raises(RuntimeError, match="line limit"):
+        pending_seven.result()
+    # the small line after the giant one still reached its waiter
+    assert pending_nine.done()
+    assert pending_nine.result()["id"] == 9
 
 
 def test_mid_turn_mode_switch_fires_hook_once(tmp_path: Path) -> None:

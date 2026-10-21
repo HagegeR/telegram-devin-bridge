@@ -1827,7 +1827,7 @@ class LocalClient:
 
     async def _reader(self, sess: _AcpSession) -> None:
         assert sess.proc.stdout is not None
-        buf = b""
+        buf = bytearray()
         while True:
             chunk = await sess.proc.stdout.read(_STREAM_CHUNK)
             if not chunk:
@@ -1835,7 +1835,8 @@ class LocalClient:
             sess.last_activity = time.monotonic()
             buf += chunk
             while b"\n" in buf:
-                raw, buf = buf.split(b"\n", 1)
+                raw, rest = buf.split(b"\n", 1)
+                buf = rest
                 if not raw:
                     continue
                 if len(raw) > _ACP_MAX_LINE:
@@ -1850,12 +1851,12 @@ class LocalClient:
                 except (KeyError, IndexError, TypeError):
                     # a malformed update must not kill the reader — its
                     # pending turns would otherwise hang forever
-                    logger.warning("bad acp update skipped: %.200s", raw)
+                    logger.warning("bad acp update skipped: %.200s", bytes(raw))
             if len(buf) > _ACP_MAX_LINE:
                 # an unterminated oversized line: drop it chunk-by-chunk
                 # so memory and downstream scrub cost stay bounded
                 self._drop_line(sess, buf)
-                buf = b""
+                buf = bytearray()
         sess.dead = True
         # stdout can close before stderr finishes draining — give the
         # drain a moment so the tail is complete for the detail and the

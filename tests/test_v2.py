@@ -24,6 +24,7 @@ from app.clients import (
     MAX_ACU_LIMIT,
     DevinClient,
     DevinMessage,
+    Playbook,
     SessionState,
     TelegramClient,
 )
@@ -703,6 +704,127 @@ async def test_session_options_commands_round_trip(tmp_path: Path) -> None:
     assert current.acu_limit is None
     assert current.tags is None
     await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_playbook_command_lists_and_launches(tmp_path: Path) -> None:
+    # /playbook lists numbered titles, validates the pick, and hands the
+    # chosen playbook_id to create_session with the prompt
+    devin = _FakeDevin()
+    # a "working" watcher would spin for the whole test — close it fast
+    devin.get_session = lambda *_a, **_k: _async(  # type: ignore[method-assign]
+        SessionState("blocked", "t", None, [])
+    )
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), Store(":memory:"), devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/playbook"), "/playbook")
+    assert "No playbooks" in telegram.sent[-1]["text"]
+
+    async def two_playbooks() -> list[Playbook]:
+        return [Playbook("pb-1", "Deploy"), Playbook("pb-2", "Migrate")]
+
+    devin.list_playbooks = two_playbooks  # type: ignore[method-assign]
+    await handle_command(runtime, message("/playbook"), "/playbook")
+    listing = telegram.sent[-1]["text"]
+    assert "1. Deploy" in listing and "2. Migrate" in listing
+    await handle_command(runtime, message("/playbook 9"), "/playbook 9")
+    assert "not found" in telegram.sent[-1]["text"]
+    await handle_command(runtime, message("/playbook nope"), "/playbook nope")
+    assert "Usage" in telegram.sent[-1]["text"]
+    await handle_command(
+        runtime, message("/playbook 1 ship it"), "/playbook 1 ship it"
+    )
+    assert devin.created_playbooks == ["pb-1"]
+    assert devin.created_titles == ["Deploy"]
+    assert "ship it" in devin.created[-1]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_revoke_command(tmp_path: Path) -> None:
+    # /revoke is admin-only: strangers get silence, admins get a parse
+    # check, and a valid id drops both the live approval and the stored
+    # request
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    config = settings(
+        tmp_path,
+        telegram_allowed_users="900",
+        telegram_admin_user_ids="900",
+    )
+    runtime = Bridge(config, store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    store.save_access_request(333, "bob", "Bob")
+    store.decide_access_request(333, "approved", 900)
+    runtime.approved_users.add(333)
+
+    await handle_command(runtime, message("/revoke 333", user_id=111), "/revoke 333")
+    assert telegram.sent == []
+    await handle_command(runtime, message("/revoke nope", user_id=900), "/revoke nope")
+    assert "Usage" in telegram.sent[-1]["text"]
+    await handle_command(runtime, message("/revoke 333", user_id=900), "/revoke 333")
+    assert telegram.sent[-1]["text"] == "Revoked access for 333."
+    assert 333 not in runtime.approved_users
+    denied = store.list_access_requests("denied")
+    assert [r.user_id for r in denied] == [333]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_retry_command(tmp_path: Path) -> None:
+    # /retry resends the last user text on the active session — and, like
+    # every local-session control, is admin-gated on /platform local
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    store.update_conversation("222", "s1", last_user_text="again")
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    devin.get_session = lambda *_a, **_k: _async(  # type: ignore[method-assign]
+        SessionState("blocked", "t", None, [])
+    )
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await handle_command(runtime, message("/retry"), "/retry")
+    for _ in range(50):
+        if ("s1", "again") in devin.sent:
+            break
+        await asyncio.sleep(0.02)
+    assert ("s1", "again") in devin.sent
+    await runtime.shutdown()
+
+    lonely_telegram = _FakeTelegram()
+    lonely = Bridge(
+        settings(tmp_path), Store(":memory:"), _FakeDevin(), lonely_telegram  # type: ignore[arg-type]
+    )
+    await handle_command(lonely, message("/retry"), "/retry")
+    assert "Nothing to retry" in lonely_telegram.sent[-1]["text"]
+    await lonely.shutdown()
+
+    local_store = Store(":memory:")
+    local_store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x",
+        title="t",
+    )
+    local_store.update_conversation("222", "local:x", last_user_text="again")
+    local_telegram = _FakeTelegram()
+    local_runtime = Bridge(
+        settings(tmp_path, telegram_admin_user_ids="900"),
+        local_store,
+        _FakeDevin(),
+        local_telegram,  # type: ignore[arg-type]
+    )
+    await handle_command(local_runtime, message("/retry", user_id=111), "/retry")
+    assert "admins only" in local_telegram.sent[-1]["text"]
+    await local_runtime.shutdown()
 
 
 @pytest.mark.asyncio

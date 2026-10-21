@@ -71,6 +71,11 @@ and deployment update channels.
 
 ### Fixed
 
+- The ACP stdout reader no longer stalls tens of seconds on a single
+  multi-MB line: the line buffer accumulated with `buf += chunk` on
+  `bytes` (quadratic recopying — ~50s for a 16MB line) before the 16MB
+  drop check could run. The buffer is now a `bytearray` with amortized
+  appends, so oversized lines drop in milliseconds.
 - Local sessions: two more gaps in the busy queue closed. A turn still
   chained behind `tail` (chained prompts whose `inflight`/`pending_prompt`
   markers already cleared when the owner settled) no longer reads as idle
