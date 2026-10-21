@@ -982,6 +982,29 @@ async def test_pending_prompt_hook_tracks_turn(shell_client: LocalClient) -> Non
 
 
 @pytest.mark.asyncio
+async def test_prompt_state_reannounces_after_final_turn_count_drops(
+    shell_client: LocalClient,
+) -> None:
+    # the settle hook runs while the turn still counts in `turns`, so a
+    # queue drain scheduled from it sees running=True and exits — the
+    # done callback must re-announce the settled state after the
+    # decrement or a watcherless backlog stays queued
+    snapshots: list[tuple[str | None, int]] = []
+
+    def record(session_id: str, prompt: str | None) -> None:
+        snapshots.append((prompt, shell_client.sessions[session_id].turns))
+
+    shell_client.on_prompt_state = record
+    session_id, _ = await shell_client.create_session("hello")
+    await _wait_for(shell_client, session_id, "echo: hello")
+    for _ in range(50):
+        if snapshots and snapshots[-1] == (None, 0):
+            break
+        await asyncio.sleep(0.1)
+    assert snapshots[-1] == (None, 0)
+
+
+@pytest.mark.asyncio
 async def test_pending_prompt_survives_turn_cancellation(
     shell_client: LocalClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

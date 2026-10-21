@@ -1102,6 +1102,13 @@ class LocalClient:
             # clear only once every in-flight turn has ended — a steered
             # turn finishing early must not unmark a replay still running
             sess.replay_turn = False
+            # the settle hook ran while this turn still counted, so a
+            # drain scheduled from it saw running=True and exited —
+            # re-announce the settled state now that the count reached
+            # zero or a watcherless backlog stays queued
+            self._prompt_state(
+                f"{LOCAL_PREFIX}{sess.acp_id}", sess.pending_prompt
+            )
         if suppress:
             if "".join(sess.buffer).strip():
                 logger.warning(
