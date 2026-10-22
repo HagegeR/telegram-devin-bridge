@@ -77,6 +77,15 @@ and deployment update channels.
 
 ### Fixed
 
+- Automatic self-updates no longer run the previous revision's
+  install/restart logic after a checkout that replaced the updater
+  itself: a running `self-update.sh` keeps reading the old inode, so a
+  deploy that changed install mechanics (the `requirements*.txt` →
+  `pyproject.toml` switch) failed one cycle before the next cron retry
+  self-healed. The script now re-execs the checked-out file after
+  checkout, so post-checkout steps always run the new revision's text.
+  The update lock stays held through the re-exec — a racing `--check`
+  can't win a release gap and leave the checkout uninstalled.
 - The ACP stdout reader no longer stalls tens of seconds on a single
   multi-MB line: the line buffer accumulated with `buf += chunk` on
   `bytes` (quadratic recopying — ~50s for a 16MB line) before the 16MB
