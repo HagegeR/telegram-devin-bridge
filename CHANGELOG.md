@@ -90,8 +90,9 @@ and deployment update channels.
   batch in the same flush made the session busy, instead of chaining
   invisibly into the running turn under a premature 👀.
 - Local sessions: picking "Yes, switch to bypass mode" (or any mid-turn
-  CLI mode switch) now persists as the conversation's mode, so a bridge
-  restart or session resume no longer reverts to asking for approvals.
+  CLI mode switch) now persists chat-wide like `/mode`, so a bridge
+  restart, session resume, or a session in a new topic no longer reverts
+  to asking for approvals.
 - Failed Telegram API calls used to log the bot token: httpx error
   messages embed the request URL, which carries `/bot<token>/`. The
   client now strips the token out of raised errors at the boundary —

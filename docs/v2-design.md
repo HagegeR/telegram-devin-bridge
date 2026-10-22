@@ -212,8 +212,8 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     only, and the replayed-history guard suppresses reply content only —
     control updates still apply. A mode change the CLI reports mid-turn
     (e.g. the "Yes, switch to bypass mode" permission option) is saved as
-    that conversation's `devin_mode` (`on_mode_change`), so the next resume
-    re-applies it. A stored `model`/`thought_level` value
+    the chat's `devin_mode` (`on_mode_change`, chat-wide like `/mode`), so
+    the next resume and every new session re-applies it. A stored `model`/`thought_level` value
     the CLI's advertised `configOptions` no longer contains (stale after
     a model or CLI update) is substituted with the CLI's reported
     `currentValue` default and a `⚠ … is not available` notice rather
