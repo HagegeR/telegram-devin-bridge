@@ -11884,6 +11884,15 @@ def test_prompt_state_hook_persists_and_resume_config_reads_settings(
     assert runtime._local_resume_config("local:x")["mode"] == "smart"  # type: ignore[index]
     assert store.get_settings("222").devin_mode == "smart"
     runtime._on_local_mode_change("local:missing", "smart")
+    # a legacy topic override equal to the reported mode must not mask a
+    # stale chat default — the write still lands chat-wide and clears it
+    store.update_settings("222:9", devin_mode="bypass")
+    runtime._on_local_mode_change("local:x", "bypass")
+    assert store.get_settings("222").devin_mode == "bypass"
+    row = store.connection.execute(
+        "SELECT devin_mode FROM conversation_settings WHERE conv_key = '222:9'"
+    ).fetchone()
+    assert row is not None and row["devin_mode"] is None
 
 
 def test_prompt_state_hook_sets_marker_before_conversation_is_saved(

@@ -449,10 +449,19 @@ class Bridge:
 
     def _on_local_mode_change(self, session_id: str, mode: str) -> None:
         conv = self.store.get_conversation_for_session(session_id)
-        if conv is not None and self.store.get_settings(conv.conv_key).devin_mode != mode:
-            # chat-wide like /mode — a topic-scoped write would make every
-            # session in a new topic re-prompt (e.g. "switch to bypass")
-            self.store.update_chat_settings(conv.conv_key, devin_mode=mode)
+        if conv is None:
+            return
+        # skip only when both views already agree: a legacy per-topic
+        # override equal to `mode` masks a stale chat default in the merged
+        # view (and vice versa). update_chat_settings writes chat-wide like
+        # /mode and clears the topic row's field.
+        if (
+            self.store.get_settings(conv.conv_key).devin_mode == mode
+            and self.store.get_settings(Store.settings_key(conv.conv_key)).devin_mode
+            == mode
+        ):
+            return
+        self.store.update_chat_settings(conv.conv_key, devin_mode=mode)
 
     def _local_resume_config(self, session_id: str) -> dict | None:
         conv = self.store.get_conversation_for_session(session_id)
