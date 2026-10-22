@@ -18,7 +18,17 @@
 set -eu
 cd "$(dirname "$0")/.."
 LOCK="${SELF_UPDATE_LOCK:-.self-update.lock}"
-if command -v flock >/dev/null 2>&1; then
+if [ -n "${_SELF_UPDATE_RESTARTED:-}" ]; then
+  # re-exec after checkout: the lock travels with this process — a held
+  # flock rides in on the inherited fd 9, and the mkdir lock's pid file
+  # still names us because exec keeps the pid. Skipping acquisition here
+  # means the lock is never released mid-update, so no other run can win
+  # it in a release/re-acquire gap. Traps reset on exec — re-arm the
+  # fallback lock's cleanup (the flock side needs nothing).
+  if ! command -v flock >/dev/null 2>&1; then
+    trap '[ "$(cat "$LOCK.d/pid" 2>/dev/null)" = "$$" ] && rm -f "$LOCK.d/pid" && rmdir "$LOCK.d" 2>/dev/null' EXIT
+  fi
+elif command -v flock >/dev/null 2>&1; then
   exec 9>"$LOCK"
   flock -n 9 || { echo "another update is running"; exit 0; }
 else
@@ -127,12 +137,12 @@ git checkout -q -f --detach "$REMOTE"
 # the old inode — every line from here on would be the OLD revision's
 # logic applied to the NEW tree (the requirements.txt -> pyproject.toml
 # switch broke an update exactly that way). Hand install + restart to the
-# new revision's own text; the update lock is released first because the
-# re-entry takes it again and the mkdir lock can't tell us from a stale
-# owner. _SELF_UPDATE_RESTARTED bounds this to a single re-exec.
+# new revision's own text. The update lock is kept through the exec —
+# flock stays held on inherited fd 9 and the mkdir lock's pid file still
+# names this pid — so a racing --check can't take it in a release gap and
+# strand the checkout uninstalled. Detached children spawned below close
+# fd 9 themselves (9>&-). _SELF_UPDATE_RESTARTED bounds to one re-exec.
 if [ -z "${_SELF_UPDATE_RESTARTED:-}" ]; then
-  exec 9>&- 2>/dev/null || true
-  rm -f "$LOCK.d/pid" 2>/dev/null && rmdir "$LOCK.d" 2>/dev/null || true
   _SELF_UPDATE_RESTARTED=1 _SELF_UPDATE_FROM="$LOCAL" \
     exec sh deploy/self-update.sh "$@"
 fi

@@ -295,8 +295,21 @@ def test_update_reexecs_post_checkout_script_text(deploy_clone, tmp_path: Path):
     git(clone, "add", "deploy/self-update.sh")
     git(clone, "commit", "-qm", "track updater")
     (work / "deploy").mkdir()
+    # the sentinel also proves the update lock stayed held across the
+    # re-exec (a --check winning a release gap would exit without
+    # installing) and that its stderr still reaches the caller — a
+    # persistent 2>/dev/null on the handoff exec used to swallow it
     (work / "deploy" / "self-update.sh").write_text(
-        "#!/bin/sh\necho new-revision-ran > .reexeced\n"
+        "#!/bin/sh\n"
+        "echo new-revision-ran > .reexeced\n"
+        "echo sentinel-err >&2\n"
+        "if command -v flock >/dev/null 2>&1; then\n"
+        "  flock -n .self-update.lock 2>/dev/null"
+        " && echo lock-free > .lockstate || echo lock-held > .lockstate\n"
+        "elif [ -f .self-update.lock.d/pid ]; then\n"
+        "  [ \"$(cat .self-update.lock.d/pid)\" = \"$$\" ]"
+        " && echo lock-held > .lockstate || echo lock-free > .lockstate\n"
+        "fi\n"
     )
     git(work, "add", "deploy/self-update.sh")
     git(work, "commit", "-qm", "replace updater")
@@ -312,7 +325,9 @@ def test_update_reexecs_post_checkout_script_text(deploy_clone, tmp_path: Path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "update available:" in result.stdout
+    assert "sentinel-err" in result.stderr
     assert (clone / ".reexeced").read_text() == "new-revision-ran\n"
+    assert (clone / ".lockstate").read_text() == "lock-held\n"
 
 
 def test_supervised_caller_gets_termed(deploy_clone, tmp_path: Path):

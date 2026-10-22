@@ -92,7 +92,10 @@ would execute the previous revision's logic against the new tree. The
 re-entered run reinstalls requirements when `pyproject.toml` changed and
 restarts the OpenRC/systemd service detached (or exits for a
 launchd/Windows supervisor to respawn). It uses `flock` when present and a
-`mkdir` lock otherwise.
+`mkdir` lock otherwise, and the lock stays held across the re-exec — the
+flock rides in on the inherited descriptor and the `mkdir` lock's pid file
+still names the process — so a racing `--check` can't win a release gap
+and leave the checkout uninstalled.
 The detached restart re-acquires the same lock before running, so
 concurrent updates (e.g. `/update` racing the cron pull) can't overlap
 stop+start pairs and spawn duplicate `supervise-daemon` processes; the
