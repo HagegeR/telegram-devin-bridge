@@ -450,7 +450,9 @@ class Bridge:
     def _on_local_mode_change(self, session_id: str, mode: str) -> None:
         conv = self.store.get_conversation_for_session(session_id)
         if conv is not None and self.store.get_settings(conv.conv_key).devin_mode != mode:
-            self.store.update_settings(conv.conv_key, devin_mode=mode)
+            # chat-wide like /mode — a topic-scoped write would make every
+            # session in a new topic re-prompt (e.g. "switch to bypass")
+            self.store.update_chat_settings(conv.conv_key, devin_mode=mode)
 
     def _local_resume_config(self, session_id: str) -> dict | None:
         conv = self.store.get_conversation_for_session(session_id)

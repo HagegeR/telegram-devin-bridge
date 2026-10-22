@@ -11878,10 +11878,11 @@ def test_prompt_state_hook_persists_and_resume_config_reads_settings(
     }
     # unknown sessions return None, not a crash
     assert runtime._local_resume_config("local:missing") is None
-    # a CLI-side mode switch persists for this topic only
+    # a CLI-side mode switch persists chat-wide like /mode — a topic-only
+    # write would re-prompt on every session in a new topic
     runtime._on_local_mode_change("local:x", "smart")
     assert runtime._local_resume_config("local:x")["mode"] == "smart"  # type: ignore[index]
-    assert store.get_settings("222").devin_mode == "bypass"
+    assert store.get_settings("222").devin_mode == "smart"
     runtime._on_local_mode_change("local:missing", "smart")
 
 
