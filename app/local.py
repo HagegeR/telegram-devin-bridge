@@ -153,10 +153,18 @@ class _AcpSession:
     # the running turn is a watchdog auto-retry — if it wedges too it is
     # left failed instead of looping; cleared when the turn ends
     replay_turn: bool = False
+    # the CLI is doing internal work no session/prompt covers: on-chain
+    # commands (/compact) return end_turn in ~ms then run for seconds,
+    # and background auto-compaction needs no prompt at all. Reported
+    # authoritatively via session_info_update _meta statusEnum and
+    # _cognition.ai/compaction notifications — trusting turns alone
+    # showed "waiting for your reply" while /compact got "agent is
+    # working"
+    cli_working: bool = False
 
     @property
     def running(self) -> bool:
-        return self.turns > 0
+        return self.turns > 0 or self.cli_working
 
 
 # detached sessions stay addressable for /resume, but bound them: each
@@ -961,7 +969,13 @@ class LocalClient:
                 # turn that wipes a still-running goal's buffer/marker
                 sess.activity = ""
                 sess.thought = ""
-                sess.buffer.clear()
+                if sess.cli_working:
+                    # internal-work output (e.g. "Context compacted")
+                    # sitting in the buffer is real user-visible text —
+                    # deliver it before the new turn resets the stream
+                    self._drain_buffer(sess)
+                else:
+                    sess.buffer.clear()
                 sess.replaying = False
                 # a new real turn makes any rate-limit stash stale — its
                 # buttons were already consumed or ignored
@@ -1051,7 +1065,7 @@ class LocalClient:
         try:
             while not sess.dead:
                 await asyncio.sleep(_FLUSH_INTERVAL)
-                if not sess.turns or sess.suppressed_inflight:
+                if not sess.running or sess.suppressed_inflight:
                     continue
                 raw = "".join(sess.buffer)
                 # emit whole paragraphs, not arbitrary line batches — every
@@ -1159,10 +1173,28 @@ class LocalClient:
             # is already in the shared buffer; the last live turn (or the
             # flusher) drains it so no paragraph is cut mid-run
             return
+        self._drain_buffer(sess)
+
+    def _drain_buffer(self, sess: _AcpSession) -> None:
         text = "".join(sess.buffer).strip()
         sess.buffer.clear()
         if text:
             self._emit(sess, text)
+
+    def _set_cli_working(self, sess: _AcpSession, working: bool) -> None:
+        if sess.cli_working == working:
+            return
+        sess.cli_working = working
+        if not working and not sess.turns:
+            # internal work ends without a turn settle — drain what it
+            # streamed (e.g. the "Context compacted" confirmation) here,
+            # the same way _turn_done does for prompt turns
+            self._drain_buffer(sess)
+            # internal work also has no settle hook — re-announce the
+            # settled state or messages queued while it ran stay parked
+            self._prompt_state(
+                f"{LOCAL_PREFIX}{sess.acp_id}", sess.pending_prompt
+            )
 
     def _emit(self, sess: _AcpSession, text: str) -> None:
         text = _split_runons(text)
@@ -1662,6 +1694,10 @@ class LocalClient:
             return existing
         acp_id = session_id.removeprefix(LOCAL_PREFIX)
         sess = await self._spawn()
+        # mark replaying before the load, not after: replays stream while
+        # the request is in flight too, and a replayed statusEnum must
+        # never set live busy state
+        sess.replaying = True
         try:
             loaded = await self._request(sess, "session/load", {
                 "sessionId": acp_id,
@@ -1684,7 +1720,6 @@ class LocalClient:
         for opt in loaded.get("configOptions", []):
             if isinstance(opt, dict) and opt.get("currentValue") is not None:
                 sess.config[str(opt["id"])] = str(opt["currentValue"])
-        sess.replaying = True
         # a replayed session_info_update may already have set the title —
         # keep it when session/list has none instead of clobbering to ""
         listed_title = await self._session_title(sess, acp_id)
@@ -1945,6 +1980,17 @@ class LocalClient:
                         sess.permissions.pop(req_id, None)
                         self._deny_permission(sess, req_id, msg)
             return
+        if msg.get("method") == "_cognition.ai/compaction":
+            # /compact's prompt returns end_turn while the CLI compacts
+            # asynchronously — this notification is the only signal the
+            # session is still busy (a second /compact is refused with
+            # "agent is working" until 'completed' lands)
+            params = msg.get("params") or {}
+            started = params.get("status") == "started"
+            if started:
+                sess.activity = "Compacting context"
+            self._set_cli_working(sess, started)
+            return
         if msg.get("method") != "session/update":
             return
         update = msg.get("params", {}).get("update", {})
@@ -1961,6 +2007,17 @@ class LocalClient:
         ):
             return
         if kind == "session_info_update":
+            meta = update.get("_meta")
+            if (
+                not sess.replaying
+                and isinstance(meta, dict)
+                and isinstance(meta.get("cognition.ai/statusEnum"), str)
+            ):
+                # the CLI's own idle/working signal — covers internal
+                # work no prompt tracks (auto-compaction, goal ticks)
+                self._set_cli_working(
+                    sess, meta["cognition.ai/statusEnum"] == "working"
+                )
             # the CLI first reports a provisional title — the prompt head
             # with whitespace collapsed, truncated to ~80 chars ending in
             # "..." — then a generated one; ignore the former (compare

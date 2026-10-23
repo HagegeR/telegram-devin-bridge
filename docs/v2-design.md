@@ -382,7 +382,19 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     state (`running`/`pending_prompt` — `running` covers a turn still
     chained behind `tail` whose `inflight`/prompt markers already
     cleared when the owner settled), so a turn that outlived its
-    watcher still queues and its settle hook drains the backlog. The
+    watcher still queues and its settle hook drains the backlog.
+    `running` also covers work the CLI does with no `session/prompt`
+    in flight: on-chain commands like `/compact` return `end_turn` in
+    milliseconds and then run inside the CLI, and background
+    auto-compaction needs no prompt at all. The session's
+    `cli_working` flag tracks the CLI's own signals for that
+    (`session_info_update` `_meta.cognition.ai/statusEnum` and the
+    `_cognition.ai/compaction` `started`/`completed` notification), so
+    status shows `working` instead of "waiting for your reply" while
+    the CLI refuses further commands as busy; streamed output from
+    that work (e.g. `Context compacted`) flushes when it ends, and
+    ending it re-announces the settled prompt state so the busy queue
+    drains. The
     same busy check gates every batch mid-flush: turns that can't
     coalesce (e.g. attachment-bearing sends) re-queue 🤔 behind a turn
     the same flush just started instead of chaining invisibly into it. Whether a prompt steers or owns the run is
