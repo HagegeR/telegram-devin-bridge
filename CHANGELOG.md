@@ -42,6 +42,12 @@ and deployment update channels.
 
 ### Changed
 
+- A finished turn now marks every feeding message 👍 — the lifecycle
+  🫡 received → 👀 agent has it → 👍 done was missing its last step, so
+  a completed turn kept reading as "still being looked at". Recovery
+  watchers closing an already-terminal turn still mark nothing (the 👍
+  only lands on a turn the watch actually saw run), and 👎 stays the
+  failure/expiry mark.
 - Busy local sessions now queue ordinary text messages (🤔, flushed in
   order on turn end) instead of injecting them mid-turn as steers —
   including turns that outlive their watcher, which are detected from

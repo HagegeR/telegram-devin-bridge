@@ -176,8 +176,15 @@ class SessionWatcher:
         message_ids: list[int] | None = None,
     ) -> None:
         self.trigger_message_id = message_id
-        self.turn_message_ids = (
-            list(message_ids) if message_ids else [message_id]
+        # a later turn reusing this watcher adds its mids — replacing them
+        # would leave the earlier turn's messages without a finish mark
+        self.turn_message_ids = list(
+            dict.fromkeys(
+                [
+                    *self.turn_message_ids,
+                    *(message_ids if message_ids else [message_id]),
+                ]
+            )
         )
         self.store.set_setting(
             f"turn_mids:{self.conversation.conv_key}",
@@ -1245,25 +1252,33 @@ class SessionWatcher:
         if self.generation != gen:
             return
         self._closed_gen = gen
-        await self._finish_reaction(mids, expired=status == "expired")
+        await self._finish_reaction(
+            mids, expired=status == "expired", fresh=fresh
+        )
         # the turn is terminal — keep no batch ids around for a later
         # unrelated expiry to mark
         self.store.delete_setting(
             f"turn_mids:{self.conversation.conv_key}"
         )
 
-    async def _finish_reaction(self, mids: list[int], *, expired: bool) -> None:
+    async def _finish_reaction(
+        self, mids: list[int], *, expired: bool, fresh: bool = True
+    ) -> None:
         # The completion mark is a status signal, not a duplicate: a REACT:
         # ack earlier in the turn must not suppress the end-of-turn mark.
-        # 🫡 already landed at bridge receipt — only an
-        # expired/failed turn still needs a mark.
-        if not expired:
+        # 👍 closes the lifecycle (🫡 received → 👀 agent has it → 👍 done) —
+        # without it a finished turn reads as "still being looked at". A
+        # stale close (recovery watcher on an already-terminal session)
+        # delivers and moves nothing — marking 👍 there would stamp a
+        # success signal on a turn this watch did not run.
+        if not expired and not fresh:
             return
+        mark = "👎" if expired else "👍"
         for mid in mids:
             await self.telegram.react(
                 self.conversation.chat_id,
                 mid,
-                "👎",
+                mark,
             )
 
     @staticmethod
