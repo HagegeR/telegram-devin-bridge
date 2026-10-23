@@ -27,6 +27,12 @@ PYTHONPATH=. .venv/bin/pytest -q      # ~75s, ~375 tests, httpx.MockTransport �
 .venv/bin/prek install                # git hooks (once per clone); `prek run --all-files` on demand
 ```
 
+## Agent skills
+
+`.agents/skills/` is for bridge-specific workflows (e.g. the `testing-*`
+skills). Third-party/general-purpose skills are installed per-host at
+`~/.agents/skills/<name>` — do not vendor upstream copies into this repo.
+
 ## Module map (app/)
 
 - `clients.py` — `DevinClient` (v3 API; `devin.py` re-exports it) +
