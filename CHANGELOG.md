@@ -88,6 +88,10 @@ and deployment update channels.
   `_cognition.ai/compaction` `started`/`completed` notification), and
   output streamed by that internal work (e.g. `Context compacted`)
   delivers when it finishes instead of leaking into the next turn.
+  Internal work ending also re-announces the settled state so 🤔-queued
+  messages drain, replayed history on `session/load` can't set a stale
+  busy flag, and a new prompt mid-work delivers buffered output instead
+  of clearing it.
 - Automatic self-updates no longer run the previous revision's
   install/restart logic after a checkout that replaced the updater
   itself: a running `self-update.sh` keeps reading the old inode, so a

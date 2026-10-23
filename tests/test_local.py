@@ -945,6 +945,9 @@ def test_cli_internal_work_marks_session_running(tmp_path: Path) -> None:
     def update(**u: object) -> None:
         notify("session/update", {"update": u})
 
+    states: list[tuple[str, str | None]] = []
+    client.on_prompt_state = lambda sid, prompt: states.append((sid, prompt))
+
     assert not sess.running
     notify("_cognition.ai/compaction", {"status": "started"})
     assert sess.running
@@ -959,6 +962,9 @@ def test_cli_internal_work_marks_session_running(tmp_path: Path) -> None:
     notify("_cognition.ai/compaction", {"status": "completed"})
     assert not sess.running
     assert [m.message for m in sess.events] == ["Context compacted"]
+    # settling re-announces prompt state — the busy-queue drain rides it,
+    # or messages queued during the work stay parked
+    assert states == [("local:x", None)]
 
 
 def test_status_enum_update_tracks_cli_busy(tmp_path: Path) -> None:
@@ -982,6 +988,29 @@ def test_status_enum_update_tracks_cli_busy(tmp_path: Path) -> None:
     sess.replaying = True
     status("working")
     assert not sess.running
+
+
+@pytest.mark.asyncio
+async def test_prompt_during_cli_work_delivers_buffered_output(
+    shell_client: LocalClient,
+) -> None:
+    # slash commands bypass the busy queue — a prompt landing while
+    # internal work streams must deliver that output, not clear it with
+    # the new turn's buffer reset
+    session_id, _ = await shell_client.create_session("first")
+    await _wait_for(shell_client, session_id, "echo: first")
+    sess = shell_client.sessions[session_id]
+    shell_client._handle(sess, {
+        "method": "_cognition.ai/compaction",
+        "params": {"status": "started"},
+    })
+    shell_client._handle(sess, {"method": "session/update", "params": {
+        "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "Context compacted"},
+        }}})
+    await shell_client.send_message(session_id, "/fast")
+    await _wait_for(shell_client, session_id, "Context compacted")
 
 
 def test_save_attachment_writes_on_host(tmp_path: Path) -> None:

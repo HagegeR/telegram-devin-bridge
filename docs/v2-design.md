@@ -392,7 +392,9 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     `_cognition.ai/compaction` `started`/`completed` notification), so
     status shows `working` instead of "waiting for your reply" while
     the CLI refuses further commands as busy; streamed output from
-    that work (e.g. `Context compacted`) flushes when it ends. The
+    that work (e.g. `Context compacted`) flushes when it ends, and
+    ending it re-announces the settled prompt state so the busy queue
+    drains. The
     same busy check gates every batch mid-flush: turns that can't
     coalesce (e.g. attachment-bearing sends) re-queue 🤔 behind a turn
     the same flush just started instead of chaining invisibly into it. Whether a prompt steers or owns the run is

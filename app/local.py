@@ -969,7 +969,13 @@ class LocalClient:
                 # turn that wipes a still-running goal's buffer/marker
                 sess.activity = ""
                 sess.thought = ""
-                sess.buffer.clear()
+                if sess.cli_working:
+                    # internal-work output (e.g. "Context compacted")
+                    # sitting in the buffer is real user-visible text —
+                    # deliver it before the new turn resets the stream
+                    self._drain_buffer(sess)
+                else:
+                    sess.buffer.clear()
                 sess.replaying = False
                 # a new real turn makes any rate-limit stash stale — its
                 # buttons were already consumed or ignored
@@ -1184,6 +1190,11 @@ class LocalClient:
             # streamed (e.g. the "Context compacted" confirmation) here,
             # the same way _turn_done does for prompt turns
             self._drain_buffer(sess)
+            # internal work also has no settle hook — re-announce the
+            # settled state or messages queued while it ran stay parked
+            self._prompt_state(
+                f"{LOCAL_PREFIX}{sess.acp_id}", sess.pending_prompt
+            )
 
     def _emit(self, sess: _AcpSession, text: str) -> None:
         text = _split_runons(text)
@@ -1683,6 +1694,10 @@ class LocalClient:
             return existing
         acp_id = session_id.removeprefix(LOCAL_PREFIX)
         sess = await self._spawn()
+        # mark replaying before the load, not after: replays stream while
+        # the request is in flight too, and a replayed statusEnum must
+        # never set live busy state
+        sess.replaying = True
         try:
             loaded = await self._request(sess, "session/load", {
                 "sessionId": acp_id,
@@ -1705,7 +1720,6 @@ class LocalClient:
         for opt in loaded.get("configOptions", []):
             if isinstance(opt, dict) and opt.get("currentValue") is not None:
                 sess.config[str(opt["id"])] = str(opt["currentValue"])
-        sess.replaying = True
         # a replayed session_info_update may already have set the title —
         # keep it when session/list has none instead of clobbering to ""
         listed_title = await self._session_title(sess, acp_id)
