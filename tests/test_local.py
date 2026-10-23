@@ -931,6 +931,59 @@ def test_mid_turn_mode_switch_fires_hook_once(tmp_path: Path) -> None:
     assert sess.config["mode"] == "bypass"
 
 
+def test_cli_internal_work_marks_session_running(tmp_path: Path) -> None:
+    # /compact's prompt returns end_turn while the CLI compacts — the
+    # session must stay "working" until the completion notification
+    # lands, or status lies ("waiting for your reply" while the CLI
+    # refuses a second /compact with "agent is working")
+    sess = _AcpSession(proc=None, acp_id="x")  # type: ignore[arg-type]
+    client = LocalClient(cli_command="devin", cwd=str(tmp_path))
+
+    def notify(method: str, params: dict) -> None:
+        client._handle(sess, {"method": method, "params": params})
+
+    def update(**u: object) -> None:
+        notify("session/update", {"update": u})
+
+    assert not sess.running
+    notify("_cognition.ai/compaction", {"status": "started"})
+    assert sess.running
+    assert sess.activity == "Compacting context"
+    # the "Context compacted" confirmation streams as ordinary chunks —
+    # completing the work must drain them instead of leaking them into
+    # the next turn's reply
+    update(
+        sessionUpdate="agent_message_chunk",
+        content={"type": "text", "text": "Context compacted"},
+    )
+    notify("_cognition.ai/compaction", {"status": "completed"})
+    assert not sess.running
+    assert [m.message for m in sess.events] == ["Context compacted"]
+
+
+def test_status_enum_update_tracks_cli_busy(tmp_path: Path) -> None:
+    # session_info_update _meta carries the CLI's own status — the only
+    # signal for internal work no prompt covers (auto-compaction, goal
+    # ticks). Replayed loads must not apply it (history is stale).
+    sess = _AcpSession(proc=None, acp_id="x")  # type: ignore[arg-type]
+    client = LocalClient(cli_command="devin", cwd=str(tmp_path))
+
+    def status(enum: str) -> None:
+        client._handle(sess, {"method": "session/update", "params": {
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": {"cognition.ai/statusEnum": enum},
+            }}})
+
+    status("working")
+    assert sess.running
+    status("blocked")
+    assert not sess.running
+    sess.replaying = True
+    status("working")
+    assert not sess.running
+
+
 def test_save_attachment_writes_on_host(tmp_path: Path) -> None:
     client = LocalClient(cli_command="devin", cwd=str(tmp_path))
     dest = client.save_attachment("my file!.txt", b"data")

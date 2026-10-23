@@ -77,6 +77,17 @@ and deployment update channels.
 
 ### Fixed
 
+- Local sessions no longer report "waiting for your reply" while the
+  CLI is still busy internally: on-chain slash commands such as
+  `/compact` return `end_turn` in milliseconds and then run inside the
+  CLI, and background auto-compaction needs no prompt at all — so a
+  `/compact` issued right after looked idle in `/status` yet was
+  refused with "Cannot compact while the agent is working." The
+  session's busy state now also tracks the CLI's own signals
+  (`session_info_update` `_meta.cognition.ai/statusEnum` and the
+  `_cognition.ai/compaction` `started`/`completed` notification), and
+  output streamed by that internal work (e.g. `Context compacted`)
+  delivers when it finishes instead of leaking into the next turn.
 - Automatic self-updates no longer run the previous revision's
   install/restart logic after a checkout that replaced the updater
   itself: a running `self-update.sh` keeps reading the old inode, so a
