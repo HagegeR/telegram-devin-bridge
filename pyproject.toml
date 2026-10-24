@@ -4,10 +4,10 @@ version = "0.0.0"
 description = "Telegram chat <-> Devin sessions bridge"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.143.0",
+    "fastapi==0.153.0",
     "httpx==0.28.1",
     "Pillow==13.0.0",
-    "pydantic-settings==2.15.0",
+    "pydantic-settings==2.16.1",
     "uvicorn[standard]==0.54.0",
 ]
 
