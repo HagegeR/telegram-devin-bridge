@@ -5350,6 +5350,112 @@ async def test_watcher_generation_change_uses_new_reply_anchor(
 
 
 @pytest.mark.asyncio
+async def test_stale_reply_does_not_earn_finish_mark(tmp_path: Path) -> None:
+    # A reply predating the armed trigger is delivered but never counts as
+    # this turn's evidence — the session stayed blocked the whole watch,
+    # so the prompt's message keeps 👀 instead of a false 👍.
+    class StaleDevin:
+        v3_enabled = False
+        calls = 0
+
+        async def get_session(
+            self, _: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            self.calls += 1
+            messages = (
+                [DevinMessage("devin_message", "e1", "old reply", "900000")]
+                if self.calls == 1
+                else []
+            )
+            return SessionState("blocked", "title", None, messages)
+
+        async def download_attachment(self, _url: str) -> tuple[bytes, str] | None:
+            return None
+
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += max(seconds, 1.0)
+
+    telegram = _FakeTelegram()
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+        last_event_id="e0",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    await SessionWatcher(
+        conversation,
+        store,
+        StaleDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(
+            tmp_path,
+            devin_poll_seconds=1,
+            devin_watch_timeout_seconds=60,
+            devin_settle_seconds=2,
+        ),
+        clock=clock,
+        sleep=sleep,
+        trigger_message_id=9,
+        trigger_at=1_000_000.0,
+    ).run()
+    assert telegram.reactions == []
+
+
+@pytest.mark.asyncio
+async def test_finish_mark_preserves_newly_armed_turn_mids(
+    tmp_path: Path,
+) -> None:
+    # set_trigger during the mark await owns turn_mids — the close must
+    # not delete a newer generation's persisted ids.
+    watcher: SessionWatcher
+
+    class ReactThenTriggerTelegram(_FakeTelegram):
+        async def react(
+            self, chat_id: int, message_id: int | None, emoji: str | None
+        ) -> bool:
+            watcher.set_trigger(8)
+            return await super().react(chat_id, message_id, emoji)
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = ReactThenTriggerTelegram()
+    watcher = SessionWatcher(
+        conversation,
+        store,
+        _FakeDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        trigger_message_id=7,
+    )
+    watcher.delivered = True
+    await watcher._close_turn(
+        "blocked", gen=watcher.generation, mids=[7]
+    )
+    assert store.get_setting("turn_mids:222") == "7,8"
+
+
+@pytest.mark.asyncio
 async def test_watcher_status_and_cleanup(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
