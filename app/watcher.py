@@ -161,6 +161,10 @@ class SessionWatcher:
         self.first_status: str | None = None
         self._closed_gen = -1
         self.delivered = False
+        # completion-mark evidence for the armed trigger: the session was
+        # observed ACTIVE while this trigger was armed. Reset by
+        # set_trigger — a prior turn's work must not complete the new one.
+        self._saw_active = False
         self.draft_used = False
         self.progress_message_id: int | None = None
         self.last_status: str | None = None
@@ -176,8 +180,15 @@ class SessionWatcher:
         message_ids: list[int] | None = None,
     ) -> None:
         self.trigger_message_id = message_id
-        self.turn_message_ids = (
-            list(message_ids) if message_ids else [message_id]
+        # a later turn reusing this watcher adds its mids — replacing them
+        # would leave the earlier turn's messages without a finish mark
+        self.turn_message_ids = list(
+            dict.fromkeys(
+                [
+                    *self.turn_message_ids,
+                    *(message_ids if message_ids else [message_id]),
+                ]
+            )
         )
         self.store.set_setting(
             f"turn_mids:{self.conversation.conv_key}",
@@ -189,6 +200,7 @@ class SessionWatcher:
             else None
         )
         self.delivered = False
+        self._saw_active = False
         self.started_at = self.clock()
         self.generation += 1
 
@@ -291,6 +303,8 @@ class SessionWatcher:
                     self.last_status = state.status_enum
                     if self.first_status is None:
                         self.first_status = state.status_enum
+                    if state.status_enum in ACTIVE_STATUSES:
+                        self._saw_active = True
                     if first_poll or new_messages or status_changed:
                         interval = min(
                             max(self.settings.devin_poll_fast_seconds, 0.5),
@@ -1245,25 +1259,42 @@ class SessionWatcher:
         if self.generation != gen:
             return
         self._closed_gen = gen
-        await self._finish_reaction(mids, expired=status == "expired")
+        # the mark needs evidence THIS trigger ran: a reply attributed to
+        # it (stale backlog replies don't count) or the session seen
+        # working while it was armed — watch-lifetime counters would let
+        # an earlier turn's activity complete the new message.
+        turn_fresh = self.delivered or self._saw_active
+        await self._finish_reaction(
+            mids, expired=status == "expired", fresh=turn_fresh
+        )
+        # a trigger armed during the mark await owns the persisted mids
+        # now — deleting them would strand its finish marks on a restart
+        if self.generation != gen:
+            return
         # the turn is terminal — keep no batch ids around for a later
         # unrelated expiry to mark
         self.store.delete_setting(
             f"turn_mids:{self.conversation.conv_key}"
         )
 
-    async def _finish_reaction(self, mids: list[int], *, expired: bool) -> None:
+    async def _finish_reaction(
+        self, mids: list[int], *, expired: bool, fresh: bool = True
+    ) -> None:
         # The completion mark is a status signal, not a duplicate: a REACT:
         # ack earlier in the turn must not suppress the end-of-turn mark.
-        # 🫡 already landed at bridge receipt — only an
-        # expired/failed turn still needs a mark.
-        if not expired:
+        # 👍 closes the lifecycle (🫡 received → 👀 agent has it → 👍 done) —
+        # without it a finished turn reads as "still being looked at". A
+        # stale close (recovery watcher on an already-terminal session)
+        # delivers and moves nothing — marking 👍 there would stamp a
+        # success signal on a turn this watch did not run.
+        if not expired and not fresh:
             return
+        mark = "👎" if expired else "👍"
         for mid in mids:
             await self.telegram.react(
                 self.conversation.chat_id,
                 mid,
-                "👎",
+                mark,
             )
 
     @staticmethod
