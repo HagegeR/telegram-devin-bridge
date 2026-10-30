@@ -85,8 +85,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class _BotTokenScrub(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = _BOT_TOKEN_RE.sub(_BOT_TOKEN_STUB, record.getMessage())
-        record.args = ()
+        if record.name == "uvicorn.access" and isinstance(record.args, tuple):
+            # the access formatter re-renders the request line by
+            # unpacking record.args itself — zeroing them made every
+            # request line a "not enough values to unpack" logging error
+            record.args = tuple(
+                _BOT_TOKEN_RE.sub(_BOT_TOKEN_STUB, arg)
+                if isinstance(arg, str)
+                else arg
+                for arg in record.args
+            )
+            record.msg = _BOT_TOKEN_RE.sub(_BOT_TOKEN_STUB, str(record.msg))
+        else:
+            record.msg = _BOT_TOKEN_RE.sub(_BOT_TOKEN_STUB, record.getMessage())
+            record.args = ()
         if record.exc_info is not None:
             _scrub_bot_token(record.exc_info[1])
             # a handler that formatted the record first cached the raw

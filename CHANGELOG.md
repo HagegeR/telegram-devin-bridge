@@ -21,6 +21,11 @@ and deployment update channels.
   backlog probe, restart resume, and local emit hook — skips the mark
   until a live inbound update on that conversation clears it.
   `watcher_failures` now reflects real failures only.
+- **Access-log noise on every request**: the bot-token scrub filter
+  rewrote each log record to `args=()`, but uvicorn's access formatter
+  unpacks the 5-tuple itself — every HTTP request line failed with
+  `ValueError: not enough values to unpack (expected 5, got 0)` instead
+  of logging. Access records now keep their (token-scrubbed) args.
 
 ## [v3.1.0] - 2026-10-30
 
