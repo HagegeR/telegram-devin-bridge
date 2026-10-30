@@ -353,6 +353,31 @@ async def test_clients_use_injected_mock_transports() -> None:
 
 
 @pytest.mark.asyncio
+async def test_telegram_edit_topic_deleted_raises_target_gone() -> None:
+    """editForumTopic reports TOPIC_ID_INVALID for a deleted topic — the
+    rename path must classify that as a gone target, not a retryable error."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "ok": False,
+                "error_code": 400,
+                "description": "Bad Request: TOPIC_ID_INVALID",
+            },
+        )
+
+    telegram = TelegramClient(
+        "fake-token",
+        base_url="https://telegram.test/botfake",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(TelegramTargetGone):
+        await telegram.edit_forum_topic(222, 19, "title")
+    await telegram.close()
+
+
+@pytest.mark.asyncio
 async def test_devin_client_uses_v3_when_service_key_configured() -> None:
     seen: list[str] = []
 

@@ -1004,6 +1004,7 @@ class TelegramTargetGone(RuntimeError):
 
 _TARGET_GONE_MARKERS = (
     "thread not found",
+    "topic_id_invalid",
     "chat not found",
     "chat was deleted",
     "bot was blocked",
