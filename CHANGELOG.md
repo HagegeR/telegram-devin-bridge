@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v3.1.0] - 2026-10-30
+
 ### Added
 
 - **`/metrics`**: an admin-only command rendering process counters since
