@@ -16,6 +16,7 @@ from typing import Self, cast
 import httpx
 import pytest
 from PIL import Image
+from uvicorn.logging import AccessFormatter
 
 import app.main as main_module
 from app.access import is_allowed, is_topic_chat, should_respond_in_group
@@ -12035,6 +12036,32 @@ def test_bot_token_scrub_reaches_uvicorn_handlers() -> None:
         )
     finally:
         uvicorn_error.removeHandler(handler)
+
+
+def test_bot_token_scrub_keeps_uvicorn_access_args() -> None:
+    # AccessFormatter re-renders the request line by unpacking the args
+    # 5-tuple itself — zeroing them made every request line a
+    # "not enough values to unpack" logging error
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        0,
+        '%s - "%s %s %s" %s',
+        (
+            "52.87.95.254:0",
+            "GET",
+            "/bot12345:SECRETTOKENXYZ/x",
+            "HTTP/1.1",
+            404,
+        ),
+        None,
+    )
+    assert main_module._BotTokenScrub().filter(record)
+    rendered = AccessFormatter("%(message)s", use_colors=False).format(record)
+    assert "52.87.95.254" in rendered
+    assert "SECRETTOKENXYZ" not in rendered
+    assert "bot0:REDACTED" in rendered
 
 
 @pytest.mark.asyncio
