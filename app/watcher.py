@@ -30,7 +30,7 @@ from app.formatting import (
 )
 from app.images import photo_fits_unchanged
 from app.store import PLACEHOLDER_TITLE_PREFIX, Conversation, Store
-from app.telegram import TelegramClient
+from app.telegram import TelegramClient, TelegramTargetGone
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +448,13 @@ class SessionWatcher:
                             await self._sleep_keeping_typing(interval)
                             continue
                     await self.sleep(max(interval, 0.001))
+                except TelegramTargetGone:
+                    # a deleted topic (or removed bot) can never accept a
+                    # send — mark the conversation so recovery paths stop
+                    # resurrecting watchers for it, and exit quietly
+                    self._mark_target_gone()
+                    await self._cleanup_transients()
+                    return
                 except Exception as exc:
                     consecutive_errors += 1
                     if consecutive_errors >= _POLL_ERROR_BUDGET:
@@ -461,6 +468,9 @@ class SessionWatcher:
                     )
                     poll_failed = True
                     await self.sleep(max(interval, 0.001))
+        except TelegramTargetGone:
+            self._mark_target_gone()
+            await self._cleanup_transients()
         except Exception as exc:
             metrics.incr("watcher_failures")
             logger.exception("Session watcher failed for conversation %s", self.conversation.conv_key)
@@ -480,6 +490,13 @@ class SessionWatcher:
             await self._cleanup_transients()
             raise
 
+    def _mark_target_gone(self) -> None:
+        self.store.set_setting(f"tg_gone:{self.conversation.conv_key}", "1")
+        logger.info(
+            "watcher %s exiting: telegram target gone",
+            self.conversation.conv_key,
+        )
+
     def _topic_title_outstanding(self, state: SessionState) -> bool:
         conv = self.conversation
         return self.topic_title_stale or bool(
@@ -496,6 +513,8 @@ class SessionWatcher:
                     conv.chat_id, conv.thread_id, title[:128]
                 )
                 return True
+            except TelegramTargetGone:
+                raise
             except (RuntimeError, httpx.HTTPError):
                 logger.warning(
                     "Failed to rename topic chat=%s thread=%s",
@@ -1233,6 +1252,8 @@ class SessionWatcher:
                 thread_id=self.conversation.thread_id,
                 disable_notification=self.silent,
             )
+        except TelegramTargetGone:
+            raise
         except (RuntimeError, httpx.HTTPError):
             logger.warning(
                 "Failed to send finish notice chat=%s status=%s",

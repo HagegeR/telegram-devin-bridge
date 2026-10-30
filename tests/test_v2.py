@@ -27,6 +27,7 @@ from app.clients import (
     Playbook,
     SessionState,
     TelegramClient,
+    TelegramTargetGone,
 )
 from app.commands import SYSTEM_PREAMBLE, handle_command
 from app.config import Settings
@@ -2056,6 +2057,7 @@ class _FakeTelegram:
         self.edit_kwargs: list[dict[str, object]] = []
         self.command_sets: list[tuple[list[dict], dict | None]] = []
         self.command_error: Exception | None = None
+        self.send_error: Exception | None = None
 
     async def set_my_commands(
         self, commands: list[dict], scope: dict | None = None
@@ -2070,6 +2072,8 @@ class _FakeTelegram:
         text: str,
         **kwargs: object,
     ) -> dict[str, object]:
+        if self.send_error is not None:
+            raise self.send_error
         self.sent.append({"chat_id": chat_id, "text": text, **kwargs})
         return {"message_id": len(self.sent)}
 
@@ -3887,6 +3891,206 @@ async def test_watcher_gives_up_after_poll_error_budget(tmp_path: Path) -> None:
     assert devin.calls == 5
     texts = [str(item["text"]) for item in telegram.sent]
     assert any("Couldn't reach Devin" in text for text in texts)
+
+
+@pytest.mark.asyncio
+async def test_watcher_marks_and_exits_quietly_on_gone_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A deleted topic fails every send permanently — mark the
+    # conversation and exit quietly instead of burning the poll budget
+    # into a counted failure on every janitor sweep.
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+
+    class BacklogDevin(_FakeDevin):
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [DevinMessage("devin_message", "e1", "Done", None)],
+            )
+
+    telegram = _FakeTelegram()
+    telegram.send_error = TelegramTargetGone(
+        "Bad Request: message thread not found"
+    )
+    increments: list[str] = []
+    monkeypatch.setattr("app.metrics.incr", increments.append)
+    await SessionWatcher(
+        conversation,
+        store,
+        BacklogDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        trigger_message_id=7,
+    ).run()
+    assert store.get_setting("tg_gone:222") == "1"
+    assert "watcher_failures" not in increments
+    assert telegram.sent == []
+
+
+@pytest.mark.asyncio
+async def test_start_watcher_skips_gone_marked_conversation(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    store.set_setting("tg_gone:222", "1")
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    await runtime.start_watcher(conversation, trigger_message_id=7)
+    assert "s1" not in runtime.watchers
+    stored = store.get_conversation("222")
+    assert stored is not None
+    assert stored.last_user_message_id is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_redeliver_backlog_skips_gone_marked_conversations(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    for conv_key, session_id in (("222:1", "s1"), ("222:2", "s2")):
+        store.save_conversation(
+            conv_key=conv_key,
+            chat_id=222,
+            thread_id=int(conv_key.split(":")[1]),
+            session_id=session_id,
+            session_url=f"https://devin.test/{session_id}",
+            title="title",
+        )
+    store.set_setting("tg_gone:222:1", "1")
+
+    class BacklogDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.probed: list[str] = []
+
+        async def get_session(
+            self,
+            session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.probed.append(session_id)
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [DevinMessage("devin_message", "e2", "backlog", None)],
+            )
+
+    devin = BacklogDevin()
+    runtime = Bridge(
+        settings(tmp_path), store, devin, _FakeTelegram()
+    )  # type: ignore[arg-type]
+    await runtime._redeliver_backlog()
+    assert devin.probed == ["s2"]
+    assert "s2" in runtime.watchers
+    assert "s1" not in runtime.watchers
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_message_clears_gone_mark_but_replay_keeps_it(
+    tmp_path: Path,
+) -> None:
+    store = Store(":memory:")
+    runtime = Bridge(
+        settings(tmp_path), store, _FakeDevin(), _FakeTelegram()
+    )  # type: ignore[arg-type]
+    store.set_setting("tg_gone:222", "1")
+    await runtime.handle_message(message("hello"), update_id=1, replayed=True)
+    assert store.get_setting("tg_gone:222") == "1"
+    await runtime.handle_message(message("hello"), update_id=2)
+    assert store.get_setting("tg_gone:222") is None
+    # commands bypass _queue_turn but must still unstick a stale mark
+    store.set_setting("tg_gone:222", "1")
+    await runtime.handle_message(message("/steer hello"), update_id=3)
+    assert store.get_setting("tg_gone:222") is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_finish_notice_gone_error_marks_conversation(
+    tmp_path: Path,
+) -> None:
+    # The notice is a best-effort send and swallows RuntimeError — but a
+    # gone target must still propagate so the watcher marks the
+    # conversation instead of being re-armed by the next backlog sweep.
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+
+    class FinishNoticeGoneTelegram(_FakeTelegram):
+        async def send_message(
+            self, chat_id: int, text: str, **kwargs: object
+        ) -> dict[str, object]:
+            if text.startswith(("💬", "✓", "⚠")):
+                raise TelegramTargetGone(
+                    "Bad Request: message thread not found"
+                )
+            return await super().send_message(chat_id, text, **kwargs)
+
+    class DoneDevin(_FakeDevin):
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            return SessionState(
+                "blocked",
+                "title",
+                None,
+                [DevinMessage("devin_message", "e1", "Done", None)],
+            )
+
+    telegram = FinishNoticeGoneTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        DoneDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path),
+        trigger_message_id=7,
+    ).run()
+    assert store.get_setting("tg_gone:222") == "1"
 
 
 @pytest.mark.asyncio

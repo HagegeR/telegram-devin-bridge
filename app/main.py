@@ -741,6 +741,15 @@ class Bridge:
                 )
             logger.warning("Rejected Telegram message user=%s chat=%s", user_id, chat_id)
             return
+        if not replayed:
+            # a live message — text, media, or command — proves the
+            # conversation's telegram target still exists, so clear a
+            # stale gone mark and watchers may arm again; queued or
+            # startup replays must not resurrect delivery to a
+            # deleted topic
+            self.store.delete_setting(
+                f"tg_gone:{self._conversation_key(message)}"
+            )
         self.store.bump_user_stats(user_id, messages=1)
         # mark pushed only on success — a failed push retries on the
         # next message instead of leaving the stale shared menu
@@ -1374,7 +1383,7 @@ class Bridge:
         # devin_message means the cursor fell behind.
         for conv in self.store.list_conversations():
             sid = conv.session_id or ""
-            if not sid:
+            if not sid or self.store.get_setting(f"tg_gone:{conv.conv_key}"):
                 continue
             watcher = self.watchers.get(sid)
             if watcher is not None and not watcher.done():
@@ -1926,6 +1935,12 @@ class Bridge:
         trigger_at: float | None = None,
         turn_message_ids: list[int] | None = None,
     ) -> None:
+        if self.store.get_setting(f"tg_gone:{conversation.conv_key}"):
+            logger.debug(
+                "skipping watcher for %s: telegram target gone",
+                conversation.conv_key,
+            )
+            return
         if trigger_message_id is not None:
             # keep the persisted trigger current so a recovery watcher
             # (emit hook / janitor / restart resume) threads replies onto
