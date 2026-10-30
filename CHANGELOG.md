@@ -26,6 +26,12 @@ and deployment update channels.
   unpacks the 5-tuple itself — every HTTP request line failed with
   `ValueError: not enough values to unpack (expected 5, got 0)` instead
   of logging. Access records now keep their (token-scrubbed) args.
+- **Topic-rename retries on deleted topics**: `editForumTopic` reports a
+  deleted topic as `TOPIC_ID_INVALID` rather than "message thread not
+  found", so the rename path missed the gone-target classification and
+  retried three times with warnings before marking the conversation.
+  The marker set now covers it, and the rename warning logs the real
+  Telegram error so future misses are visible.
 
 ## [v3.1.0] - 2026-10-30
 

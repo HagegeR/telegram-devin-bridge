@@ -515,11 +515,12 @@ class SessionWatcher:
                 return True
             except TelegramTargetGone:
                 raise
-            except (RuntimeError, httpx.HTTPError):
+            except (RuntimeError, httpx.HTTPError) as exc:
                 logger.warning(
-                    "Failed to rename topic chat=%s thread=%s",
+                    "Failed to rename topic chat=%s thread=%s: %s",
                     conv.chat_id,
                     conv.thread_id,
+                    exc,
                 )
                 if attempt < 2:
                     await self.sleep(1)
