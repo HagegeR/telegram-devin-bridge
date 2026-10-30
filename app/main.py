@@ -741,6 +741,15 @@ class Bridge:
                 )
             logger.warning("Rejected Telegram message user=%s chat=%s", user_id, chat_id)
             return
+        if not replayed:
+            # a live message — text, media, or command — proves the
+            # conversation's telegram target still exists, so clear a
+            # stale gone mark and watchers may arm again; queued or
+            # startup replays must not resurrect delivery to a
+            # deleted topic
+            self.store.delete_setting(
+                f"tg_gone:{self._conversation_key(message)}"
+            )
         self.store.bump_user_stats(user_id, messages=1)
         # mark pushed only on success — a failed push retries on the
         # next message instead of leaving the stale shared menu
@@ -856,12 +865,6 @@ class Bridge:
         replayed: bool = False,
     ) -> None:
         conv_key = self._conversation_key(message)
-        if not replayed:
-            # a live update proves the conversation's telegram target
-            # still exists — clear a stale gone mark so watchers may arm
-            # again; queued/startup replays must not resurrect delivery
-            # to a deleted topic
-            self.store.delete_setting(f"tg_gone:{conv_key}")
         uids = [update_id] if update_id is not None else []
         message_id = _int(message.get("message_id"))
         if update_id is not None:

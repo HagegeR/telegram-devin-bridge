@@ -1252,6 +1252,8 @@ class SessionWatcher:
                 thread_id=self.conversation.thread_id,
                 disable_notification=self.silent,
             )
+        except TelegramTargetGone:
+            raise
         except (RuntimeError, httpx.HTTPError):
             logger.warning(
                 "Failed to send finish notice chat=%s status=%s",
