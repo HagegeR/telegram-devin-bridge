@@ -8,6 +8,20 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dead-topic watcher crash loop**: deleting a Telegram topic (or
+  blocking/kicking the bot) left the conversation's watchers dying on
+  `Bad Request: message thread not found` while the janitor's 10-minute
+  backlog probe re-armed them forever — hundreds of `watcher_failures`
+  per day per conversation. Sends to a permanently-gone target now raise
+  `TelegramTargetGone`; a watcher that hits it marks the conversation
+  `tg_gone` and exits quietly (no counted failure, no undeliverable
+  error notice), and every recovery path — `start_watcher` covers the
+  backlog probe, restart resume, and local emit hook — skips the mark
+  until a live inbound update on that conversation clears it.
+  `watcher_failures` now reflects real failures only.
+
 ## [v3.1.0] - 2026-10-30
 
 ### Added

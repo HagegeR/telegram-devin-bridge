@@ -995,6 +995,30 @@ class DevinClient:
         return value
 
 
+class TelegramTargetGone(RuntimeError):
+    """The conversation's Telegram target is permanently gone — deleted
+    topic, removed bot, blocked user. Retries can never succeed, so a
+    watcher hitting this should mark the conversation and exit instead
+    of burning its poll-error budget until it dies."""
+
+
+_TARGET_GONE_MARKERS = (
+    "thread not found",
+    "chat not found",
+    "chat was deleted",
+    "bot was blocked",
+    "bot was kicked",
+    "user is deactivated",
+)
+
+
+def _telegram_api_error(description: str) -> RuntimeError:
+    lowered = description.casefold()
+    if any(marker in lowered for marker in _TARGET_GONE_MARKERS):
+        return TelegramTargetGone(description)
+    return RuntimeError(description)
+
+
 class TelegramClient:
     def __init__(
         self,
@@ -1382,7 +1406,7 @@ class TelegramClient:
         if payload.get("ok") is False:
             description = payload.get("description")
             if isinstance(description, str):
-                raise RuntimeError(description)
+                raise _telegram_api_error(description)
             raise RuntimeError("Telegram API request failed")
         result = payload.get("result", {})
         if not isinstance(result, dict):
@@ -1483,7 +1507,7 @@ class TelegramClient:
         if payload.get("ok") is False:
             description = payload.get("description")
             if isinstance(description, str):
-                raise RuntimeError(description)
+                raise _telegram_api_error(description)
             raise RuntimeError("Telegram API request failed")
         result = payload.get("result")
         if not isinstance(result, list):
@@ -1622,13 +1646,13 @@ class TelegramClient:
             payload = self._json_object(response)
             description = payload.get("description")
             if isinstance(description, str):
-                raise RuntimeError(description)
+                raise _telegram_api_error(description)
         response.raise_for_status()
         payload = self._json_object(response)
         if payload.get("ok") is False:
             description = payload.get("description")
             if isinstance(description, str):
-                raise RuntimeError(description)
+                raise _telegram_api_error(description)
             raise RuntimeError("Telegram API request failed")
         result = payload.get("result", {})
         if not isinstance(result, dict):

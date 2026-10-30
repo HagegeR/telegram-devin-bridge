@@ -856,6 +856,12 @@ class Bridge:
         replayed: bool = False,
     ) -> None:
         conv_key = self._conversation_key(message)
+        if not replayed:
+            # a live update proves the conversation's telegram target
+            # still exists — clear a stale gone mark so watchers may arm
+            # again; queued/startup replays must not resurrect delivery
+            # to a deleted topic
+            self.store.delete_setting(f"tg_gone:{conv_key}")
         uids = [update_id] if update_id is not None else []
         message_id = _int(message.get("message_id"))
         if update_id is not None:
@@ -1374,7 +1380,7 @@ class Bridge:
         # devin_message means the cursor fell behind.
         for conv in self.store.list_conversations():
             sid = conv.session_id or ""
-            if not sid:
+            if not sid or self.store.get_setting(f"tg_gone:{conv.conv_key}"):
                 continue
             watcher = self.watchers.get(sid)
             if watcher is not None and not watcher.done():
@@ -1926,6 +1932,12 @@ class Bridge:
         trigger_at: float | None = None,
         turn_message_ids: list[int] | None = None,
     ) -> None:
+        if self.store.get_setting(f"tg_gone:{conversation.conv_key}"):
+            logger.debug(
+                "skipping watcher for %s: telegram target gone",
+                conversation.conv_key,
+            )
+            return
         if trigger_message_id is not None:
             # keep the persisted trigger current so a recovery watcher
             # (emit hook / janitor / restart resume) threads replies onto
