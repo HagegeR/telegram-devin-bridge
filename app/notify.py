@@ -69,8 +69,15 @@ def register_notify_route(
             raise HTTPException(status_code=413, detail="html exceeds 2 MiB")
         if not isinstance(html_name, str) or not html_name.lower().endswith(".html"):
             raise HTTPException(status_code=400, detail="html_name must end with .html")
-        if topic is not None and not isinstance(topic, str):
-            raise HTTPException(status_code=400, detail="topic must be a string")
+        if topic is not None and (
+            not isinstance(topic, str)
+            or not topic.strip()
+            or len(topic) > 128
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="topic must be a non-empty string of at most 128 characters",
+            )
         if session_id is not None and not isinstance(session_id, str):
             raise HTTPException(status_code=400, detail="session_id must be a string")
         if session_url is not None and not isinstance(session_url, str):

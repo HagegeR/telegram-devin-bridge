@@ -2171,7 +2171,7 @@ class _FakeTelegram:
         if self.topic_error is not None:
             raise self.topic_error
         self.created_topics.append((chat_id, name))
-        return 19
+        return 18 + len(self.created_topics)
 
     async def send_chat_action(
         self, chat_id: int, **kwargs: object
@@ -9552,6 +9552,24 @@ async def test_notify_topic_and_session_binding(tmp_path: Path) -> None:
         assert response.status_code == 200
         await asyncio.sleep(0.03)
         assert ("devin-s1", "ping") in devin.sent
+        # rebinding the same session moves it wholly: the old topic's
+        # conversation is detached and the new one takes over
+        moved = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={
+                "text": "open",
+                "chat_id": 222,
+                "topic": "paper: open",
+                "session_id": "devin-s1",
+            },
+        )
+        assert moved.json() == {"sent": 1, "thread_id": 20, "bound": True}
+        assert store.get_conversation("222:19") is None
+        assert store.get_conversation("222:20") is not None
+        assert [h.session_id for h in store.list_history("222:20")] == [
+            "devin-s1"
+        ]
         # session_id without a thread must not rebind the main stream
         main_stream = await client.post(
             "/notify",

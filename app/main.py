@@ -3677,11 +3677,13 @@ class Bridge:
                 target_thread = int(stored_thread)
         if target_chat is None:
             raise ValueError("No notification target configured")
+        created_thread: int | None = None
         if topic:
             try:
-                target_thread = await self.telegram.create_forum_topic(
+                created_thread = await self.telegram.create_forum_topic(
                     target_chat, topic
                 )
+                target_thread = created_thread
             except (RuntimeError, httpx.HTTPError) as exc:
                 logger.warning(
                     "notify: create_forum_topic(%r) failed: %s", topic, exc
@@ -3724,12 +3726,30 @@ class Bridge:
             )
         bound = False
         # bind replies to the reporting session only inside a thread —
-        # rebinding the main stream would hijack the chat's conversation
-        if session_id and target_thread is not None:
+        # rebinding the main stream would hijack the chat's conversation,
+        # and a failed topic creation must not steal the fallback thread
+        bind_thread = created_thread if topic else target_thread
+        conv_key = (
+            f"{target_chat}:{bind_thread}" if bind_thread is not None else None
+        )
+        if session_id and conv_key is not None:
+            previous = self.store.get_conversation_for_session(session_id)
+            if previous is not None and previous.conv_key != conv_key:
+                # one session owns one conversation — move it wholly so
+                # replies stop routing to the previous chat/topic
+                await self.detach_conversation(previous)
+            if previous is None or previous.conv_key != conv_key:
+                self.store.add_history(
+                    conv_key=conv_key,
+                    session_id=session_id,
+                    session_url=session_url
+                    or f"https://app.devin.ai/sessions/{session_id.removeprefix('devin-')}",
+                    title=topic or session_id,
+                )
             conversation = await self.replace_conversation(
-                conv_key=f"{target_chat}:{target_thread}",
+                conv_key=conv_key,
                 chat_id=target_chat,
-                thread_id=target_thread,
+                thread_id=bind_thread,
                 session_id=session_id,
                 session_url=session_url
                 or f"https://app.devin.ai/sessions/{session_id.removeprefix('devin-')}",
