@@ -2431,6 +2431,20 @@ class Bridge:
             conversation.session_id,
         )
 
+    async def _unbind_conversation(self, conversation: Conversation) -> None:
+        # detach minus the local suspend — releasing a binding during a
+        # move must not kill an in-flight local turn
+        task = self.watchers.pop(conversation.session_id, None)
+        self.active_watchers.pop(conversation.session_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.clear_queued_turns(conversation.conv_key)
+        self.store.clear_conversation(
+            conversation.conv_key,
+            conversation.session_id,
+        )
+
     async def stop_conversation(self, conversation: Conversation) -> None:
         task = self.watchers.pop(conversation.session_id, None)
         self.active_watchers.pop(conversation.session_id, None)
@@ -3734,11 +3748,8 @@ class Bridge:
         )
         if session_id and conv_key is not None:
             previous = self.store.get_conversation_for_session(session_id)
-            if previous is not None and previous.conv_key != conv_key:
-                # one session owns one conversation — move it wholly so
-                # replies stop routing to the previous chat/topic
-                await self.detach_conversation(previous)
-            if previous is None or previous.conv_key != conv_key:
+            moving = previous is not None and previous.conv_key != conv_key
+            if previous is None or moving:
                 self.store.add_history(
                     conv_key=conv_key,
                     session_id=session_id,
@@ -3754,7 +3765,22 @@ class Bridge:
                 session_url=session_url
                 or f"https://app.devin.ai/sessions/{session_id.removeprefix('devin-')}",
                 title=topic or session_id,
+                # carry the cursor so the moved watcher resumes where the
+                # old topic left off instead of replaying session history
+                last_event_id=previous.last_event_id if previous else None,
             )
+            if moving:
+                if previous.pending_prompt:
+                    # an in-flight local turn's restart-replay marker moves
+                    # with the session — written before the old row goes
+                    self.store.set_pending_prompt(
+                        conv_key, session_id, previous.pending_prompt
+                    )
+                # one session owns one conversation — move it wholly so
+                # replies stop routing to the previous chat/topic; a move
+                # unbinds without detaching so an in-flight local turn
+                # keeps running under the new topic
+                await self._unbind_conversation(previous)
             await self.start_watcher(conversation)
             bound = True
         return {"sent": sent, "thread_id": target_thread, "bound": bound}

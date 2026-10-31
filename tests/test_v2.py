@@ -9553,7 +9553,7 @@ async def test_notify_topic_and_session_binding(tmp_path: Path) -> None:
         await asyncio.sleep(0.03)
         assert ("devin-s1", "ping") in devin.sent
         # rebinding the same session moves it wholly: the old topic's
-        # conversation is detached and the new one takes over
+        # binding is released and the new one takes over
         moved = await client.post(
             "/notify",
             headers={"Authorization": "Bearer notify-placeholder"},
@@ -9601,6 +9601,53 @@ async def test_notify_topic_and_session_binding(tmp_path: Path) -> None:
         }
         assert store.get_conversation("333") is None
     await runtime.shutdown()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_notify_move_releases_local_session_without_suspend(
+    tmp_path: Path,
+) -> None:
+    # moving an already-bound session releases the old binding but must
+    # not suspend a local session — its in-flight turn keeps running
+    # under the new topic, and the event cursor carries over so the new
+    # watcher resumes instead of replaying history
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    telegram.created_topics.append((222, "earlier"))  # next topic id -> 20
+    store.save_conversation(
+        conv_key="222:19",
+        chat_id=222,
+        thread_id=19,
+        session_id="local:s1",
+        session_url="local-url",
+        title="old",
+        last_event_id="e5",
+    )
+    store.set_pending_prompt("222:19", "local:s1", "/goal pending")
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    killed: list[str] = []
+    runtime.local.suspend = (  # type: ignore[method-assign]
+        lambda sid: killed.append(sid) or _async(None)
+    )
+    result = await runtime.notify(
+        "report",
+        chat_id=222,
+        thread_id=None,
+        silent=False,
+        markdown=False,
+        topic="paper: next",
+        session_id="local:s1",
+    )
+    assert result == {"sent": 1, "thread_id": 20, "bound": True}
+    assert killed == []
+    assert store.get_conversation("222:19") is None
+    moved = store.get_conversation("222:20")
+    assert moved is not None
+    assert moved.session_id == "local:s1"
+    assert moved.last_event_id == "e5"
+    # the restart-replay marker moved with the session
+    assert moved.pending_prompt == "/goal pending"
+    await runtime.shutdown()
 
 
 def test_parse_rich_segments_no_markers() -> None:

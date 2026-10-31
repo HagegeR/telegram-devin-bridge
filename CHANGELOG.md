@@ -19,7 +19,9 @@ and deployment update channels.
   Binding only targets a freshly created topic or an explicitly provided
   `thread_id` — never the main stream, and never a fallback thread after
   a failed `createForumTopic`. Binding an already-bound session moves
-  it: the previous conversation is detached. The response is now
+  it: the previous binding is released without suspending the session
+  (a local session keeps its in-flight work) and its event cursor plus
+  any pending restart-replay prompt carry over. The response is now
   `{sent, thread_id, bound}`.
 
 ### Fixed
