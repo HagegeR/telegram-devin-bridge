@@ -9623,6 +9623,7 @@ async def test_notify_move_releases_local_session_without_suspend(
         title="old",
         last_event_id="e5",
     )
+    store.set_pending_prompt("222:19", "local:s1", "/goal pending")
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
     killed: list[str] = []
     runtime.local.suspend = (  # type: ignore[method-assign]
@@ -9644,6 +9645,8 @@ async def test_notify_move_releases_local_session_without_suspend(
     assert moved is not None
     assert moved.session_id == "local:s1"
     assert moved.last_event_id == "e5"
+    # the restart-replay marker moved with the session
+    assert moved.pending_prompt == "/goal pending"
     await runtime.shutdown()
 
 

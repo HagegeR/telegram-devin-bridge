@@ -3748,13 +3748,8 @@ class Bridge:
         )
         if session_id and conv_key is not None:
             previous = self.store.get_conversation_for_session(session_id)
-            if previous is not None and previous.conv_key != conv_key:
-                # one session owns one conversation — move it wholly so
-                # replies stop routing to the previous chat/topic; a move
-                # unbinds without detaching so an in-flight local turn
-                # keeps running under the new topic
-                await self._unbind_conversation(previous)
-            if previous is None or previous.conv_key != conv_key:
+            moving = previous is not None and previous.conv_key != conv_key
+            if previous is None or moving:
                 self.store.add_history(
                     conv_key=conv_key,
                     session_id=session_id,
@@ -3774,6 +3769,18 @@ class Bridge:
                 # old topic left off instead of replaying session history
                 last_event_id=previous.last_event_id if previous else None,
             )
+            if moving:
+                if previous.pending_prompt:
+                    # an in-flight local turn's restart-replay marker moves
+                    # with the session — written before the old row goes
+                    self.store.set_pending_prompt(
+                        conv_key, session_id, previous.pending_prompt
+                    )
+                # one session owns one conversation — move it wholly so
+                # replies stop routing to the previous chat/topic; a move
+                # unbinds without detaching so an in-flight local turn
+                # keeps running under the new topic
+                await self._unbind_conversation(previous)
             await self.start_watcher(conversation)
             bound = True
         return {"sent": sent, "thread_id": target_thread, "bound": bound}
