@@ -3659,7 +3659,10 @@ class Bridge:
         markdown: bool,
         html: str | None = None,
         html_name: str = "report.html",
-    ) -> int:
+        topic: str | None = None,
+        session_id: str | None = None,
+        session_url: str | None = None,
+    ) -> dict[str, object]:
         target_chat = chat_id
         target_thread = thread_id
         if target_chat is None:
@@ -3674,6 +3677,15 @@ class Bridge:
                 target_thread = int(stored_thread)
         if target_chat is None:
             raise ValueError("No notification target configured")
+        if topic:
+            try:
+                target_thread = await self.telegram.create_forum_topic(
+                    target_chat, topic
+                )
+            except (RuntimeError, httpx.HTTPError) as exc:
+                logger.warning(
+                    "notify: create_forum_topic(%r) failed: %s", topic, exc
+                )
         if html is not None and not text.strip():
             text, markdown = f"Report: {html_name}", False
         rendered = markdown_to_telegram_markdown_v2(text) if markdown else text
@@ -3710,7 +3722,22 @@ class Bridge:
                 content_type="text/html",
                 disable_notification=silent,
             )
-        return sent
+        bound = False
+        # bind replies to the reporting session only inside a thread —
+        # rebinding the main stream would hijack the chat's conversation
+        if session_id and target_thread is not None:
+            conversation = await self.replace_conversation(
+                conv_key=f"{target_chat}:{target_thread}",
+                chat_id=target_chat,
+                thread_id=target_thread,
+                session_id=session_id,
+                session_url=session_url
+                or f"https://app.devin.ai/sessions/{session_id.removeprefix('devin-')}",
+                title=topic or session_id,
+            )
+            await self.start_watcher(conversation)
+            bound = True
+        return {"sent": sent, "thread_id": target_thread, "bound": bound}
 
     async def _is_finished(self, session_id: str) -> bool:
         # "finished" (idle, awaiting input) and suspended sessions resume when

@@ -2021,7 +2021,11 @@ async def test_notify_auth_and_photo_upload(tmp_path: Path) -> None:
             headers={"Authorization": "Bearer notify-placeholder"},
             json={"text": "x", "chat_id": 222},
         )
-        assert notified.json() == {"sent": 1}
+        assert notified.json() == {
+            "sent": 1,
+            "thread_id": None,
+            "bound": False,
+        }
         photo = message(
             "look",
             message_id=8,
@@ -9467,7 +9471,11 @@ async def test_notify_html_report(tmp_path: Path, base_url: str | None) -> None:
             headers={"Authorization": "Bearer notify-placeholder"},
             json={"text": "eod", "chat_id": 222, "html": "<p>hi</p>", "html_name": "eod.html"},
         )
-        assert ok.json() == {"sent": 1}
+        assert ok.json() == {
+            "sent": 1,
+            "thread_id": None,
+            "bound": False,
+        }
         too_big = await client.post(
             "/notify",
             headers={"Authorization": "Bearer notify-placeholder"},
@@ -9479,7 +9487,11 @@ async def test_notify_html_report(tmp_path: Path, base_url: str | None) -> None:
             headers={"Authorization": "Bearer notify-placeholder"},
             json={"text": "", "chat_id": 222, "html": "<p>e</p>", "silent": True},
         )
-        assert empty.json() == {"sent": 1}
+        assert empty.json() == {
+            "sent": 1,
+            "thread_id": None,
+            "bound": False,
+        }
         assert telegram.sent[-1]["text"] == "Report: report.html"
         if base_url is None:
             assert telegram.documents[-1]["disable_notification"] is True
@@ -9496,6 +9508,81 @@ async def test_notify_html_report(tmp_path: Path, base_url: str | None) -> None:
         response = await client.get(button["url"].replace(base_url, ""))
         assert response.status_code == 200
         assert response.content == b"<p>hi</p>"
+
+
+@pytest.mark.asyncio
+async def test_notify_topic_and_session_binding(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    config = settings(tmp_path)
+    app = create_app(config, store=store, devin=devin, telegram=telegram)  # type: ignore[arg-type]
+    runtime = app.state.bridge
+    await runtime.startup()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        bound = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={
+                "text": "eod",
+                "chat_id": 222,
+                "topic": "paper: eod",
+                "session_id": "devin-s1",
+            },
+        )
+        assert bound.json() == {"sent": 1, "thread_id": 19, "bound": True}
+        assert telegram.created_topics == [(222, "paper: eod")]
+        assert telegram.sent[-1]["thread_id"] == 19
+        conv = store.get_conversation("222:19")
+        assert conv is not None
+        assert conv.session_id == "devin-s1"
+        assert conv.session_url == "https://app.devin.ai/sessions/s1"
+        assert conv.title == "paper: eod"
+        # a reply in that topic routes to the bound session
+        reply = message("ping", message_id=11)
+        reply["chat"] = {"id": 222, "type": "private"}
+        reply["message_thread_id"] = 19
+        reply["is_topic_message"] = True
+        response = await client.post(
+            "/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "secret-placeholder"},
+            json={"update_id": 1, "message": reply},
+        )
+        assert response.status_code == 200
+        await asyncio.sleep(0.03)
+        assert ("devin-s1", "ping") in devin.sent
+        # session_id without a thread must not rebind the main stream
+        main_stream = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={"text": "x", "chat_id": 333, "session_id": "devin-s9"},
+        )
+        assert main_stream.json() == {
+            "sent": 1,
+            "thread_id": None,
+            "bound": False,
+        }
+        assert store.get_conversation("333") is None
+        # topic creation failure falls back to the configured target
+        telegram.topic_error = RuntimeError("not a forum")
+        fallback = await client.post(
+            "/notify",
+            headers={"Authorization": "Bearer notify-placeholder"},
+            json={
+                "text": "x",
+                "chat_id": 333,
+                "topic": "paper: open",
+                "session_id": "devin-s9",
+            },
+        )
+        assert fallback.json() == {
+            "sent": 1,
+            "thread_id": None,
+            "bound": False,
+        }
+        assert store.get_conversation("333") is None
+    await runtime.shutdown()  # type: ignore[attr-defined]
 
 
 def test_parse_rich_segments_no_markers() -> None:
