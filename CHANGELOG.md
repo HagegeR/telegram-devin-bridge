@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v3.2.0] - 2026-11-01
+
 ### Added
 
 - **`POST /notify` topic + session binding**: the payload accepts `topic`
