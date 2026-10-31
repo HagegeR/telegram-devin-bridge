@@ -20,7 +20,10 @@ class NotificationRuntime(Protocol):
         markdown: bool,
         html: str | None = None,
         html_name: str = "report.html",
-    ) -> int: ...
+        topic: str | None = None,
+        session_id: str | None = None,
+        session_url: str | None = None,
+    ) -> dict[str, object]: ...
 
 
 MAX_HTML_BYTES = 2 * 1024 * 1024
@@ -32,7 +35,7 @@ def register_notify_route(
     settings: Settings,
 ) -> None:
     @application.post("/notify")
-    async def notify(request: Request) -> dict[str, int]:
+    async def notify(request: Request) -> dict[str, object]:
         if settings.notify_secret is None:
             raise HTTPException(status_code=404, detail="Not found")
         authorization = request.headers.get("authorization", "")
@@ -51,6 +54,9 @@ def register_notify_route(
         markdown = values.get("markdown", True)
         html = values.get("html")
         html_name = values.get("html_name", "report.html")
+        topic = values.get("topic")
+        session_id = values.get("session_id")
+        session_url = values.get("session_url")
         if not isinstance(chat_id, int) and chat_id is not None:
             raise HTTPException(status_code=400, detail="chat_id must be an integer")
         if not isinstance(thread_id, int) and thread_id is not None:
@@ -63,8 +69,21 @@ def register_notify_route(
             raise HTTPException(status_code=413, detail="html exceeds 2 MiB")
         if not isinstance(html_name, str) or not html_name.lower().endswith(".html"):
             raise HTTPException(status_code=400, detail="html_name must end with .html")
+        if topic is not None and (
+            not isinstance(topic, str)
+            or not topic.strip()
+            or len(topic) > 128
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="topic must be a non-empty string of at most 128 characters",
+            )
+        if session_id is not None and not isinstance(session_id, str):
+            raise HTTPException(status_code=400, detail="session_id must be a string")
+        if session_url is not None and not isinstance(session_url, str):
+            raise HTTPException(status_code=400, detail="session_url must be a string")
         try:
-            sent = await runtime.notify(
+            return await runtime.notify(
                 values["text"],
                 chat_id=chat_id,
                 thread_id=thread_id,
@@ -72,10 +91,12 @@ def register_notify_route(
                 markdown=markdown,
                 html=html,
                 html_name=html_name,
+                topic=topic,
+                session_id=session_id,
+                session_url=session_url,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"sent": sent}
 
 
 def _mapping(value: object) -> Mapping[str, object]:

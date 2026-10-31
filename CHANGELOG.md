@@ -8,6 +8,20 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- **`POST /notify` topic + session binding**: the payload accepts `topic`
+  (creates a forum topic in the target chat — including topic-enabled
+  private chats — and posts the report inside it), `session_id` and
+  `session_url` (binds the topic's conversation to that existing Devin
+  session, so replies in the topic steer it and its messages stream back
+  through a watcher, and the session shows up in `/sessions` history).
+  Binding only targets a freshly created topic or an explicitly provided
+  `thread_id` — never the main stream, and never a fallback thread after
+  a failed `createForumTopic`. Binding an already-bound session moves
+  it: the previous conversation is detached. The response is now
+  `{sent, thread_id, bound}`.
+
 ### Fixed
 
 - **Dead-topic watcher crash loop**: deleting a Telegram topic (or

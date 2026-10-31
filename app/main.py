@@ -3659,7 +3659,10 @@ class Bridge:
         markdown: bool,
         html: str | None = None,
         html_name: str = "report.html",
-    ) -> int:
+        topic: str | None = None,
+        session_id: str | None = None,
+        session_url: str | None = None,
+    ) -> dict[str, object]:
         target_chat = chat_id
         target_thread = thread_id
         if target_chat is None:
@@ -3674,6 +3677,17 @@ class Bridge:
                 target_thread = int(stored_thread)
         if target_chat is None:
             raise ValueError("No notification target configured")
+        created_thread: int | None = None
+        if topic:
+            try:
+                created_thread = await self.telegram.create_forum_topic(
+                    target_chat, topic
+                )
+                target_thread = created_thread
+            except (RuntimeError, httpx.HTTPError) as exc:
+                logger.warning(
+                    "notify: create_forum_topic(%r) failed: %s", topic, exc
+                )
         if html is not None and not text.strip():
             text, markdown = f"Report: {html_name}", False
         rendered = markdown_to_telegram_markdown_v2(text) if markdown else text
@@ -3710,7 +3724,40 @@ class Bridge:
                 content_type="text/html",
                 disable_notification=silent,
             )
-        return sent
+        bound = False
+        # bind replies to the reporting session only inside a thread —
+        # rebinding the main stream would hijack the chat's conversation,
+        # and a failed topic creation must not steal the fallback thread
+        bind_thread = created_thread if topic else target_thread
+        conv_key = (
+            f"{target_chat}:{bind_thread}" if bind_thread is not None else None
+        )
+        if session_id and conv_key is not None:
+            previous = self.store.get_conversation_for_session(session_id)
+            if previous is not None and previous.conv_key != conv_key:
+                # one session owns one conversation — move it wholly so
+                # replies stop routing to the previous chat/topic
+                await self.detach_conversation(previous)
+            if previous is None or previous.conv_key != conv_key:
+                self.store.add_history(
+                    conv_key=conv_key,
+                    session_id=session_id,
+                    session_url=session_url
+                    or f"https://app.devin.ai/sessions/{session_id.removeprefix('devin-')}",
+                    title=topic or session_id,
+                )
+            conversation = await self.replace_conversation(
+                conv_key=conv_key,
+                chat_id=target_chat,
+                thread_id=bind_thread,
+                session_id=session_id,
+                session_url=session_url
+                or f"https://app.devin.ai/sessions/{session_id.removeprefix('devin-')}",
+                title=topic or session_id,
+            )
+            await self.start_watcher(conversation)
+            bound = True
+        return {"sent": sent, "thread_id": target_thread, "bound": bound}
 
     async def _is_finished(self, session_id: str) -> bool:
         # "finished" (idle, awaiting input) and suspended sessions resume when
