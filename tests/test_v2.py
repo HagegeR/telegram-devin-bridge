@@ -9226,6 +9226,8 @@ async def test_voice_transcription_uses_writing_reaction(
 ) -> None:
     voice = {**message("caption"), "text": None, "voice": {"file_id": "voice-1"}}
 
+    telegram = _FakeTelegram()
+
     async def transcribe(
         _content: bytes,
         _filename: str,
@@ -9234,9 +9236,11 @@ async def test_voice_transcription_uses_writing_reaction(
         _language: str | None,
         **_: object,
     ) -> str:
+        # the mark must already be up — it is the only "processing"
+        # signal while transcription runs (the 🫡 waits on the result)
+        assert "✍" in telegram.reactions
         return "hello"
 
-    telegram = _FakeTelegram()
     runtime = Bridge(
         settings(
             tmp_path,

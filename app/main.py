@@ -849,11 +849,6 @@ class Bridge:
                     f"Voice note transcript:\n{transcript}"
                     + (f"\n\n{text}" if text else "")
                 )
-                await self._react(
-                    chat_id,
-                    _int(message.get("message_id")),
-                    "✍",
-                )
                 if not self.settings.telegram_attach_voice:
                     attachment = None
         if not text and attachment is None:
@@ -3917,6 +3912,14 @@ class Bridge:
             "video_note",
         )):
             return None
+        # the 🫡 receipt only lands once the turn is staged, which waits
+        # on this transcript — mark the note as transcribing up front so
+        # a slow backend doesn't leave the chat looking dropped
+        await self._react(
+            _int(_mapping(message.get("chat")).get("id")),
+            _int(message.get("message_id")),
+            "✍",
+        )
         user_id = _int(_mapping(message.get("from")).get("id"))
         language = (
             (self.store.get_setting(f"lang:{user_id}") if user_id else None)

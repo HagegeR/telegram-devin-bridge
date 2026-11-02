@@ -8,6 +8,16 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Voice notes showed no "processing" mark while transcribing**: the ✍
+  reaction only landed *after* a transcript succeeded, and the 🫡 receipt
+  mark waits inside the turn queue — which itself waits on the
+  transcript — so a voice note sat unmarked for the whole transcription
+  (seconds on a slow backend, looking dropped). The ✍ now goes up when
+  transcription starts, marking the note as being worked on; the
+  🫡 → 👀 → 👍 lifecycle follows unchanged.
+
 ## [v3.2.0] - 2026-11-01
 
 ### Added
