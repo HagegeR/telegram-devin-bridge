@@ -3087,7 +3087,7 @@ async def test_commands_handle_unknown_status_and_pr_url(tmp_path: Path) -> None
     async def failed_status(_: str) -> str:
         raise RuntimeError("status unavailable")
 
-    async def state(_: str) -> SessionState:
+    async def state(_: str, **_kw: object) -> SessionState:
         return SessionState("working", "title", "https://github.test/pr/2", [])
 
     runtime.get_session_status = failed_status  # type: ignore[method-assign]
@@ -3114,7 +3114,7 @@ async def test_status_shows_v3_detail_acus_and_prs(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
 
-    async def state(_: str) -> SessionState:
+    async def state(_: str, **_kw: object) -> SessionState:
         return SessionState(
             "suspended",
             "title",
@@ -3133,7 +3133,7 @@ async def test_status_shows_v3_detail_acus_and_prs(tmp_path: Path) -> None:
     assert "PR: https://github.test/pr/1" in text
     assert "PR: https://github.test/pr/2" in text
 
-    async def zero_acu_state(_: str) -> SessionState:
+    async def zero_acu_state(_: str, **_kw: object) -> SessionState:
         return SessionState("working", "title", None, [], acus_consumed=0.0)
 
     runtime.get_state = zero_acu_state  # type: ignore[method-assign]
@@ -3164,7 +3164,7 @@ async def test_commands_send_rich_blocks_and_html_fallback(
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path, devin_org_id="org"), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
 
-    async def state(_: str) -> SessionState:
+    async def state(_: str, **_kw: object) -> SessionState:
         return SessionState(
             "suspended",
             "title",
@@ -3230,7 +3230,7 @@ async def test_commands_send_rich_blocks_and_html_fallback(
 
     # Detail entries trim one-by-one to fit the cap — a giant PR list keeps
     # as many links as fit rather than dropping the whole block.
-    async def pr_heavy_state(_: str) -> SessionState:
+    async def pr_heavy_state(_: str, **_kw: object) -> SessionState:
         return SessionState(
             "suspended",
             "title",
@@ -4136,7 +4136,7 @@ async def test_resume_keeps_title_pending(tmp_path: Path) -> None:
     assert store.list_history("222")[0].title_pending is True
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), _FakeTelegram())  # type: ignore[arg-type]
 
-    async def state(_: str) -> SessionState:
+    async def state(_: str, **_kw: object) -> SessionState:
         return SessionState("finished", None, None, [])
 
     runtime.get_state = state  # type: ignore[method-assign]
@@ -4163,7 +4163,7 @@ async def test_resume_adopts_generated_title(tmp_path: Path) -> None:
     telegram = _FakeTelegram()
     runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
 
-    async def state(_: str) -> SessionState:
+    async def state(_: str, **_kw: object) -> SessionState:
         return SessionState("finished", "Generated", None, [])
 
     runtime.get_state = state  # type: ignore[method-assign]

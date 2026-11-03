@@ -29,6 +29,12 @@ and deployment update channels.
   transcription starts, marking the note as being worked on; the
   🫡 → 👀 → 👍 lifecycle follows unchanged.
 
+- **`/status` no longer pages the session message history**: it only
+  renders session fields (status, detail, title, ACUs, PRs), so the
+  message fetch is skipped (`fetch_messages=False`). On v3 a session with
+  M messages cost `1 + ceil(M/100)` sequential Devin API calls per
+  `/status`; it now costs one.
+
 ## [v3.2.0] - 2026-11-01
 
 ### Added

@@ -169,7 +169,9 @@ class CommandRuntime(Protocol):
 
     async def get_session_status(self, session_id: str) -> str: ...
 
-    async def get_state(self, session_id: str) -> SessionState: ...
+    async def get_state(
+        self, session_id: str, fetch_messages: bool = True
+    ) -> SessionState: ...
 
     async def send_session_message(self, session_id: str, text: str) -> None: ...
 
@@ -304,7 +306,10 @@ async def handle_command(
         if conversation is None:
             await runtime.send_text(message, "No active session.", ephemeral=True)
         else:
-            state = await runtime.get_state(conversation.session_id)
+            # /status renders only session fields — skip paging the history.
+            state = await runtime.get_state(
+                conversation.session_id, fetch_messages=False
+            )
             status = _STATUS_LABELS.get(state.status_enum, state.status_enum)
             detail = _STATUS_DETAIL.get(state.status_detail or "")
             if detail:
