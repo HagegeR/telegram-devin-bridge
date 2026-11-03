@@ -11104,6 +11104,53 @@ async def test_redeliver_backlog_probes_cloud_conversations(
 
 
 @pytest.mark.asyncio
+async def test_redeliver_backlog_skips_unchanged_cloud_sessions(
+    tmp_path: Path,
+) -> None:
+    # once a cloud session's updated_at is recorded, later sweeps only
+    # re-fetch its metadata — an unchanged session can't have new
+    # devin_messages, so the messages pages are skipped
+    class _IdleDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[bool, str | None]] = []
+
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls.append((fetch_messages, since_event_id))
+            return SessionState(
+                "finished", "t", None, [], updated_at="2026-01-01T00:00:00Z"
+            )
+
+    devin = _IdleDevin()
+    runtime = Bridge(
+        settings(tmp_path),
+        Store(":memory:"),
+        devin,  # type: ignore[arg-type]
+        _FakeTelegram(),
+    )
+    runtime.store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s9",
+        session_url="https://devin.test/s9",
+        title="t",
+        last_event_id="e1",
+    )
+    await runtime._redeliver_backlog()
+    assert devin.calls == [(False, "e1"), (True, "e1")]
+    devin.calls.clear()
+    await runtime._redeliver_backlog()
+    assert devin.calls == [(False, "e1")]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_pending_updates_replayed_after_restart(tmp_path: Path) -> None:
     # an update persisted but not yet dispatched at shutdown is re-queued
     # on startup — the in-memory queue no longer drops accepted updates
