@@ -2137,6 +2137,49 @@ class Bridge:
                     if label
                     else "This permission request already expired."
                 )
+            elif option.startswith("__cmd:allow:"):
+                if (
+                    self.settings.admin_user_ids
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id, "Admins only — network access is restricted."
+                    )
+                    return
+                hosts = option.removeprefix("__cmd:allow:").split(",")
+                try:
+                    await self.devin.allow_hosts(session_id, hosts)
+                except ValueError as exc:
+                    await self.telegram.answer_callback_query(
+                        callback_id, f"Couldn't allow: {exc}. Approve it in the Devin app."
+                    )
+                    return
+                except (httpx.HTTPError, RuntimeError, TypeError) as exc:
+                    logger.warning("allow_hosts failed session=%s: %s", session_id, exc)
+                    forbidden = (
+                        isinstance(exc, httpx.HTTPStatusError)
+                        and exc.response.status_code == 403
+                    )
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Couldn't allow: the bridge's Devin key lacks ManageOrgAutomations."
+                        if forbidden
+                        else "Couldn't allow: the Devin API call failed — try again.",
+                    )
+                    return
+                try:
+                    await self.devin.send_message(
+                        session_id,
+                        f"Network access granted from Telegram for {', '.join(hosts)} "
+                        "(added to this automation's allowlist). Retry what was blocked.",
+                    )
+                except (httpx.HTTPError, RuntimeError):
+                    # the allowlist is already widened; keep going so the button clears
+                    logger.warning("allow_hosts notice failed session=%s", session_id)
+                # one disabled ✅ row replaces this message's keyboard
+                option = updated = f"Allowed {', '.join(hosts)}"
+                choices = []
+                plain_option = True
             else:
                 if (
                     is_local(session_id)

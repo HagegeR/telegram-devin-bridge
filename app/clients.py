@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
@@ -284,6 +284,8 @@ class DevinClient:
         # re-reading the whole history
         self._page_cursors: dict[str, dict[str, str | None]] = {}
         self._modes_cache: list[str] | None = None
+        # shortcut: serializes allowlist read-modify-write in this process only; writers elsewhere can still race
+        self._allow_lock = asyncio.Lock()
         self._repos_cache: tuple[float, list[str]] | None = None
         self._platforms_cache: tuple[float, list[str]] | None = None
         self._secrets_cache: tuple[float, list[tuple[str, str]]] | None = None
@@ -372,6 +374,42 @@ class DevinClient:
         return self._required_str(payload, "session_id"), self._required_str(
             payload, "url"
         )
+
+    async def allow_hosts(self, session_id: str, hosts: list[str]) -> None:
+        """Add hostnames to the network allowlist of the automation that started the session."""
+        if not self.v3_enabled:
+            raise ValueError("needs the v3 API (DEVIN_SERVICE_USER_API_KEY + DEVIN_ORG_ID)")
+        headers = self._v3_headers()
+        session = await self._json(
+            "GET", self._v3(f"/sessions/{self._devin_id(session_id)}"), headers=headers
+        )
+        automation_id = self._optional_str(session.get("automation_id"))
+        if automation_id is None:
+            raise ValueError("this session wasn't started by an automation")
+        path = self._v3(f"/automations/{automation_id}")
+        async with self._allow_lock:
+            automation = await self._json("GET", path, headers=headers)
+            try:
+                session_settings = cast(dict[str, Any], automation["session_settings"])
+                net_policy = cast(dict[str, Any], session_settings["net_policy"])
+                allow = list(net_policy["allow"])
+            except (KeyError, TypeError):
+                raise ValueError("the automation has no network allowlist of its own") from None
+            have = {item.get("hostname") for item in allow if isinstance(item, dict)}
+            allow = [*allow, *({"hostname": host} for host in hosts if host not in have)]
+            # whole group resent: under replace_groups PATCH semantics an omitted
+            # member (devin_mode, other net_policy rules, ...) would be cleared
+            await self._json(
+                "PATCH",
+                path,
+                json={
+                    "session_settings": {
+                        **session_settings,
+                        "net_policy": {**net_policy, "allow": allow},
+                    }
+                },
+                headers=headers,
+            )
 
     async def send_message(self, session_id: str, message: str) -> None:
         if self.v3_enabled:

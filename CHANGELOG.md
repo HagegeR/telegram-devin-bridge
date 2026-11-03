@@ -8,6 +8,17 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- **Approve network access from Telegram**: a reply line
+  `ALLOW_HOSTS: host1, host2` renders a 🌐 Allow button. Tapping it adds
+  those hostnames to the network allowlist of the automation that started
+  the session (v3 API, `PATCH …/automations/{id}`), so a blocked request
+  can be approved without opening the Devin app. It widens the allowlist
+  for all of that automation's sessions, needs the bridge's Devin key to
+  have `ManageOrgAutomations`, and is admin-only when admins are set.
+  Sessions not started by an automation still need the Devin app.
+
 ### Fixed
 
 - **Voice notes showed no "processing" mark while transcribing**: the ✍

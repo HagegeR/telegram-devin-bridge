@@ -10189,6 +10189,7 @@ def test_preamble_documents_every_marker() -> None:
         "SILENT:",
         "PROGRESS:",
         "POLL:",
+        "ALLOW_HOSTS:",
     ):
         assert marker in SYSTEM_PREAMBLE, marker
 
@@ -12549,3 +12550,83 @@ def test_stamp_uvicorn_loggers_prefixes_formatters() -> None:
     finally:
         for name, handler in attached:
             logging.getLogger(name).removeHandler(handler)
+
+
+def test_extract_controls_allow_hosts() -> None:
+    body, controls = extract_controls("Blocked.\nALLOW_HOSTS: En.Wikipedia.org, raw.githubusercontent.com en.wikipedia.org")
+    assert body == "Blocked."
+    assert controls == {"allow_hosts": ["en.wikipedia.org", "raw.githubusercontent.com"]}
+    # wildcards, URLs, empty and more than 5 hosts stay ordinary text
+    for value in ("*.github.com", "https://x.com/a", "", "a.io b.io c.io d.io e.io f.io"):
+        body, controls = extract_controls(f"ALLOW_HOSTS: {value}")
+        assert controls == {} and "ALLOW_HOSTS:" in body
+
+
+@pytest.mark.asyncio
+async def test_allow_hosts_patches_automation_net_policy() -> None:
+    patched: list[dict[str, object]] = []
+    automation_of = {"devin-s1": "auto-1", "devin-s2": None}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET" and "/sessions/" in path:
+            return httpx.Response(200, json={"automation_id": automation_of[path.rsplit("/", 1)[1]]})
+        if request.method == "GET" and path.endswith("/automations/auto-1"):
+            return httpx.Response(200, json={"session_settings": {
+                "devin_mode": "normal",
+                "net_policy": {"allow": [{"hostname": "github.com"}], "deny": ["x"]},
+            }})
+        assert request.method == "PATCH" and path == "/v3/organizations/org-1/automations/auto-1"
+        patched.append(json.loads(request.content))
+        return httpx.Response(200, json={})
+
+    devin = DevinClient(
+        "fake-key", "https://devin.test", 3, transport=httpx.MockTransport(handler),
+        service_user_api_key="svc-placeholder", org_id="org-1",
+    )
+    await devin.allow_hosts("s1", ["github.com", "en.wikipedia.org"])
+    assert patched == [{"session_settings": {
+        "devin_mode": "normal",
+        "net_policy": {
+            "allow": [{"hostname": "github.com"}, {"hostname": "en.wikipedia.org"}],
+            "deny": ["x"],
+        },
+    }}]
+    with pytest.raises(ValueError, match="automation"):
+        await devin.allow_hosts("s2", ["en.wikipedia.org"])
+    await devin.close()
+
+
+@pytest.mark.asyncio
+async def test_allow_hosts_callback_grants_and_tells_session(tmp_path: Path) -> None:
+    class AllowDevin(_FakeDevin):
+        v3_enabled = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.allowed: list[tuple[str, list[str]]] = []
+
+        async def allow_hosts(self, session_id: str, hosts: list[str]) -> None:
+            self.allowed.append((session_id, hosts))
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222", chat_id=222, thread_id=None,
+        session_id="s1", session_url="https://devin.test/s1", title="t",
+    )
+    store.add_choice("c1", "222", "s1", 222, "__cmd:allow:en.wikipedia.org,raw.githubusercontent.com", 1)
+    devin = AllowDevin()
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    await runtime.handle_callback({
+        "id": "cb1",
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 1, "chat": {"id": 222, "type": "private"}},
+        "data": "c1",
+    })
+    assert devin.allowed == [("s1", ["en.wikipedia.org", "raw.githubusercontent.com"])]
+    assert devin.sent[-1][1].startswith(
+        "Network access granted from Telegram for en.wikipedia.org, raw.githubusercontent.com "
+    )
+    assert "Allowed en.wikipedia.org" in str(telegram.markup_edits[-1])
+    await runtime.shutdown()
