@@ -453,6 +453,31 @@ async def test_admin_env_never_keys_are_rejected_and_hidden(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key",
+    [
+        "DEVIN_LOCAL_CLI",
+        "TRANSCRIPTION_COMMAND",
+        "TRANSCRIPTION_DOCKER_IMAGE",
+        "WHISPER_CPP_BIN",
+        "WHISPER_CPP_MODEL",
+    ],
+)
+async def test_admin_env_exec_vector_keys_never_settable(
+    tmp_path: Path, key: str
+) -> None:
+    app, *_ = make_app(tmp_path, admin_env_allowlist=key)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await authed(
+            client,
+            {"action": "set-env", "key": key, "value": "/bin/sh"},
+        )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_admin_get_env_allowlist_only(tmp_path: Path) -> None:
     app, *_ = make_app(tmp_path)
     async with httpx.AsyncClient(

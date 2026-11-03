@@ -45,6 +45,13 @@ _NEVER_ENV_KEYS = frozenset(
         "ADMIN_ENV_PATH",
         "ADMIN_LOG_PATH",
         "ADMIN_SECRET",
+        # Exec vectors: these pick the program the bridge runs, so an
+        # ADMIN_ENV_ALLOWLIST that names them must still not re-enable them.
+        "DEVIN_LOCAL_CLI",
+        "TRANSCRIPTION_COMMAND",
+        "TRANSCRIPTION_DOCKER_IMAGE",
+        "WHISPER_CPP_BIN",
+        "WHISPER_CPP_MODEL",
     }
 )
 _RATE_LIMIT = 10  # requests per minute

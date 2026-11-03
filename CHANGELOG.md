@@ -19,6 +19,18 @@ and deployment update channels.
   have `ManageOrgAutomations`, and is admin-only when admins are set.
   Sessions not started by an automation still need the Devin app.
 
+### Security
+
+- **`set-env` can no longer pick the programs the bridge runs**:
+  `WHISPER_CPP_BIN` and `WHISPER_CPP_MODEL` were in the default
+  `ADMIN_ENV_ALLOWLIST`, so an admin-secret holder could point the
+  whisper.cpp backend at an arbitrary binary and get command execution as
+  the bridge user on the next voice note. Both keys are removed from the
+  default allowlist, and `WHISPER_CPP_BIN`, `WHISPER_CPP_MODEL`,
+  `DEVIN_LOCAL_CLI`, `TRANSCRIPTION_COMMAND` and
+  `TRANSCRIPTION_DOCKER_IMAGE` are now in the never-settable key set, so an
+  operator allowlist cannot re-enable them.
+
 ### Fixed
 
 - **Voice notes showed no "processing" mark while transcribing**: the ✍
