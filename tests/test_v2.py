@@ -12574,7 +12574,7 @@ async def test_allow_hosts_patches_automation_net_policy() -> None:
         if request.method == "GET" and path.endswith("/automations/auto-1"):
             return httpx.Response(200, json={"session_settings": {
                 "devin_mode": "normal",
-                "net_policy": {"allow": [{"hostname": "github.com"}]},
+                "net_policy": {"allow": [{"hostname": "github.com"}], "deny": ["x"]},
             }})
         assert request.method == "PATCH" and path == "/v3/organizations/org-1/automations/auto-1"
         patched.append(json.loads(request.content))
@@ -12587,7 +12587,10 @@ async def test_allow_hosts_patches_automation_net_policy() -> None:
     await devin.allow_hosts("s1", ["github.com", "en.wikipedia.org"])
     assert patched == [{"session_settings": {
         "devin_mode": "normal",
-        "net_policy": {"allow": [{"hostname": "github.com"}, {"hostname": "en.wikipedia.org"}]},
+        "net_policy": {
+            "allow": [{"hostname": "github.com"}, {"hostname": "en.wikipedia.org"}],
+            "deny": ["x"],
+        },
     }}]
     with pytest.raises(ValueError, match="automation"):
         await devin.allow_hosts("s2", ["en.wikipedia.org"])

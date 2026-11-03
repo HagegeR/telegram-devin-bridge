@@ -1047,7 +1047,7 @@ class SessionWatcher:
             # a reply with options needs its keyboard — covering it in
             # the digest would drop the buttons, so it stays for normal
             # delivery and isn't counted in the digest text either
-            if body and not options:
+            if body and not options and "allow_hosts" not in controls:
                 parts.append(body)
                 covered.add(index)
         if not parts:

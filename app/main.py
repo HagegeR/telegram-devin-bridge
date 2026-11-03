@@ -2167,11 +2167,15 @@ class Bridge:
                         else "Couldn't allow: the Devin API call failed — try again.",
                     )
                     return
-                await self.devin.send_message(
-                    session_id,
-                    f"Network access granted from Telegram for {', '.join(hosts)} "
-                    "(added to this automation's allowlist). Retry what was blocked.",
-                )
+                try:
+                    await self.devin.send_message(
+                        session_id,
+                        f"Network access granted from Telegram for {', '.join(hosts)} "
+                        "(added to this automation's allowlist). Retry what was blocked.",
+                    )
+                except (httpx.HTTPError, RuntimeError):
+                    # the allowlist is already widened; keep going so the button clears
+                    logger.warning("allow_hosts notice failed session=%s", session_id)
                 # one disabled ✅ row replaces this message's keyboard
                 option = updated = f"Allowed {', '.join(hosts)}"
                 choices = []
