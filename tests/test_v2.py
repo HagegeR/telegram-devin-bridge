@@ -12622,6 +12622,8 @@ async def test_allow_hosts_callback_grants_and_tells_session(tmp_path: Path) -> 
         "data": "c1",
     })
     assert devin.allowed == [("s1", ["en.wikipedia.org", "raw.githubusercontent.com"])]
-    assert "en.wikipedia.org" in devin.sent[-1][1]
+    assert devin.sent[-1][1].startswith(
+        "Network access granted from Telegram for en.wikipedia.org, raw.githubusercontent.com "
+    )
     assert "Allowed en.wikipedia.org" in str(telegram.markup_edits[-1])
     await runtime.shutdown()
