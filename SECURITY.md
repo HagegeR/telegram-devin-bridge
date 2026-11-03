@@ -64,14 +64,14 @@ FastAPI single process (uvicorn `0.0.0.0:8000`, served via Tailscale Funnel on t
 
 - `POST /telegram/webhook` - `X-Telegram-Bot-Api-Secret-Token` vs `TELEGRAM_WEBHOOK_SECRET` (main.py ~4068); or long polling.
 - Telegram updates: messages, slash commands, `callback_data` (`cfg:*`, user-controllable), reactions, voice notes, attachments, URLs (crawler).
-- `POST /notify` (Bearer `NOTIFY_SECRET`), `POST /admin` (Bearer `ADMIN_SECRET`, disabled when unset; `set-env` allowlist `ADMIN_ENV_ALLOWLIST`), `GET /doctor` (`DOCTOR_SECRET`), `GET /metrics`, `GET /health`, `GET /r/{token}` redirect tokens.
+- `POST /notify` (Bearer `NOTIFY_SECRET`), `POST /admin` (Bearer `ADMIN_SECRET`, disabled when unset; `set-env` allowlist `ADMIN_ENV_ALLOWLIST`), `GET /doctor` (`DOCTOR_SECRET`), `GET /health`, `GET /r/{token}` redirect tokens.
 - Devin session output streamed back (markers `OPTIONS:`, `DETAILS:` ... parsed from agent text).
 
 ### Assets
 Telegram bot token, Devin API keys (v1 + service-user v3), `*_SECRET`s, ACU budget, Devin org secrets attachable per chat (`cfg:secrets`), chat content per conversation, the bridge host (local ACP agent = shell-equivalent).
 
 ### Attackers
-Telegram users not on `TELEGRAM_ALLOWED_USERS`/`ALLOWED_CHAT_IDS`; allowed non-admin users escalating to admin-tier (local platform, bypass mode, secrets, `/sethome`); group members bypassing the mention gate; internet callers of the Funnel endpoints; content injected via Devin output, crawled URLs, or audio files.
+Telegram users not on `TELEGRAM_ALLOWED_USERS`/`TELEGRAM_ALLOWED_CHAT_IDS`; allowed non-admin users escalating to admin-tier (local platform, bypass mode, secrets, `/sethome`); group members bypassing the mention gate; internet callers of the Funnel endpoints; content injected via Devin output, crawled URLs, or audio files.
 
 ### Controls
 `access.py` allowlist + admin ids; `hmac.compare_digest` for secrets; tarpit; `_rate_limited` on paths reaching `devin.send_message`; credential scrubbing in logs/errors; ffmpeg `-protocol_whitelist file` + `-format_whitelist`; SSRF hardening in crawler; unprivileged uid 10001 in Docker.
