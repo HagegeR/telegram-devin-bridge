@@ -1481,15 +1481,20 @@ class Bridge:
                             "cloud backlog probe failed for %s: %s", sid, exc
                         )
                         return None
-                if stamp is not None:
-                    self._cloud_probe_stamps[sid] = state.updated_at or stamp
             # a post-cursor user_message alone must not restart delivery —
             # the watcher can't advance the cursor on it, so the probe
             # would fire again every sweep
             if not any(
                 m.message_type == "devin_message" for m in state.messages
             ):
+                if stamp is not None:
+                    self._cloud_probe_stamps[sid] = (
+                        state.updated_at or stamp
+                    )
                 return None
+            # no stamp while a detected reply is still undelivered: the
+            # recovery watcher can die without advancing the cursor, and a
+            # recorded stamp would suppress every later re-probe
             return conv
 
         for conv in await asyncio.gather(*(_probe(c) for c in cloud)):

@@ -11151,6 +11151,76 @@ async def test_redeliver_backlog_skips_unchanged_cloud_sessions(
 
 
 @pytest.mark.asyncio
+async def test_redeliver_backlog_reprobes_undelivered_cloud_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a detected reply whose recovery watcher dies without advancing the
+    # persisted cursor must be re-probed on the next sweep — stamping the
+    # session before delivery would strand it until the next update
+    class _BacklogDevin(_FakeDevin):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[bool, str | None]] = []
+
+        async def get_session(
+            self,
+            _session_id: str,
+            since_event_id: str | None = None,
+            fetch_messages: bool = True,
+        ) -> SessionState:
+            self.calls.append((fetch_messages, since_event_id))
+            return SessionState(
+                "finished",
+                "t",
+                None,
+                # v3-shaped: the metadata-only probe carries no messages,
+                # so the sweep must issue the second call to see the reply
+                (
+                    [DevinMessage("devin_message", "e2", "lost reply", None)]
+                    if fetch_messages
+                    else []
+                ),
+                updated_at="2026-01-01T00:00:00Z",
+            )
+
+    devin = _BacklogDevin()
+    runtime = Bridge(
+        settings(tmp_path),
+        Store(":memory:"),
+        devin,  # type: ignore[arg-type]
+        _FakeTelegram(),
+    )
+    runtime.store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s9",
+        session_url="https://devin.test/s9",
+        title="t",
+        last_event_id="e1",
+    )
+    starts: list[object] = []
+
+    async def _failing_watcher(conv: object, **_kwargs: object) -> None:
+        # watcher dies without delivering: the cursor never moves
+        starts.append(conv)
+
+    monkeypatch.setattr(runtime, "start_watcher", _failing_watcher)
+    await runtime._redeliver_backlog()
+    await runtime._redeliver_backlog()
+    assert len(starts) == 2
+    # no stamp recorded while the reply is undelivered: the second sweep
+    # re-fetches messages instead of stopping at the metadata probe
+    assert devin.calls == [
+        (False, "e1"),
+        (True, "e1"),
+        (False, "e1"),
+        (True, "e1"),
+    ]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_pending_updates_replayed_after_restart(tmp_path: Path) -> None:
     # an update persisted but not yet dispatched at shutdown is re-queued
     # on startup — the in-memory queue no longer drops accepted updates
