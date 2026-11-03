@@ -397,9 +397,10 @@ _END_TABLE = re.compile(r"^END\s+TABLE\s*$", re.IGNORECASE)
 _END_SUGGEST = re.compile(r"^END\s+SUGGEST\s*$", re.IGNORECASE)
 _TABLE_SEPARATOR = re.compile(r":?-+:?")
 _FENCE = re.compile(r"^```")
+_HOSTNAME = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 
 _CONTROL_LINE = re.compile(
-    r"^(REACT|URGENT|SILENT|PIN|PROGRESS|POLL)\s*:\s*(.*)$"
+    r"^(REACT|URGENT|SILENT|PIN|PROGRESS|POLL|ALLOW_HOSTS)\s*:\s*(.*)$"
 )
 
 
@@ -408,7 +409,8 @@ def extract_controls(text: str) -> tuple[str, dict[str, object]]:
 
     Returns the remaining text plus a dict with any of: ``react`` (emoji),
     ``urgent``/``silent`` (notification override), ``pin``, ``progress``
-    (edit-in-place), ``poll`` (``[question, *options]``). Marker lines that
+    (edit-in-place), ``poll`` (``[question, *options]``), ``allow_hosts``
+    (1-5 plain hostnames). Marker lines that
     don't parse are kept as ordinary text.
     """
     controls: dict[str, object] = {}
@@ -465,6 +467,13 @@ def extract_controls(text: str) -> tuple[str, dict[str, object]]:
                 and all(len(part) <= 100 for part in parts[1:])
             ):
                 controls["poll"] = parts
+                continue
+            kept.append(line)
+            continue
+        elif name == "ALLOW_HOSTS":
+            hosts = list(dict.fromkeys(h.lower() for h in re.split(r"[,\s]+", value) if h))
+            if len(hosts) in range(1, 6) and all(_HOSTNAME.fullmatch(h) for h in hosts):
+                controls["allow_hosts"] = hosts
                 continue
             kept.append(line)
             continue

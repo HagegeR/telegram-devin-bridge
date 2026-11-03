@@ -29,8 +29,11 @@ from app.formatting import (
     topic_name,
 )
 from app.images import photo_fits_unchanged
+from app.local import is_local
 from app.store import PLACEHOLDER_TITLE_PREFIX, Conversation, Store
 from app.telegram import TelegramClient, TelegramTargetGone
+
+ALLOW_HOSTS_OPTION = "__cmd:allow:"
 
 logger = logging.getLogger(__name__)
 
@@ -714,6 +717,13 @@ class SessionWatcher:
         metadata_urls = set(attachment_urls)
         body, options = extract_options(body)
         body, controls = extract_controls(body)
+        if (
+            "allow_hosts" in controls
+            and self.devin.v3_enabled
+            and not is_local(self.conversation.session_id)
+        ):
+            hosts = cast(list[str], controls["allow_hosts"])
+            options = [*options, ALLOW_HOSTS_OPTION + ",".join(hosts)]
         if "react" in controls:
             await self.telegram.react(
                 self.conversation.chat_id,
@@ -870,7 +880,12 @@ class SessionWatcher:
             for option in options:
                 choice_id = secrets.token_urlsafe(8)
                 choice_ids.append((choice_id, option))
-                buttons.append([{"text": option, "callback_data": choice_id}])
+                text = (
+                    f"🌐 Allow {option.removeprefix(ALLOW_HOSTS_OPTION).replace(',', ', ')}"
+                    if option.startswith(ALLOW_HOSTS_OPTION)
+                    else option
+                )
+                buttons.append([{"text": text[:64], "callback_data": choice_id}])
             markup = {"inline_keyboard": buttons}
         body, documents = extract_large_code_blocks(body)
         for index, (filename, content) in enumerate(documents):

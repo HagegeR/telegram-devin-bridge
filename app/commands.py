@@ -52,6 +52,9 @@ SYSTEM_PREAMBLE = (
     "the reply; `URGENT:`/`SILENT:` override "
     "notification quieting; `PROGRESS:` edits your previous progress message "
     "instead of sending a new one; `POLL: question | a | b` sends a poll. "
+    "`ALLOW_HOSTS: host1, host2` adds a button that adds those hostnames to the "
+    "network allowlist of the automation that started this session — use it "
+    "when a network request is blocked. "
     "Never ask the user to open a UI; they only see your messages.\n\n"
     "User message: "
 )
