@@ -1876,13 +1876,17 @@ class LocalClient:
                 break
             sess.last_activity = time.monotonic()
             buf += chunk
-            while b"\n" in buf:
-                raw, rest = buf.split(b"\n", 1)
-                buf = rest
+            # scan for newlines only in the bytes just appended and cut each
+            # line by offset, so a chunk is traversed once instead of the
+            # whole buffer being rescanned/recopied per line
+            start = 0
+            while (nl := buf.find(b"\n", start)) != -1:
+                raw = buf[start:nl]
+                start = nl + 1
                 if not raw:
                     continue
                 if len(raw) > _ACP_MAX_LINE:
-                    self._drop_line(sess, raw)
+                    self._drop_line(sess, bytes(raw))
                     continue
                 try:
                     msg = json.loads(raw)
@@ -1894,6 +1898,7 @@ class LocalClient:
                     # a malformed update must not kill the reader — its
                     # pending turns would otherwise hang forever
                     logger.warning("bad acp update skipped: %.200s", bytes(raw))
+            del buf[:start]
             if len(buf) > _ACP_MAX_LINE:
                 # an unterminated oversized line: drop it chunk-by-chunk
                 # so memory and downstream scrub cost stay bounded
