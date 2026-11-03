@@ -1875,14 +1875,16 @@ class LocalClient:
             if not chunk:
                 break
             sess.last_activity = time.monotonic()
+            # the buffered tail is already known to hold no newline, so scan
+            # only the bytes just appended and cut lines by offset — each byte
+            # is scanned and copied once instead of per-line rescan/recopy
+            pos = len(buf)
             buf += chunk
-            # scan for newlines only in the bytes just appended and cut each
-            # line by offset, so a chunk is traversed once instead of the
-            # whole buffer being rescanned/recopied per line
             start = 0
-            while (nl := buf.find(b"\n", start)) != -1:
+            while (nl := buf.find(b"\n", pos)) != -1:
                 raw = buf[start:nl]
                 start = nl + 1
+                pos = start
                 if not raw:
                     continue
                 if len(raw) > _ACP_MAX_LINE:
