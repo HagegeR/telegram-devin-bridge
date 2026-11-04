@@ -93,8 +93,8 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 | `TRANSCRIPTION_COMMAND` | `command` | unset | Any argv; root-only, not settable via the admin API. |
 | `TRANSCRIPTION_DOCKER_IMAGE` | `docker` | unset | Validated image reference; root-only (it picks the code that runs). |
 | `TRANSCRIPTION_DOCKER_MEMORY` | no | `400m` | Admin-settable. |
-| `WHISPER_CPP_BIN` | no | `whisper-cli` | |
-| `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` | |
+| `WHISPER_CPP_BIN` | no | `whisper-cli` | Root-only, not settable via the admin API (it picks the code that runs). |
+| `WHISPER_CPP_MODEL` | no | `/opt/whisper.cpp/models/ggml-base.en.bin` | Root-only, not settable via the admin API (it is the binary's first argument). |
 | `WHISPER_CPP_FAST` | no | `true` | Greedy decoding + audio context sized to the clip (~2.5× faster on CPU); `false` for max accuracy. |
 | `WHISPER_CPP_EXTRA_ARGS` | no | unset | Extra flags; `-f`, `-m`, `-o*` are rejected. |
 
@@ -136,7 +136,7 @@ enables the `api` backend (any OpenAI-compatible `/v1` endpoint via
 | `NOTIFY_SECRET` | no | unset (`/notify` disabled) | See [operations.md](operations.md#notify). |
 | `DOCTOR_SECRET` | no | unset (`/doctor` disabled) | Separate from `NOTIFY_SECRET`; 30 s cooldown between runs. |
 | `ADMIN_SECRET` | no | unset (`/admin` disabled) | See [operations.md](operations.md#admin-api). |
-| `ADMIN_ENV_ALLOWLIST` | no | built-in non-secret key list | Keys settable via `set-env`. Tokens/keys/secrets are never readable or writable. |
+| `ADMIN_ENV_ALLOWLIST` | no | built-in non-secret key list | Keys settable via `set-env`. Tokens/keys/secrets are never readable or writable; command/path keys that pick the programs the bridge runs (`DEVIN_LOCAL_CLI`, `TRANSCRIPTION_COMMAND`, `TRANSCRIPTION_DOCKER_IMAGE`, `WHISPER_CPP_BIN`, `WHISPER_CPP_MODEL`) stay unsettable even when listed here. |
 | `ADMIN_ENV_PATH` | no | `.env` | Env file the `get-env`/`set-env` actions read and write; relative paths resolve from the repo root. |
 | `ADMIN_LOG_PATH` | no | `/var/log/telegram-devin-bridge.log` | Log file tailed by the `logs` action. |
 | `ADMIN_RESTART_COMMAND` | no | `rc-service` restart when root and OpenRC is the running init (`/run/openrc`), else empty | Command run by the `restart` action. Empty exits the process so the supervisor (systemd, launchd, the Windows loop, Docker) respawns it. |
