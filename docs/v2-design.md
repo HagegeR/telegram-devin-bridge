@@ -100,12 +100,15 @@ alive, and stops when `status_enum` is not `working`/`resumed`/`resume_requested
   the next poll. The janitor sweep (every 10 min) stays as the backstop:
   it rechecks live local sessions whose emitted events outnumber the
   conversation's persisted `last_event_id`, and probes every cloud
-  conversation with no live watcher via `get_session(since_event_id)` —
-  a post-cursor `devin_message` means the remote history moved past the
-  cursor (a lone post-cursor `user_message` is ignored, since the
-  watcher can't advance the cursor on it and would restart every sweep;
-  the cursor filters client-side, so each probe re-reads history until
-  the marker — one request per conversation per sweep).
+  conversation with no live watcher — a metadata-only
+  `get_session(fetch_messages=False)` first, then the messages pages via
+  `get_session(since_event_id)` only when the session's `updated_at`
+  moved since the last sweep (a session that wasn't updated can't have
+  new `devin_message`s; probes run under a bounded semaphore rather than
+  strictly in sequence). A post-cursor `devin_message` means the remote
+  history moved past the cursor (a lone post-cursor `user_message` is
+  ignored, since the watcher can't advance the cursor on it and would
+  restart every sweep).
   Watchers also log their exit
   reason (watch cap, non-active close) and a `suppress_turn` discard
   warns, so delivery gaps

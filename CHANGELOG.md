@@ -33,6 +33,13 @@ and deployment update channels.
 
 ### Fixed
 
+- **Janitor backlog sweep probed every idle cloud session's full message
+  history every 10 minutes**: each sweep cost ~2 sequential API calls per
+  bound conversation even when nothing changed. The probe now fetches
+  only the session metadata first and skips the messages fetch entirely
+  while the session's `updated_at` hasn't moved since the last sweep,
+  and the remaining probes fan out under a semaphore (4 at a time)
+  instead of running strictly in sequence.
 - **Voice notes showed no "processing" mark while transcribing**: the ✍
   reaction only landed *after* a transcript succeeded, and the 🫡 receipt
   mark waits inside the turn queue — which itself waits on the

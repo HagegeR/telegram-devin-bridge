@@ -250,6 +250,10 @@ class Bridge:
         # message that fed it, not only the trigger
         self._update_msg: dict[int, int] = {}
         self.draining: set[str] = set()
+        # sid -> session updated_at last seen by the janitor's cloud
+        # backlog probe: an unchanged stamp means no new devin_messages,
+        # so the sweep skips the messages fetch entirely
+        self._cloud_probe_stamps: dict[str, str] = {}
         self.rate_windows: dict[int, deque[float]] = {}
         self.rate_warnings: dict[int, float] = {}
         self.shutting_down = False
@@ -1387,11 +1391,18 @@ class Bridge:
         # can't be checked in memory — probe every conversation with no
         # live watcher (recency can't tell whether a remote session kept
         # running); since_event_id filters client-side so any post-cursor
-        # devin_message means the cursor fell behind.
+        # devin_message means the cursor fell behind. The probe is gated
+        # on the session's updated_at: an unchanged stamp can't hide new
+        # devin_messages, so only the one metadata GET runs per sweep per
+        # session; probes fan out under a small semaphore instead of
+        # running strictly in sequence.
+        cloud: list[Conversation] = []
+        live_sids: set[str] = set()
         for conv in self.store.list_conversations():
             sid = conv.session_id or ""
             if not sid or self.store.get_setting(f"tg_gone:{conv.conv_key}"):
                 continue
+            live_sids.add(sid)
             watcher = self.watchers.get(sid)
             if watcher is not None and not watcher.done():
                 continue
@@ -1424,19 +1435,70 @@ class Bridge:
                     trigger_at=conv.updated_at,
                 )
                 continue
-            try:
-                state = await self.devin.get_session(
-                    sid, since_event_id=conv.last_event_id
-                )
-            except (RuntimeError, httpx.HTTPError, TypeError, ValueError) as exc:
-                logger.debug("cloud backlog probe failed for %s: %s", sid, exc)
-                continue
+            cloud.append(conv)
+        for stale in set(self._cloud_probe_stamps) - live_sids:
+            del self._cloud_probe_stamps[stale]
+        probe_sem = asyncio.Semaphore(4)
+
+        async def _probe(conv: Conversation) -> Conversation | None:
+            sid = conv.session_id or ""
+            async with probe_sem:
+                try:
+                    meta = await self.devin.get_session(
+                        sid,
+                        since_event_id=conv.last_event_id,
+                        fetch_messages=False,
+                    )
+                except (
+                    RuntimeError,
+                    httpx.HTTPError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    logger.debug(
+                        "cloud backlog probe failed for %s: %s", sid, exc
+                    )
+                    return None
+                stamp = meta.updated_at
+                if (
+                    stamp is not None
+                    and self._cloud_probe_stamps.get(sid) == stamp
+                ):
+                    return None
+                state = meta
+                if not state.messages:
+                    try:
+                        state = await self.devin.get_session(
+                            sid, since_event_id=conv.last_event_id
+                        )
+                    except (
+                        RuntimeError,
+                        httpx.HTTPError,
+                        TypeError,
+                        ValueError,
+                    ) as exc:
+                        logger.debug(
+                            "cloud backlog probe failed for %s: %s", sid, exc
+                        )
+                        return None
             # a post-cursor user_message alone must not restart delivery —
             # the watcher can't advance the cursor on it, so the probe
             # would fire again every sweep
             if not any(
                 m.message_type == "devin_message" for m in state.messages
             ):
+                if stamp is not None:
+                    self._cloud_probe_stamps[sid] = (
+                        state.updated_at or stamp
+                    )
+                return None
+            # no stamp while a detected reply is still undelivered: the
+            # recovery watcher can die without advancing the cursor, and a
+            # recorded stamp would suppress every later re-probe
+            return conv
+
+        for conv in await asyncio.gather(*(_probe(c) for c in cloud)):
+            if conv is None:
                 continue
             logger.warning(
                 "undelivered cloud events on %s — restarting watcher",
