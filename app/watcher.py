@@ -715,7 +715,7 @@ class SessionWatcher:
     ) -> None:
         body, attachment_urls = extract_attachments(message.message)
         metadata_urls = set(attachment_urls)
-        body, options = extract_options(body)
+        body, options, multi = extract_options(body)
         body, controls = extract_controls(body)
         if (
             "allow_hosts" in controls
@@ -886,6 +886,10 @@ class SessionWatcher:
                     else option
                 )
                 buttons.append([{"text": text[:64], "callback_data": choice_id}])
+            if multi:
+                done_id = secrets.token_urlsafe(8)
+                choice_ids.append((done_id, "__cmd:multi:done"))
+                buttons.append([{"text": "Done", "callback_data": done_id}])
             markup = {"inline_keyboard": buttons}
         body, documents = extract_large_code_blocks(body)
         for index, (filename, content) in enumerate(documents):
@@ -1038,7 +1042,7 @@ class SessionWatcher:
         covered: set[int] = set()
         urgent = False
         for index, message in enumerate(messages):
-            body, options = extract_options(
+            body, options, _multi = extract_options(
                 extract_attachments(message.message)[0]
             )
             body, controls = extract_controls(body)
