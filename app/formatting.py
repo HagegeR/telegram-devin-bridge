@@ -291,22 +291,27 @@ def chunk(text: str, limit: int = 4096) -> list[str]:
     ]
 
 
-def extract_options(text: str) -> tuple[str, list[str]]:
+def extract_options(text: str) -> tuple[str, list[str], bool]:
+    """Split a trailing ``OPTIONS:``/``OPTIONS+:`` line into button labels.
+
+    ``OPTIONS+:`` asks for a multi-select keyboard (taps toggle, a Done
+    row submits the set); plain ``OPTIONS:`` is single-select.
+    """
     lines = text.splitlines()
     index = len(lines) - 1
     while index >= 0 and not lines[index].strip():
         index -= 1
     if index < 0:
-        return text, []
-    match = re.fullmatch(r"OPTIONS:(.+)", lines[index].strip())
+        return text, [], False
+    match = re.fullmatch(r"OPTIONS(\+)?:(.+)", lines[index].strip())
     if match is None:
-        return text, []
-    options = [item.strip() for item in match.group(1).split("|")]
+        return text, [], False
+    options = [item.strip() for item in match.group(2).split("|")]
     if not 1 <= len(options) <= 8 or any(
         not option or len(option) > 100 for option in options
     ):
-        return text, []
-    return "\n".join(lines[:index]).rstrip(), options
+        return text, [], False
+    return "\n".join(lines[:index]).rstrip(), options, match.group(1) == "+"
 
 
 def extract_attachments(text: str) -> tuple[str, list[str]]:

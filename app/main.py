@@ -2157,7 +2157,10 @@ class Bridge:
                 await self.telegram.answer_callback_query(callback_id, "This choice expired")
                 return
             if (
-                not option.startswith("__cmd:")
+                (
+                    not option.startswith("__cmd:")
+                    or option == "__cmd:multi:done"
+                )
                 and self._rate_limited(user_id)
             ):
                 await self.telegram.answer_callback_query(
@@ -2167,6 +2170,89 @@ class Bridge:
             choices = self.store.list_choices(conv_key, callback_message_id)
             plain_option = not option.startswith("__cmd:")
             model_menu = False
+            multi_submit = False
+            checked: set[object] = set()
+            if option == "__cmd:multi:done":
+                # a multi keyboard's Done submits the ✅-toggled set as
+                # one answer; the live markup holds the toggle state
+                checked = {
+                    button.get("callback_data")
+                    for row in _keyboard_rows(callback_message)
+                    for button in row
+                    if isinstance(button.get("text"), str)
+                    and button["text"].startswith("✅ ")
+                }
+                selected = [
+                    stored
+                    for cid, stored in choices
+                    if cid in checked and not stored.startswith("__cmd:")
+                ]
+                if not selected:
+                    await self.telegram.answer_callback_query(
+                        callback_id, "Tap options first, then Done."
+                    )
+                    return
+                option = ", ".join(selected)
+                plain_option = True
+                multi_submit = True
+            elif plain_option and any(
+                stored == "__cmd:multi:done" for _, stored in choices
+            ):
+                if (
+                    is_local(session_id)
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    # toggles steer the shared selection an admin later
+                    # submits — same host-access gate as option sends
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — this session runs on the bridge host.",
+                    )
+                    return
+                # a tap on a multi keyboard flips the option's ✅ in
+                # place — nothing is sent until Done
+                rows = _keyboard_rows(callback_message)
+                if rows:
+                    buttons: list[list[dict[str, object]]] = []
+                    for row in rows:
+                        new_row: list[dict[str, object]] = []
+                        for button in row:
+                            if button.get("callback_data") == data:
+                                label = str(button.get("text") or "")
+                                button = {
+                                    **button,
+                                    "text": (
+                                        f"☐ {label.removeprefix('✅ ')}"
+                                        if label.startswith("✅ ")
+                                        else f"✅ {label.removeprefix('☐ ')}"
+                                    ),
+                                }
+                            new_row.append(button)
+                        buttons.append(new_row)
+                else:
+                    # markup-less callback — rebuild live rows; earlier
+                    # toggles can't be recovered without the markup
+                    buttons = [
+                        [{
+                            "text": (
+                                "Done"
+                                if stored.startswith("__cmd:")
+                                else f"✅ {stored}" if cid == data else f"☐ {stored}"
+                            ),
+                            "callback_data": cid,
+                        }]
+                        for cid, stored in choices
+                    ]
+                try:
+                    await self.telegram.edit_message_reply_markup(
+                        chat_id,
+                        callback_message_id,
+                        {"inline_keyboard": buttons},
+                    )
+                except (httpx.HTTPError, RuntimeError):
+                    logger.warning("multi-select toggle edit failed")
+                await self.telegram.answer_callback_query(callback_id)
+                return
             if option.startswith("__cmd:terminate:"):
                 await self.stop_conversation(active)
                 updated = "Session terminated."
@@ -2290,21 +2376,39 @@ class Bridge:
             if callback_message_id:
                 try:
                     if plain_option:
-                        markup = {
-                            "inline_keyboard": [
-                                [
-                                    {
+                        if multi_submit:
+                            # the spent keyboard echoes the submitted
+                            # ✅ set; the Done row drops off
+                            markup = {
+                                "inline_keyboard": [
+                                    [{
                                         "text": (
                                             f"✅ {choice_option}"
-                                            if choice_id == data
+                                            if cid in checked
                                             else choice_option
                                         ),
                                         "disabled": {},
-                                    }
+                                    }]
+                                    for cid, choice_option in choices
+                                    if not choice_option.startswith("__cmd:")
                                 ]
-                                for choice_id, choice_option in choices
-                            ]
-                        }
+                            }
+                        else:
+                            markup = {
+                                "inline_keyboard": [
+                                    [
+                                        {
+                                            "text": (
+                                                f"✅ {choice_option}"
+                                                if choice_id == data
+                                                else choice_option
+                                            ),
+                                            "disabled": {},
+                                        }
+                                    ]
+                                    for choice_id, choice_option in choices
+                                ]
+                            }
                         if not choices:
                             markup = {
                                 "inline_keyboard": [[
@@ -4225,6 +4329,20 @@ def _sent_message_id(results: list[dict[str, object]]) -> int | None:
         return None
     message_id = results[-1].get("message_id")
     return message_id if isinstance(message_id, int) else None
+
+
+def _keyboard_rows(
+    message: Mapping[str, object],
+) -> list[list[dict[str, object]]]:
+    """Inline-keyboard rows from a callback's message ([] when absent)."""
+    rows = _mapping(message.get("reply_markup")).get("inline_keyboard")
+    if not isinstance(rows, list):
+        return []
+    return [
+        [button for button in row if isinstance(button, dict)]
+        for row in rows
+        if isinstance(row, list)
+    ]
 
 
 def _expand_text_links(

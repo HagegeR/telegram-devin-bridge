@@ -225,3 +225,5 @@ OPTIONS: Run it | Explain it | Cancel
 
 The bridge strips that line and renders one button per choice (max 8, ≤ 100
 chars each); the picked text is sent back into the same Devin session.
+`OPTIONS+:` renders a multi-select keyboard instead: option taps toggle a ✅
+and a Done button submits the checked set as one answer.

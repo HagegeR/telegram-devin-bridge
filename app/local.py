@@ -337,7 +337,7 @@ _RUNON_RE = re.compile(r"(?<=[.!?:;])(?=[A-Z⚠✓◆→#])")
 # reply markers the watcher parses line-wise (OPTIONS: labels, TABLE:/
 # DETAILS:/SUGGEST: bodies, control markers) break if a split lands
 # inside them — marker-prefixed lines are left alone
-_MARKER_LINE_RE = re.compile(r"^[A-Z][A-Z_]{2,}:")
+_MARKER_LINE_RE = re.compile(r"^[A-Z][A-Z_+]{2,}:")
 
 
 # code spans can use longer backtick runs (``code``) — capture the whole

@@ -97,10 +97,16 @@ def test_formatting_and_options() -> None:
     assert "_em_" in rendered
     assert "`code`" in rendered
     assert r"\# heading" in rendered
-    body, options = extract_options("Choose:\nOPTIONS: Yes | No")
+    body, options, multi = extract_options("Choose:\nOPTIONS: Yes | No")
     assert body == "Choose:"
     assert options == ["Yes", "No"]
+    assert not multi
+    body, options, multi = extract_options("Pick several:\nOPTIONS+: A | B | C")
+    assert body == "Pick several:"
+    assert options == ["A", "B", "C"]
+    assert multi
     assert extract_options("OPTIONS: " + " | ".join(str(i) for i in range(9)))[1] == []
+    assert extract_options("OPTIONS+: " + " | ".join(str(i) for i in range(9)))[1] == []
     # labels past the old 60-char cap still render as buttons
     long_label = "Pick the " + "very " * 12 + "long option"
     assert extract_options(f"OPTIONS: {long_label} | Skip")[1] == [
@@ -4801,6 +4807,266 @@ async def test_second_options_message_clears_first_keyboard(tmp_path: Path) -> N
     ).run()
     assert {"inline_keyboard": []} in telegram.markup_edits
     assert store.list_choice_messages("222") == [2]
+
+
+@pytest.mark.asyncio
+async def test_multi_options_keyboard_adds_done_row(tmp_path: Path) -> None:
+    class OptionsDevin:
+        calls = 0
+
+        async def get_session(
+            self, _session_id: str, since_event_id: str | None = None, fetch_messages: bool = True
+        ) -> SessionState:
+            self.calls += 1
+            messages = [
+                DevinMessage(
+                    "devin_message",
+                    "event-1",
+                    "Pick all that apply\nOPTIONS+: A | B | C",
+                    None,
+                )
+            ]
+            return SessionState(
+                "working" if self.calls == 1 else "finished",
+                "title",
+                None,
+                messages,
+            )
+
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    conversation = store.get_conversation("222")
+    assert conversation is not None
+    telegram = _FakeTelegram()
+    await SessionWatcher(
+        conversation,
+        store,
+        OptionsDevin(),  # type: ignore[arg-type]
+        telegram,  # type: ignore[arg-type]
+        settings(tmp_path, devin_poll_seconds=0),
+    ).run()
+    rows = telegram.sent[0]["reply_markup"]["inline_keyboard"]  # type: ignore[index]
+    # unchecked options carry ☐ so a ✅ inside the label can't read
+    # as pre-checked
+    assert [row[0]["text"] for row in rows] == [
+        "☐ A", "☐ B", "☐ C", "Done",
+    ]
+    stored = [option for _, option in store.list_choices("222")]
+    assert stored == ["A", "B", "C", "__cmd:multi:done"]
+
+
+@pytest.mark.asyncio
+async def test_multi_options_toggle_then_done(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    for cid, label in (("a", "Alpha"), ("b", "Beta"), ("g", "Gamma")):
+        store.add_choice(cid, "222", "s1", 222, label, 42)
+    store.add_choice("done", "222", "s1", 222, "__cmd:multi:done", 42)
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": f"☐ {label}", "callback_data": cid}]
+            for cid, label in (("a", "Alpha"), ("b", "Beta"), ("g", "Gamma"))
+        ]
+        + [[{"text": "Done", "callback_data": "done"}]]
+    }
+    taps = 0
+
+    async def tap(data: str, markup: dict[str, object]) -> None:
+        nonlocal taps
+        taps += 1
+        await runtime.handle_callback(
+            {
+                "id": f"cb-{taps}",
+                "data": data,
+                "from": {"id": 111},
+                "message": {
+                    "message_id": 42,
+                    "chat": {"id": 222, "type": "private"},
+                    "reply_markup": markup,
+                },
+            }
+        )
+
+    def labels() -> list[str]:
+        rows = telegram.markup_edits[-1]["inline_keyboard"]  # type: ignore[index]
+        return [row[0]["text"] for row in rows]
+
+    # Done with nothing checked only toasts; the keyboard stays live
+    await tap("done", keyboard)
+    assert telegram.answers[-1] == "Tap options first, then Done."
+    assert devin.sent == []
+    assert store.get_choice("done") is not None
+
+    # option taps flip ✅ in place; nothing reaches the session yet
+    await tap("a", keyboard)
+    await tap("b", telegram.markup_edits[-1])
+    assert labels() == ["✅ Alpha", "✅ Beta", "☐ Gamma", "Done"]
+    assert devin.sent == []
+
+    # a second tap unchecks
+    await tap("b", telegram.markup_edits[-1])
+    assert labels() == ["✅ Alpha", "☐ Beta", "☐ Gamma", "Done"]
+
+    # Done submits the checked set as one answer, then the keyboard is spent
+    await tap("done", telegram.markup_edits[-1])
+    assert devin.sent == [("s1", "Alpha")]
+    dead = telegram.markup_edits[-1]["inline_keyboard"]  # type: ignore[index]
+    assert [row[0]["text"] for row in dead] == ["✅ Alpha", "Beta", "Gamma"]
+    assert all("disabled" in row[0] for row in dead)
+    assert store.get_choice("a") is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_multi_options_label_starting_with_checkmark(
+    tmp_path: Path,
+) -> None:
+    # a label that itself begins with ✅ must not count as pre-checked:
+    # Done submits only what was actually tapped
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="s1",
+        session_url="https://devin.test/s1",
+        title="title",
+    )
+    store.add_choice("a", "222", "s1", 222, "✅ Run tests", 42)
+    store.add_choice("b", "222", "s1", 222, "Build", 42)
+    store.add_choice("done", "222", "s1", 222, "__cmd:multi:done", 42)
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(settings(tmp_path), store, devin, telegram)  # type: ignore[arg-type]
+    runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "☐ ✅ Run tests", "callback_data": "a"}],
+            [{"text": "☐ Build", "callback_data": "b"}],
+            [{"text": "Done", "callback_data": "done"}],
+        ]
+    }
+
+    async def tap(data: str, markup: dict[str, object], n: int = 0) -> None:
+        await runtime.handle_callback(
+            {
+                "id": f"cb-{data}-{n}",
+                "data": data,
+                "from": {"id": 111},
+                "message": {
+                    "message_id": 42,
+                    "chat": {"id": 222, "type": "private"},
+                    "reply_markup": markup,
+                },
+            }
+        )
+
+    # no taps → Done does not submit the ✅-looking label
+    await tap("done", keyboard)
+    assert telegram.answers[-1] == "Tap options first, then Done."
+    assert devin.sent == []
+
+    # tapping selects the option; the stored label keeps its own ✅
+    await tap("a", keyboard)
+    rows = telegram.markup_edits[-1]["inline_keyboard"]  # type: ignore[index]
+    assert [row[0]["text"] for row in rows] == [
+        "✅ ✅ Run tests", "☐ Build", "Done",
+    ]
+    # and a second tap restores the unchecked form
+    await tap("a", telegram.markup_edits[-1], n=1)
+    rows = telegram.markup_edits[-1]["inline_keyboard"]  # type: ignore[index]
+    assert [row[0]["text"] for row in rows] == [
+        "☐ ✅ Run tests", "☐ Build", "Done",
+    ]
+    await tap("a", telegram.markup_edits[-1], n=2)
+    await tap("done", telegram.markup_edits[-1], n=1)
+    assert devin.sent == [("s1", "✅ Run tests")]
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_multi_options_toggle_gated_for_local_session(
+    tmp_path: Path,
+) -> None:
+    # on a local session a non-admin must not flip selections an admin
+    # later submits — same host-access gate as option sends
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x · local CLI",
+        title="title",
+    )
+    store.add_choice("a", "222", "local:x", 222, "Alpha", 42)
+    store.add_choice("done", "222", "local:x", 222, "__cmd:multi:done", 42)
+    telegram = _FakeTelegram()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_admin_user_ids="900",
+            telegram_allowed_users="111,900",
+        ),
+        store,
+        _FakeDevin(),
+        telegram,
+    )  # type: ignore[arg-type]
+    runtime.start_watcher = lambda *a, **k: _async(None)  # type: ignore[method-assign]
+
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "☐ Alpha", "callback_data": "a"}],
+            [{"text": "Done", "callback_data": "done"}],
+        ]
+    }
+
+    async def tap(data: str, user_id: int, n: int = 0) -> None:
+        await runtime.handle_callback(
+            {
+                "id": f"cb-{data}-{user_id}-{n}",
+                "data": data,
+                "from": {"id": user_id},
+                "message": {
+                    "message_id": 42,
+                    "chat": {"id": 222, "type": "private"},
+                    "reply_markup": keyboard,
+                },
+            }
+        )
+
+    # non-admin tap is refused and leaves the markup untouched
+    await tap("a", 111)
+    assert telegram.answers[-1] == (
+        "Admins only — this session runs on the bridge host."
+    )
+    assert telegram.markup_edits == []
+
+    # the admin's own tap still toggles
+    await tap("a", 900)
+    rows = telegram.markup_edits[-1]["inline_keyboard"]  # type: ignore[index]
+    assert rows[0][0]["text"] == "✅ Alpha"
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio
@@ -10178,6 +10444,7 @@ def test_preamble_documents_every_marker() -> None:
     # Any capability the bridge supports must be taught to fresh sessions.
     for marker in (
         "OPTIONS:",
+        "OPTIONS+:",
         "**>",
         "||spoiler||",
         "DETAILS:",

@@ -1739,6 +1739,17 @@ def test_split_runons_preserves_markers_and_code() -> None:
     assert "TABLE: a.B | c.D" in out
 
 
+def test_split_runons_keeps_multi_options_marker() -> None:
+    # OPTIONS+: is a marker line too — a run-on split inside it loses
+    # the whole multi keyboard
+    assert _split_runons("pick a few:\nOPTIONS+:API | UI") == (
+        "pick a few:\nOPTIONS+:API | UI"
+    )
+    assert _split_runons("OPTIONS+: Fix CI:GitHub | Add tests") == (
+        "OPTIONS+: Fix CI:GitHub | Add tests"
+    )
+
+
 def test_split_runons_splits_prose_around_inline_code() -> None:
     # a fused line that mentions code must still split — backticks used
     # to skip the whole line, which is most progress text
