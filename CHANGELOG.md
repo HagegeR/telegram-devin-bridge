@@ -11,8 +11,9 @@ and deployment update channels.
 ### Added
 
 - **Multi-select option buttons**: a reply line `OPTIONS+: a | b | c`
-  renders the same button rows as `OPTIONS:` plus a Done row. Option taps
-  toggle a ✅ on the button in place — nothing is sent until Done, which
+  renders the same button rows as `OPTIONS:` plus a Done row. Options
+  start unchecked (`☐`); taps flip a button between `☐` and `✅` in
+  place — nothing is sent until Done, which
   delivers the checked options to the session as one `", "`-joined answer
   and disables the keyboard. Done with nothing checked only shows a
   toast, and plain `OPTIONS:` stays single-select.

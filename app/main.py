@@ -2198,6 +2198,17 @@ class Bridge:
             elif plain_option and any(
                 stored == "__cmd:multi:done" for _, stored in choices
             ):
+                if (
+                    is_local(session_id)
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    # toggles steer the shared selection an admin later
+                    # submits — same host-access gate as option sends
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — this session runs on the bridge host.",
+                    )
+                    return
                 # a tap on a multi keyboard flips the option's ✅ in
                 # place — nothing is sent until Done
                 rows = _keyboard_rows(callback_message)
@@ -2211,9 +2222,9 @@ class Bridge:
                                 button = {
                                     **button,
                                     "text": (
-                                        label.removeprefix("✅ ")
+                                        f"☐ {label.removeprefix('✅ ')}"
                                         if label.startswith("✅ ")
-                                        else f"✅ {label}"
+                                        else f"✅ {label.removeprefix('☐ ')}"
                                     ),
                                 }
                             new_row.append(button)
@@ -2226,7 +2237,7 @@ class Bridge:
                             "text": (
                                 "Done"
                                 if stored.startswith("__cmd:")
-                                else f"✅ {stored}" if cid == data else stored
+                                else f"✅ {stored}" if cid == data else f"☐ {stored}"
                             ),
                             "callback_data": cid,
                         }]

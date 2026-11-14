@@ -885,6 +885,10 @@ class SessionWatcher:
                     if option.startswith(ALLOW_HOSTS_OPTION)
                     else option
                 )
+                # multi keyboards carry an explicit ☐ state prefix so a
+                # label that itself starts with ✅ can't read as checked
+                if multi:
+                    text = f"☐ {text}"
                 buttons.append([{"text": text[:64], "callback_data": choice_id}])
             if multi:
                 done_id = secrets.token_urlsafe(8)
