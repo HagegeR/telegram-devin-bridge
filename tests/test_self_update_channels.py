@@ -442,7 +442,9 @@ def _path_without(tmp_path: Path, *names: str) -> str:
             continue
         for entry in os.listdir(directory):
             target = bin_dir / entry
-            if entry in names or target.exists():
+            # is_symlink too: exists() is False on a dangling link left by a
+            # duplicate PATH entry, but symlink_to still raises FileExistsError
+            if entry in names or target.exists() or target.is_symlink():
                 continue
             target.symlink_to(os.path.join(directory, entry))
     return str(bin_dir)
