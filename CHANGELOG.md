@@ -54,6 +54,14 @@ and deployment update channels.
   M messages cost `1 + ceil(M/100)` sequential Devin API calls per
   `/status`; it now costs one.
 
+- **OpenRC watchdog silently dead on Alpine/BusyBox hosts**: the
+  `15min` poll-loop watchdog locked the self-update lock with
+  `flock -w 600`, but BusyBox `flock` has no `-w` flag — every run
+  errored on the option and `exit 0`'d before checking the service, so a
+  bridge left down by a self-update stop/start race was never revived.
+  The lock is now taken with `flock -n` (skip this run if an update
+  holds it; the next cron run retries).
+
 ## [v3.2.0] - 2026-11-01
 
 ### Added
