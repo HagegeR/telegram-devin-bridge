@@ -26,10 +26,11 @@ log=/var/log/telegram-devin-bridge-watchdog.log
 # unlocked rc-service can stop a just-started child mid-boot (the collision
 # that leaves the service down or kills a startup replay). A missing or
 # unwritable home must skip the lock, not exit — a stopped service still
-# has to recover on installs where self-update never ran
+# has to recover on installs where self-update never ran. -n, not -w:
+# busybox flock has no wait flag — a skipped pass retries next cron run
 if command -v flock >/dev/null 2>&1 && [ -w "$home" ]; then
     exec 9>"$home/.self-update.lock"
-    flock -w 600 9 || exit 0
+    flock -n 9 || exit 0
 fi
 
 if ! rc-service telegram-devin-bridge status 2>/dev/null | grep -q "status: started"; then
