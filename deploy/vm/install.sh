@@ -87,7 +87,9 @@ case "$PKG_MANAGER" in
         yum install -y python3 python3-pip git tar
         ;;
     pacman)
-        pacman -Sy --noconfirm python python-pip git tar
+        # -Syu, not -Sy: arch does not support partial upgrades — installing
+        # against a stale base hits file conflicts (e.g. openssl-3 vs openssl)
+        pacman -Syu --noconfirm python python-pip git tar
         ;;
     zypper)
         # openSUSE mirrors serve stale/forbidden repodata for minutes at a
