@@ -52,6 +52,7 @@ def run_watchdog(tmp_path: Path, flock_body: str, status: str = "stopped"):
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "BRIDGE_HOME": str(home),
         "WATCHDOG_CALLS": str(calls),
+        "WATCHDOG_LOG": str(tmp_path / "watchdog.log"),
         "WATCHDOG_STATUS": status,
     }
     proc = subprocess.run(
