@@ -8,6 +8,8 @@ and deployment update channels.
 
 ## [Unreleased]
 
+## [v3.3.0] - 2026-11-14
+
 ### Added
 
 - **Multi-select option buttons**: a reply line `OPTIONS+: a | b | c`
