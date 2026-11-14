@@ -290,6 +290,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     installation, the revision marker stays unchanged so the next cron run
     retries and restarts once idle. `/update` and admin-triggered updates
     bypass the deferral.
+    On OpenRC hosts a paired cron watchdog
+    (`deploy/openrc/telegram-devin-bridge-watchdog`, run from
+    `/etc/periodic/15min`) starts the service when it is stopped and
+    restarts it when the poll-loop heartbeat goes stale; it serializes
+    against self-update on `.self-update.lock` via `flock -n`, skipping
+    its run while an update holds the lock rather than waiting —
+    BusyBox `flock` has no `-w` flag.
     The CLI first reports a provisional title
     derived from the prompt itself — the bridge ignores any reported
     title that prefixes the whitespace-normalized prompt it sent (the
