@@ -62,6 +62,8 @@ class ConversationSettings:
     acu_limit: int | None = None
     unlisted: bool | None = None
     idempotent: bool | None = None
+    rate_limit_policy: str | None = None
+    fallback_model: str | None = None
 
     @property
     def repo_list(self) -> list[str] | None:
@@ -258,7 +260,9 @@ class Store:
                     snapshot_id TEXT,
                     acu_limit INTEGER,
                     unlisted INTEGER,
-                    idempotent INTEGER
+                    idempotent INTEGER,
+                    rate_limit_policy TEXT,
+                    fallback_model TEXT
                 );
                 CREATE TABLE IF NOT EXISTS access_requests (
                     user_id INTEGER PRIMARY KEY,
@@ -354,6 +358,8 @@ class Store:
                 "acu_limit": "INTEGER",
                 "unlisted": "INTEGER",
                 "idempotent": "INTEGER",
+                "rate_limit_policy": "TEXT",
+                "fallback_model": "TEXT",
             }.items():
                 if new_column not in settings_columns:
                     self.connection.execute(
@@ -677,7 +683,7 @@ class Store:
                     "SELECT silent, drafts, status_timer, default_playbook, "
                     "devin_mode, local_model, thought_level, repos, platform, "
                     "tags, secret_ids, knowledge_ids, snapshot_id, acu_limit, "
-                    "unlisted, idempotent "
+                    "unlisted, idempotent, rate_limit_policy, fallback_model "
                     "FROM conversation_settings WHERE conv_key = ?",
                     (key,),
                 ).fetchone()
@@ -745,6 +751,16 @@ class Store:
             idempotent=(
                 None if pick("idempotent") is None else bool(pick("idempotent"))
             ),
+            rate_limit_policy=(
+                None
+                if pick("rate_limit_policy") is None
+                else str(pick("rate_limit_policy"))
+            ),
+            fallback_model=(
+                None
+                if pick("fallback_model") is None
+                else str(pick("fallback_model"))
+            ),
         )
 
     def update_chat_settings(self, conv_key: str, **fields: object) -> None:
@@ -772,6 +788,8 @@ class Store:
             "acu_limit",
             "unlisted",
             "idempotent",
+            "rate_limit_policy",
+            "fallback_model",
         }
         if not fields or any(key not in allowed for key in fields):
             raise ValueError("Unknown conversation setting")

@@ -251,7 +251,16 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     buttons and stashes the failed prompt (`sess.rate_limit`): `Wait
     until <reset> UTC and retry` schedules a resend at the reset time,
     `Switch to a different model` opens the model menu and resends once
-    the user picks. Requests issued to a dead process
+    the user picks. A per-chat policy can answer instead of the user:
+    the 🚦 Rate limit `/settings` row (local chats only, admin-gated
+    like the model pick) offers `ask` (the buttons, the default),
+    `wait` (the resend is scheduled at the reset time on its own) and
+    `fallback` (the ↪ Fallback model row's pick — or the CLI default
+    when unset — is applied via `session/set_config_option`, then the
+    prompt resends). Automatic recoveries post a `→ …` note instead of
+    buttons and cap at 3 consecutive attempts per session, then degrade
+    to the buttons; a clean turn resets the count. Requests issued to a
+    dead process
     fail fast instead of waiting on a reply that can't arrive. A resume
     that runs before its conversation is active (`/resume` of a history
     entry) applies the chat config on the first prompt instead. A wedge
@@ -370,6 +379,11 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     newest-first, so the family index is the novelty key).
     `/think` + a 💭 Thinking settings row do the same for the
     `thought_level` configOption (`conversation_settings.thought_level`).
+    Two more local-only rows follow them: 🚦 Rate limit
+    (`conversation_settings.rate_limit_policy` — `ask`/`wait`/`fallback`,
+    see the `-32010` recovery paragraph above) and ↪ Fallback model
+    (`conversation_settings.fallback_model` — the model a `fallback`
+    policy switches to; `cli default` clears it).
     `/commands` browses the CLI's `available_commands_update` slash-command
     list as a category → paged-command inline keyboard (`cmd:` callback
     namespace; `cmd:r:<name>` sends `/<name>` to the active local session);

@@ -217,6 +217,7 @@ class Bridge:
         self.local.on_prompt_state = self._on_local_prompt_state
         self.local.resume_config = self._local_resume_config
         self.local.on_mode_change = self._on_local_mode_change
+        self.local.rate_limit_policy = self._local_rate_limit_policy
         self.telegram = telegram
         self.bot_username = settings.bot_username or ""
         self.bot_topics_enabled = False
@@ -489,6 +490,18 @@ class Bridge:
             "model": settings.local_model,
             "thought_level": settings.thought_level,
         }
+
+    def _local_rate_limit_policy(
+        self, session_id: str
+    ) -> tuple[str | None, str | None] | None:
+        conv = self.store.get_conversation_for_session(session_id)
+        if conv is None:
+            return None
+        settings = self.store.get_settings(conv.conv_key)
+        return (
+            settings.rate_limit_policy or "ask",
+            settings.fallback_model,
+        )
 
     async def _retry_announce_update(self) -> None:
         for delay in _ANNOUNCE_RETRY_DELAYS:
@@ -3200,6 +3213,14 @@ class Bridge:
                     "text": f"💭 Thinking: {current.thought_level or 'cli default'}",
                     "callback_data": "cfg:think:menu",
                 }],
+                [{
+                    "text": f"🚦 Rate limit: {current.rate_limit_policy or 'ask'}",
+                    "callback_data": "cfg:rl:menu",
+                }],
+                [{
+                    "text": f"↪ Fallback model: {current.fallback_model or 'cli default'}",
+                    "callback_data": "cfg:rlmodel:menu",
+                }],
             ] if current.platform == "local" else [])
         crawl = ",".join(sorted(self.crawl_sites())) or "off"
         rows += [
@@ -3532,6 +3553,51 @@ class Bridge:
                     message_id,
                     {"inline_keyboard": rows},
                 )
+            elif field == "rl":
+                current_policy = (
+                    self.store.get_settings(conv_key).rate_limit_policy
+                    or "ask"
+                )
+                rows = [[{
+                    "text": (
+                        f"{'✓ ' if policy == current_policy else ''}"
+                        f"{policy}"
+                    ),
+                    "callback_data": f"cfg:rl:{policy}",
+                }] for policy in ("ask", "wait", "fallback")]
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": rows},
+                )
+            elif field == "rlmodel":
+                # same list as the session model menu — the fallback is
+                # the model a rate-limited session switches to
+                models = await self.local.models()
+                costs = await self.local.model_costs()
+                current_fallback = (
+                    self.store.get_settings(conv_key).fallback_model
+                )
+                items = []
+                rank = self.local.model_rank()
+                for model in sort_models(models, costs, rank):
+                    callback = f"cfg:rlmodel:{model}"
+                    if len(callback) > 64:
+                        continue
+                    icon = MODEL_TIER_ICONS.get(costs.get(model, ""), "")
+                    prefix = ("✓ " if model == current_fallback else "") + (
+                        f"{icon} " if icon else ""
+                    )
+                    items.append((f"{prefix}{model}", callback))
+                rows = [[{
+                    "text": "cli default",
+                    "callback_data": "cfg:rlmodel:default",
+                }]] + self._page_rows(items, "rlmodel", page)
+                await self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": rows},
+                )
             elif field == "repos":
                 selected = set(self.store.get_settings(conv_key).repo_list or [])
                 # oversized names stay settable via /repos <list>
@@ -3678,6 +3744,39 @@ class Bridge:
                         await self.local.send_message(
                             conversation.session_id, retry
                         )
+            elif field == "rl":
+                if value not in {"ask", "wait", "fallback"}:
+                    await self.telegram.answer_callback_query(
+                        callback_id, f"Unknown rate-limit policy '{value}'"
+                    )
+                    return
+                if (
+                    self.store.get_settings(conv_key).platform == "local"
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — this steers the local host session.",
+                    )
+                    return
+                self.store.update_chat_settings(
+                    conv_key,
+                    rate_limit_policy=None if value == "ask" else value,
+                )
+            elif field == "rlmodel":
+                if (
+                    self.store.get_settings(conv_key).platform == "local"
+                    and user_id not in self.settings.admin_user_ids
+                ):
+                    await self.telegram.answer_callback_query(
+                        callback_id,
+                        "Admins only — models steer the local host session.",
+                    )
+                    return
+                self.store.update_chat_settings(
+                    conv_key,
+                    fallback_model=None if value == "default" else value,
+                )
             elif field == "think":
                 if (
                     self.store.get_settings(conv_key).platform == "local"

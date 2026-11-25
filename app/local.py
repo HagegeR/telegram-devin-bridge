@@ -129,6 +129,9 @@ class _AcpSession:
     # epoch) — the recovery buttons act on this instead of sending
     # their label as a new turn
     rate_limit: tuple[str, str, float | None] | None = None
+    # consecutive automatic rate-limit recoveries attempted — reset on a
+    # clean turn; past the cap the failure degrades to the ask buttons
+    rate_limit_retries: int = 0
     # resume loaded the session before its conversation was active (e.g.
     # /resume of a history entry) — apply the chat config on the next
     # prompt, when the conv lookup can see it
@@ -278,6 +281,11 @@ _RATE_LIMIT_RESET = re.compile(
 
 
 _RATE_LIMIT_SWITCH = "Switch to a different model"
+# auto wait/fallback retries bound at this count, then the failure falls
+# back to the buttons — a fallback onto an also-limited model would
+# otherwise re-fail instantly forever, and a "wait" with no parseable
+# reset retries on the 60s default
+_AUTO_RECOVER_MAX = 3
 
 
 def _rate_limit_options(exc: BaseException) -> str | None:
@@ -299,6 +307,16 @@ def _rate_limit_options(exc: BaseException) -> str | None:
 def _rate_limit_reset_at(exc: BaseException) -> float | None:
     match = _RATE_LIMIT_RESET.search(str(exc))
     return time.time() + int(match.group(1)) * 60 if match else None
+
+
+def _wait_label(reset_at: float | None) -> str:
+    # the OPTIONS label (and its tap-match key) for a degraded auto-retry,
+    # where only the reset epoch survives — _rate_limit_options keeps the
+    # API's own HH:MM, this rebuilds the same shape without the exception
+    if reset_at is None:
+        return "Wait for the rate limit reset and retry"
+    at = time.strftime("%H:%M", time.gmtime(reset_at))
+    return f"Wait until {at} UTC and retry"
 
 
 def _exit_detail(stderr_tail: str) -> str:
@@ -492,6 +510,12 @@ class LocalClient:
         self.on_prompt_state: Callable[[str, str | None], None] | None = None
         self.resume_config: Callable[[str], dict | None] | None = None
         self.on_mode_change: Callable[[str, str], None] | None = None
+        # bridge hooks this to the chat's rate-limit recovery policy:
+        # session_id -> ("ask"|"wait"|"fallback", fallback_model); the
+        # buttons in _turn_done are the "ask" path when it's unset
+        self.rate_limit_policy: Callable[
+            [str], tuple[str | None, str | None] | None
+        ] | None = None
         self._terminated: set[str] = set()
         self._resuming: dict[str, asyncio.Task] = {}
         self._wedge_task: asyncio.Task | None = None
@@ -767,6 +791,74 @@ class LocalClient:
         prompt = sess.rate_limit[0]
         sess.rate_limit = None
         return prompt
+
+    def _rate_limit_action(
+        self, session_id: str, sess: _AcpSession
+    ) -> tuple[str | None, str | None]:
+        """(action, model) the chat policy prescribes for a -32010
+        failure — "wait" or "fallback" plus the configured fallback
+        model; (None, None) for "ask"/unknown/capped, which keeps the
+        buttons flow."""
+        if sess.rate_limit_retries >= _AUTO_RECOVER_MAX:
+            return None, None
+        hook = self.rate_limit_policy
+        if hook is None:
+            return None, None
+        try:
+            resolved = hook(session_id)
+        except Exception:
+            logger.exception("rate_limit_policy hook failed")
+            return None, None
+        if resolved is None or resolved[0] not in ("wait", "fallback"):
+            return None, None
+        return resolved[0], resolved[1]
+
+    def _auto_rate_limit_retry(
+        self,
+        sess: _AcpSession,
+        message: str,
+        action: str,
+        reset_at: float | None,
+        model: str | None,
+    ) -> None:
+        session_id = f"{LOCAL_PREFIX}{sess.acp_id}"
+
+        async def retry() -> None:
+            try:
+                if action == "wait":
+                    await asyncio.sleep(
+                        max(
+                            0.0,
+                            (reset_at or time.time() + 60) - time.time(),
+                        )
+                    )
+                else:
+                    target = model
+                    if target is None:
+                        await self.modes()
+                        target = self._default_model
+                    if target is None:
+                        raise RuntimeError("no fallback model known")
+                    await self.set_model(session_id, target)
+                await self.send_message(session_id, message)
+            except (RuntimeError, TimeoutError, OSError) as exc:
+                logger.warning(
+                    "rate-limit %s recovery failed for %s: %s",
+                    action,
+                    sess.acp_id,
+                    exc,
+                )
+                # the resend never went out — hand the decision back
+                # with live buttons rather than drop the prompt silently
+                wait = _wait_label(reset_at)
+                sess.rate_limit = (message, wait, reset_at)
+                self._emit(
+                    sess,
+                    f"⚠ auto-retry failed: {_clean_reason(exc)}\n"
+                    f"OPTIONS: {wait} | {_RATE_LIMIT_SWITCH}",
+                )
+
+        asyncio.create_task(retry())
 
     async def set_model_default(self, session_id: str) -> None:
         if self._default_model:
@@ -1153,21 +1245,56 @@ class LocalClient:
                 )
                 options = _rate_limit_options(exc)
                 if options is not None and message is not None:
-                    # stash the failed prompt so the OPTIONS buttons act
-                    # on it — a generic option tap would send the label
-                    # itself as a new turn
-                    wait_label, _, _ = options.partition(" | ")
-                    sess.rate_limit = (
-                        message,
-                        wait_label,
-                        _rate_limit_reset_at(exc),
+                    reset_at = _rate_limit_reset_at(exc)
+                    action, model = self._rate_limit_action(
+                        f"{LOCAL_PREFIX}{sess.acp_id}", sess
                     )
-                suffix = f"\nOPTIONS: {options}" if options else ""
-                self._emit(
-                    sess, f"⚠ prompt failed: {_clean_reason(exc)}{suffix}"
-                )
+                    if action is not None:
+                        # wait/fallback policy: resend without buttons —
+                        # a live button race would double-send the prompt
+                        sess.rate_limit_retries += 1
+                        self._auto_rate_limit_retry(
+                            sess, message, action, reset_at, model
+                        )
+                        if action == "wait":
+                            note = (
+                                "auto-retry at "
+                                f"{time.strftime('%H:%M', time.gmtime(reset_at))}"
+                                " UTC"
+                                if reset_at is not None
+                                else "auto-retry in ~1 min"
+                            )
+                        else:
+                            note = (
+                                f"switching to '{model or 'cli default'}'"
+                                " and retrying"
+                            )
+                        self._emit(
+                            sess,
+                            f"⚠ prompt failed: {_clean_reason(exc)}\n"
+                            f"→ {note}",
+                        )
+                    else:
+                        # stash the failed prompt so the OPTIONS buttons
+                        # act on it — a generic option tap would send the
+                        # label itself as a new turn
+                        wait_label, _, _ = options.partition(" | ")
+                        sess.rate_limit = (message, wait_label, reset_at)
+                        self._emit(
+                            sess,
+                            f"⚠ prompt failed: {_clean_reason(exc)}\n"
+                            f"OPTIONS: {options}",
+                        )
+                else:
+                    suffix = f"\nOPTIONS: {options}" if options else ""
+                    self._emit(
+                        sess,
+                        f"⚠ prompt failed: {_clean_reason(exc)}{suffix}",
+                    )
         elif fut.result().get("error"):
             self._emit(sess, f"⚠ {fut.result()['error'].get('message', 'error')}")
+        else:
+            sess.rate_limit_retries = 0
         if sess.inflight:
             # a steered turn ended inside a still-running turn — its reply
             # is already in the shared buffer; the last live turn (or the

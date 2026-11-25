@@ -12,6 +12,7 @@ import pytest_asyncio
 
 from app.local import (
     _ACP_MAX_LINE,
+    _AUTO_RECOVER_MAX,
     LocalClient,
     _AcpSession,
     _clean_reason,
@@ -162,15 +163,23 @@ FAKE_ACP = textwrap.dedent(
                                           "cognition.ai/retryable":
                                           True}}}), flush=True)
                 continue
-            if os.environ.get("FAKE_RATELIMIT"):
-                print(json.dumps({"jsonrpc": "2.0", "id": i,
-                                  "error": {"code": -32010,
-                                      "message": "Reached free model rate"
-                                      " limit. Please switch to a different"
-                                      " model. Your limit will reset in 21"
-                                      " minutes (at 21:04 UTC)."}}),
-                      flush=True)
-                continue
+            ratelimit_once = os.environ.get("FAKE_RATELIMIT_ONCE")
+            if os.environ.get("FAKE_RATELIMIT") or ratelimit_once:
+                if not ratelimit_once or not os.path.exists(ratelimit_once):
+                    if ratelimit_once:
+                        with open(ratelimit_once, "w") as fh:
+                            fh.write("x")
+                    minutes = os.environ.get(
+                        "FAKE_RATELIMIT_MINUTES", "21")
+                    print(json.dumps({"jsonrpc": "2.0", "id": i,
+                                      "error": {"code": -32010,
+                                          "message": "Reached free model rate"
+                                          " limit. Please switch to a different"
+                                          " model. Your limit will reset in "
+                                          + minutes +
+                                          " minutes (at 21:04 UTC)."}}),
+                          flush=True)
+                    continue
             if os.environ.get("FAKE_WEDGE"):
                 once = os.environ.get("FAKE_WEDGE_ONCE")
                 if not once or not os.path.exists(once):
@@ -1303,6 +1312,89 @@ async def test_rate_limit_prompt_error_offers_options(
     assert picked[0] == "wait" and picked[1] == "hello"
     assert picked[2] is not None and picked[2] > time.time() + 15 * 60
     assert shell_client.pop_rate_limit_retry(session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_wait_policy_retries_automatically(
+    shell_client: LocalClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # wait policy: the failure posts an auto-retry note (no buttons) and
+    # the resend goes out on its own once the reset time passes
+    monkeypatch.setenv("FAKE_RATELIMIT_ONCE", str(tmp_path / "once"))
+    monkeypatch.setenv("FAKE_RATELIMIT_MINUTES", "0")
+    shell_client.rate_limit_policy = lambda _sid: ("wait", None)  # type: ignore[method-assign]
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if any("auto-retry" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert any(
+        "auto-retry" in m.message and "OPTIONS:" not in m.message
+        for m in sess.events
+    )
+    await _wait_for(shell_client, session_id, "echo: hello")
+    assert sess.rate_limit is None
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_fallback_policy_switches_model(
+    shell_client: LocalClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # fallback policy: the configured model is applied, then the failed
+    # prompt resends — the CLI's own options list validates the pick
+    monkeypatch.setenv("FAKE_RATELIMIT_ONCE", str(tmp_path / "once"))
+    shell_client.rate_limit_policy = lambda _sid: (  # type: ignore[method-assign]
+        "fallback",
+        "swe-2-low",
+    )
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if any("switching to 'swe-2-low'" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert any(
+        "switching to 'swe-2-low' and retrying" in m.message
+        for m in sess.events
+    )
+    await _wait_for(shell_client, session_id, "echo: hello")
+    for _ in range(50):
+        if sess.config.get("model") == "swe-2-low":
+            break
+        await asyncio.sleep(0.1)
+    assert sess.config.get("model") == "swe-2-low"
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_auto_retry_cap_falls_back_to_options(
+    shell_client: LocalClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # a limit that never lifts retries at most _AUTO_RECOVER_MAX times,
+    # then degrades to the wait/switch buttons instead of looping
+    monkeypatch.setenv("FAKE_RATELIMIT", "1")
+    monkeypatch.setenv("FAKE_RATELIMIT_MINUTES", "0")
+    shell_client.rate_limit_policy = lambda _sid: ("wait", None)  # type: ignore[method-assign]
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(200):
+        if any("OPTIONS:" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert sum(
+        "auto-retry" in m.message for m in sess.events
+    ) == _AUTO_RECOVER_MAX
+    options = next(
+        m.message for m in sess.events if "OPTIONS:" in m.message
+    )
+    assert "Switch to a different model" in options
+    assert sess.rate_limit is not None and sess.rate_limit[0] == "hello"
 
 
 @pytest.mark.asyncio
