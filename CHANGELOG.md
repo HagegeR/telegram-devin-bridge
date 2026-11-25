@@ -20,6 +20,11 @@ and deployment update channels.
   messages queue (🤔) and flush in order when the replayed turn
   settles.
 
+- **Queued fragments no longer merge across senders**: a coalesced
+  batch carries the last fragment's sender identity, and the local
+  admin gate trusts it — a non-admin's queued text could piggyback
+  into a host-privileged session under an admin's name.
+
 ### Added
 
 - **Rate-limit recovery policy for local sessions**: when a

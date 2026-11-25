@@ -412,7 +412,15 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     entirely — process crash, bridge restart, eviction, or the
     `session/load` window during startup replay — so a message
     landing in that window queues behind the replay instead of
-    steering into it and cancelling the in-flight work.
+    steering into it and cancelling the in-flight work. A marker
+    with no live session behind it is an orphaned recovery, not
+    active work — parking a message there starts a deduplicated
+    replay of the owed prompt (shared with the startup sweep), and
+    the settle hook drains the backlog after it; a terminal replay
+    failure clears the marker and flushes the queue rather than
+    parking messages behind nothing. Queued fragments never merge
+    across senders: a coalesced batch carries the last fragment's
+    identity, and the local admin gate trusts that identity.
     `running` also covers work the CLI does with no `session/prompt`
     in flight: on-chain commands like `/compact` return `end_turn` in
     milliseconds and then run inside the CLI, and background

@@ -7204,6 +7204,62 @@ async def test_local_durable_pending_prompt_queues_without_live_session(
 
 
 @pytest.mark.asyncio
+async def test_park_behind_orphaned_marker_triggers_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a durable marker with no live session behind it must not deadlock
+    # the chat: parking a message starts a deduplicated replay of the
+    # owed prompt, and the settle hook drains the backlog after it
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x",
+        title="title",
+    )
+    store.set_pending_prompt("222", "local:x", "owed prompt")
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_queue_while_busy=True,
+            telegram_debounce_seconds=0,
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    replays: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, text: str, **kwargs: object) -> None:
+        replays.append((session_id, text))
+
+    monkeypatch.setattr(runtime.local, "send_message", fake_send)
+    await runtime.handle_update(
+        {"update_id": 500, "message": message("queued one", message_id=9)}
+    )
+    await runtime._update_queue.join()
+    for _ in range(50):
+        if replays:
+            break
+        await asyncio.sleep(0.05)
+    assert replays == [("local:x", "owed prompt")]
+    assert runtime.queued_count("222") == 1
+    # a second message while the first replay is still in flight does
+    # not stack a duplicate
+    runtime._replay_tasks.add("222")
+    await runtime._replay_pending_prompt(
+        store.get_conversation("222")  # type: ignore[arg-type]
+    )
+    assert replays == [("local:x", "owed prompt")]
+    runtime._replay_tasks.discard("222")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_busy_queue_debounced_batch_marks_every_message(
     tmp_path: Path,
 ) -> None:
