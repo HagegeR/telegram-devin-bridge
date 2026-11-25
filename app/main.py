@@ -503,6 +503,16 @@ class Bridge:
             settings.fallback_model,
         )
 
+    def _steers_local(self, conv_key: str) -> bool:
+        """True when a config write reaches a local host session — the
+        chat's forward-looking platform, or the session running right
+        now (the platform can flip away while a local session lives,
+        and writes apply to the live one either way)."""
+        if self.store.get_settings(conv_key).platform == "local":
+            return True
+        conversation = self.store.get_conversation(conv_key)
+        return conversation is not None and is_local(conversation.session_id)
+
     async def _retry_announce_update(self) -> None:
         for delay in _ANNOUNCE_RETRY_DELAYS:
             await asyncio.sleep(delay)
@@ -3582,7 +3592,8 @@ class Bridge:
                 rank = self.local.model_rank()
                 for model in sort_models(models, costs, rank):
                     callback = f"cfg:rlmodel:{model}"
-                    if len(callback) > 64:
+                    # Telegram caps callback_data at 64 bytes, not chars
+                    if len(callback.encode()) > 64:
                         continue
                     icon = MODEL_TIER_ICONS.get(costs.get(model, ""), "")
                     prefix = ("✓ " if model == current_fallback else "") + (
@@ -3751,7 +3762,7 @@ class Bridge:
                     )
                     return
                 if (
-                    self.store.get_settings(conv_key).platform == "local"
+                    self._steers_local(conv_key)
                     and user_id not in self.settings.admin_user_ids
                 ):
                     await self.telegram.answer_callback_query(
@@ -3765,7 +3776,7 @@ class Bridge:
                 )
             elif field == "rlmodel":
                 if (
-                    self.store.get_settings(conv_key).platform == "local"
+                    self._steers_local(conv_key)
                     and user_id not in self.settings.admin_user_ids
                 ):
                     await self.telegram.answer_callback_query(

@@ -1312,6 +1312,65 @@ async def test_rate_limit_prompt_error_offers_options(
     assert picked[0] == "wait" and picked[1] == "hello"
     assert picked[2] is not None and picked[2] > time.time() + 15 * 60
     assert shell_client.pop_rate_limit_retry(session_id) is None
+    # a settled failure is not owed a crash replay — the durable slot
+    # must not copy the failed prompt back from inflight_msgs
+    assert sess.pending_prompt is None
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_wait_policy_holds_until_reset(
+    shell_client: LocalClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # a 5-minute reset: the auto-retry note lands, but the resend must
+    # not fire early — and terminate cancels the pending wait instead of
+    # reloading a session the user moved on from
+    monkeypatch.setenv("FAKE_RATELIMIT_ONCE", str(tmp_path / "once"))
+    monkeypatch.setenv("FAKE_RATELIMIT_MINUTES", "5")
+    shell_client.rate_limit_policy = lambda _sid: ("wait", None)  # type: ignore[method-assign]
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if any("auto-retry" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert any("auto-retry" in m.message for m in sess.events)
+    tasks = shell_client._retry_tasks.get(session_id, set())
+    assert tasks
+    await asyncio.sleep(1.5)
+    assert not any("echo: hello" in m.message for m in sess.events)
+    await shell_client.terminate(session_id)
+    for _ in range(50):
+        if all(task.done() for task in tasks):
+            break
+        await asyncio.sleep(0.05)
+    assert all(task.done() for task in tasks)
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_eviction_owns_single_resend(
+    shell_client: LocalClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # eviction mid-wait must not queue the failed prompt for crash
+    # replay — the scheduled retry owns exactly one resend
+    monkeypatch.setenv("FAKE_RATELIMIT_ONCE", str(tmp_path / "once"))
+    monkeypatch.setenv("FAKE_RATELIMIT_MINUTES", "5")
+    shell_client.rate_limit_policy = lambda _sid: ("wait", None)  # type: ignore[method-assign]
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if any("auto-retry" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert sess.pending_prompt is None
+    monkeypatch.setattr("app.local._MAX_SESSIONS", 1)
+    await shell_client._evict()
+    assert session_id not in shell_client.sessions
+    assert "hello" not in shell_client._interrupted.get(session_id, [])
+    await shell_client.terminate(session_id)
 
 
 @pytest.mark.asyncio

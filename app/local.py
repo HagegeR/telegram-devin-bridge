@@ -516,10 +516,12 @@ class LocalClient:
         self.rate_limit_policy: Callable[
             [str], tuple[str | None, str | None] | None
         ] | None = None
-        # strong refs to rate-limit recovery tasks: a wait sleep runs for
-        # minutes and the loop only weakly references tasks, so an
-        # unreferenced one can be GC-cancelled mid-wait
-        self._retry_tasks: set[asyncio.Task] = set()
+        # strong refs to rate-limit recovery tasks by session: a wait
+        # sleep runs for minutes and the loop only weakly references
+        # tasks, so an unreferenced one can be GC-cancelled mid-wait —
+        # and suspend/terminate need them keyed to cancel the resend of
+        # a session the user has moved on from
+        self._retry_tasks: dict[str, set[asyncio.Task]] = {}
         self._terminated: set[str] = set()
         self._resuming: dict[str, asyncio.Task] = {}
         self._wedge_task: asyncio.Task | None = None
@@ -863,8 +865,24 @@ class LocalClient:
                 )
 
         task = asyncio.create_task(retry())
-        self._retry_tasks.add(task)
-        task.add_done_callback(self._retry_tasks.discard)
+        self._retry_tasks.setdefault(session_id, set()).add(task)
+
+        def forget(done: asyncio.Task, sid: str = session_id) -> None:
+            tasks = self._retry_tasks.get(sid)
+            if tasks is None:
+                return
+            tasks.discard(done)
+            if not tasks:
+                self._retry_tasks.pop(sid, None)
+
+        task.add_done_callback(forget)
+
+    def _cancel_rate_limit_retries(self, session_id: str) -> None:
+        # the user detached or stopped the session — its automatic resend
+        # must not reload it later: a fired retry would resume work on
+        # the host with no live conversation watching it
+        for task in self._retry_tasks.pop(session_id, set()):
+            task.cancel()
 
     async def set_model_default(self, session_id: str) -> None:
         if self._default_model:
@@ -1012,12 +1030,18 @@ class LocalClient:
         # have written its own prompt over the slot
         if sess.pending_prompt == message:
             sess.pending_prompt = None
-        if sess.pending_prompt is None and sess.inflight_msgs:
+        # the settled message is not owed a replay — the failure path
+        # calls this before the finally-block removes it from
+        # inflight_msgs, so count only the other live prompts
+        remaining = list(sess.inflight_msgs)
+        if message in remaining:
+            remaining.remove(message)
+        if sess.pending_prompt is None and remaining:
             # the owner settled while steers still fly — the durable
             # marker follows the oldest unsettled prompt so a bridge
             # restart replays a turn that's still owed an answer instead
             # of losing it with the finished owner
-            sess.pending_prompt = sess.inflight_msgs[0]
+            sess.pending_prompt = remaining[0]
         self._prompt_state(session_id, sess.pending_prompt)
 
     async def send_message(
@@ -1547,11 +1571,13 @@ class LocalClient:
         """Stop the acp process without deleting the persisted session —
         a detached session stops acting on the host but stays
         resumable, unlike terminate which removes its record."""
+        self._cancel_rate_limit_retries(session_id)
         sess = self.sessions.pop(session_id, None)
         if sess is not None:
             await self._reap(sess)
 
     async def terminate(self, session_id: str) -> None:
+        self._cancel_rate_limit_retries(session_id)
         sess = self.sessions.pop(session_id, None)
         self._terminated.add(session_id)
         self._interrupted.pop(session_id, None)

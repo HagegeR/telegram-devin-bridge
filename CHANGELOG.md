@@ -21,6 +21,18 @@ and deployment update channels.
   recoveries cap at 3 consecutive attempts, then degrade back to the
   buttons.
 
+### Fixed
+
+- **A settled failed prompt could be replayed as if interrupted**: the
+  live-process error path recalculated the durable restart-replay
+  marker before removing the settled prompt from the in-flight list,
+  so a failed prompt (e.g. one lost to a rate limit) was copied back
+  into the replay slot and could be sent again after a bridge restart
+  or capacity eviction.
+- **Automatic rate-limit recovery is cancelled with its session**:
+  `/new` and `/stop` now cancel a pending auto-retry instead of
+  letting it reload an archived or deleted session later.
+
 ## [v3.3.0] - 2026-11-14
 
 ### Added
