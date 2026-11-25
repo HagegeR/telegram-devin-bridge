@@ -8,6 +8,18 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mid-turn messages no longer steer into a replayed turn**: a message
+  arriving after a local session's process crashed, the bridge
+  restarted, or while a startup replay was still loading read as
+  "not busy" — the live-object busy check can't see a session that
+  isn't there — and steered straight into the replayed turn,
+  cancelling its in-flight work. The busy check now reads the
+  conversation row's durable restart-replay marker first, so those
+  messages queue (🤔) and flush in order when the replayed turn
+  settles.
+
 ### Added
 
 - **Rate-limit recovery policy for local sessions**: when a

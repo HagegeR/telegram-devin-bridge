@@ -1133,6 +1133,14 @@ class Bridge:
         if conversation is None:
             return False
         if is_local(conversation.session_id):
+            # the durable restart-replay marker first: a turn is still
+            # owed when the live session object is gone — process crash,
+            # bridge restart, eviction, or the session/load window at
+            # startup. Without it a message landing in that window reads
+            # as "not busy" and steers into the replayed turn (or races
+            # it as a fresh prompt), cancelling in-flight work
+            if conversation.pending_prompt is not None:
+                return True
             # a CLI turn can outlive its watcher — without this check a
             # long-running goal stops queueing and follow-ups steer into
             # it uninvited. `running` (not just `inflight`) also covers a

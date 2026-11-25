@@ -406,7 +406,13 @@ Loop every `DEVIN_POLL_SECONDS` (default 3):
     state (`running`/`pending_prompt` — `running` covers a turn still
     chained behind `tail` whose `inflight`/prompt markers already
     cleared when the owner settled), so a turn that outlived its
-    watcher still queues and its settle hook drains the backlog.
+    watcher still queues and its settle hook drains the backlog. The
+    check reads the conversation row's durable `pending_prompt`
+    first: a turn is still owed when the live session object is gone
+    entirely — process crash, bridge restart, eviction, or the
+    `session/load` window during startup replay — so a message
+    landing in that window queues behind the replay instead of
+    steering into it and cancelling the in-flight work.
     `running` also covers work the CLI does with no `session/prompt`
     in flight: on-chain commands like `/compact` return `end_turn` in
     milliseconds and then run inside the CLI, and background

@@ -7156,6 +7156,54 @@ async def test_busy_queue_marks_via_real_update_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_durable_pending_prompt_queues_without_live_session(
+    tmp_path: Path,
+) -> None:
+    # the restart/crash window: the conversation row still owes a turn
+    # replay (durable pending_prompt) but the live session object is
+    # gone — not yet reloaded, process died, or evicted. A message
+    # landing here must queue behind the replay instead of steering
+    # into it and cancelling in-flight work
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x",
+        title="title",
+    )
+    store.set_pending_prompt("222", "local:x", "interrupted work")
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_queue_while_busy=True,
+            telegram_debounce_seconds=0,
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    assert "local:x" not in runtime.local.sessions
+    assert runtime._conversation_busy("222")
+    await runtime.handle_update(
+        {"update_id": 500, "message": message("queued one", message_id=9)}
+    )
+    await runtime._update_queue.join()
+    assert runtime.queued_count("222") == 1
+    marks = list(zip(telegram.reaction_targets, telegram.reactions))
+    assert marks[-1] == (9, "🤔")
+    assert devin.sent == []
+    # clearing the durable marker with no live turn must not stay busy —
+    # /stop and replay-failure paths depend on the marker clearing
+    store.set_pending_prompt("222", "local:x", None)
+    assert not runtime._conversation_busy("222")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_busy_queue_debounced_batch_marks_every_message(
     tmp_path: Path,
 ) -> None:
