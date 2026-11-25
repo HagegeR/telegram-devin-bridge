@@ -1430,6 +1430,42 @@ async def test_rate_limit_fallback_policy_switches_model(
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_fallback_without_model_degrades_to_options(
+    shell_client: LocalClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # no fallback configured and the probe finds no CLI default — the
+    # recovery cannot pick a target, so the decision goes back to the
+    # user with live buttons instead of dropping the prompt
+    monkeypatch.setenv("FAKE_RATELIMIT_ONCE", str(tmp_path / "once"))
+    shell_client.rate_limit_policy = lambda _sid: ("fallback", None)  # type: ignore[method-assign]
+
+    async def no_modes() -> list[str]:
+        shell_client._default_model = None
+        return []
+
+    shell_client.modes = no_modes  # type: ignore[method-assign]
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if any("auto-retry failed" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    degraded = next(
+        (
+            m.message
+            for m in sess.events
+            if "auto-retry failed" in m.message
+        ),
+        "",
+    )
+    assert "OPTIONS:" in degraded
+    assert "Switch to a different model" in degraded
+    assert sess.rate_limit is not None and sess.rate_limit[0] == "hello"
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_auto_retry_cap_falls_back_to_options(
     shell_client: LocalClient,
     monkeypatch: pytest.MonkeyPatch,
