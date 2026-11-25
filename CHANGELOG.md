@@ -8,6 +8,36 @@ and deployment update channels.
 
 ## [Unreleased]
 
+### Added
+
+- **Rate-limit recovery policy for local sessions**: when a
+  `session/prompt` call fails with `-32010` (free model rate limit), a
+  per-chat policy decides what happens next — `ask` keeps the existing
+  wait/switch buttons (default), `wait` schedules the resend at the
+  reset time automatically, and `fallback` switches to the configured
+  fallback model (or the CLI default) and resends. Both live in
+  `/settings` on local-platform chats as the 🚦 Rate limit and
+  ↪ Fallback model rows, admin-gated like the model picker. Automatic
+  recoveries cap at 3 consecutive attempts, then degrade back to the
+  buttons.
+
+### Fixed
+
+- **Seconds-phrased rate-limit resets parse correctly**: the
+  `-32010` message phrases short resets as "reset in 25 seconds" —
+  the minutes-only parse missed them, and the wait policy fell back to
+  its 60-second default instead of the real reset time.
+
+- **A settled failed prompt could be replayed as if interrupted**: the
+  live-process error path recalculated the durable restart-replay
+  marker before removing the settled prompt from the in-flight list,
+  so a failed prompt (e.g. one lost to a rate limit) was copied back
+  into the replay slot and could be sent again after a bridge restart
+  or capacity eviction.
+- **Automatic rate-limit recovery is cancelled with its session**:
+  `/new` and `/stop` now cancel a pending auto-retry instead of
+  letting it reload an archived or deleted session later.
+
 ## [v3.3.0] - 2026-11-14
 
 ### Added

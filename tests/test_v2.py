@@ -10766,6 +10766,46 @@ async def test_think_settings_submenu(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_settings_submenus(tmp_path: Path) -> None:
+    store = Store(":memory:")
+    store.update_chat_settings("222", platform="local")
+    telegram = _FakeTelegram()
+    runtime = Bridge(settings(tmp_path), store, _FakeDevin(), telegram)  # type: ignore[arg-type]
+    runtime.local.models = lambda: _async(["swe-2-high", "swe-2-low"])  # type: ignore[method-assign]
+    runtime.local.model_costs = lambda: _async({})  # type: ignore[method-assign]
+    runtime.local.model_rank = dict  # type: ignore[method-assign]
+    callback = {
+        "from": {"id": 111, "is_bot": False},
+        "message": {"message_id": 44, "chat": {"id": 222, "type": "private"}},
+    }
+    await runtime.handle_callback({**callback, "id": "r-1", "data": "cfg:rl:menu"})
+    callbacks = [
+        b["callback_data"]
+        for row in telegram.markup_edits[-1]["inline_keyboard"]
+        for b in row
+    ]
+    assert "cfg:rl:fallback" in callbacks
+    await runtime.handle_callback({**callback, "id": "r-2", "data": "cfg:rl:fallback"})
+    assert store.get_settings("222").rate_limit_policy == "fallback"
+    await runtime.handle_callback({**callback, "id": "r-3", "data": "cfg:rlmodel:menu"})
+    callbacks = [
+        b["callback_data"]
+        for row in telegram.markup_edits[-1]["inline_keyboard"]
+        for b in row
+    ]
+    assert "cfg:rlmodel:swe-2-low" in callbacks
+    await runtime.handle_callback(
+        {**callback, "id": "r-4", "data": "cfg:rlmodel:swe-2-low"}
+    )
+    assert store.get_settings("222").fallback_model == "swe-2-low"
+    await runtime.handle_callback(
+        {**callback, "id": "r-5", "data": "cfg:rlmodel:default"}
+    )
+    assert store.get_settings("222").fallback_model is None
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_commands_browser_and_run(tmp_path: Path) -> None:
     store = Store(":memory:")
     store.save_conversation(
