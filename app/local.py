@@ -516,6 +516,10 @@ class LocalClient:
         self.rate_limit_policy: Callable[
             [str], tuple[str | None, str | None] | None
         ] | None = None
+        # strong refs to rate-limit recovery tasks: a wait sleep runs for
+        # minutes and the loop only weakly references tasks, so an
+        # unreferenced one can be GC-cancelled mid-wait
+        self._retry_tasks: set[asyncio.Task] = set()
         self._terminated: set[str] = set()
         self._resuming: dict[str, asyncio.Task] = {}
         self._wedge_task: asyncio.Task | None = None
@@ -841,7 +845,7 @@ class LocalClient:
                         raise RuntimeError("no fallback model known")
                     await self.set_model(session_id, target)
                 await self.send_message(session_id, message)
-            except (RuntimeError, TimeoutError, OSError) as exc:
+            except (KeyError, RuntimeError, TimeoutError, OSError) as exc:
                 logger.warning(
                     "rate-limit %s recovery failed for %s: %s",
                     action,
@@ -858,7 +862,9 @@ class LocalClient:
                     f"OPTIONS: {wait} | {_RATE_LIMIT_SWITCH}",
                 )
 
-        asyncio.create_task(retry())
+        task = asyncio.create_task(retry())
+        self._retry_tasks.add(task)
+        task.add_done_callback(self._retry_tasks.discard)
 
     async def set_model_default(self, session_id: str) -> None:
         if self._default_model:
