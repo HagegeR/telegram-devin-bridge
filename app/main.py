@@ -240,6 +240,7 @@ class Bridge:
         self._menu_pushed: set[int] = set()
         self._menu_lock = asyncio.Lock()
         self.transient_messages: dict[str, list[int]] = {}
+        self._replay_tasks: set[str] = set()
         self.pending_turns: dict[str, list[TurnFragment]] = {}
         self.debounce_tasks: dict[str, asyncio.Task[None]] = {}
         self.queued_turns: dict[str, list[QueuedTurn]] = {}
@@ -384,51 +385,86 @@ class Bridge:
         # the conversation row — replay it so a self-update restart doesn't
         # silently eat the user's question
         for conv in self.store.list_conversations():
-            prompt = conv.pending_prompt
-            if not prompt or not is_local(conv.session_id):
-                continue
-            try:
-                await self.local.send_message(conv.session_id, prompt)
-            except Exception as exc:
-                # a shutdown landing mid-replay is not a failed replay: keep
-                # the prompt for the next boot and skip the "resend" notice
-                if self.shutting_down:
-                    logger.info(
-                        "replay of pending prompt for %s aborted by shutdown",
-                        conv.conv_key,
-                    )
-                    continue
-                # one unresumable session must not eat the rest of the
-                # replay (or abort startup); drop its prompt like a "gone"
-                # session does instead of retrying it on every boot — but
-                # tell the user, or their question vanishes silently
-                logger.exception(
-                    "failed to replay pending prompt for conversation %s",
+            if conv.pending_prompt and is_local(conv.session_id):
+                await self._replay_pending_prompt(conv)
+
+    async def _replay_pending_prompt(self, conv: Conversation) -> None:
+        # one recovery per conversation at a time — the startup sweep and
+        # the park-triggered retry share this guard so a slow load can't
+        # stack duplicate replays of the same owed prompt
+        if conv.conv_key in self._replay_tasks:
+            return
+        self._replay_tasks.add(conv.conv_key)
+        try:
+            await self._replay_pending_prompt_inner(conv)
+        finally:
+            self._replay_tasks.discard(conv.conv_key)
+
+    async def _replay_pending_prompt_inner(self, conv: Conversation) -> None:
+        # re-read the row — the park-triggered path passes a snapshot that
+        # a settle may already have cleared, and replaying a consumed
+        # prompt would double-send it
+        fresh = self.store.get_conversation(conv.conv_key)
+        if fresh is None or fresh.session_id != conv.session_id:
+            return
+        conv = fresh
+        prompt = conv.pending_prompt
+        if not prompt:
+            return
+        try:
+            await self.local.send_message(conv.session_id, prompt)
+        except Exception as exc:
+            # a shutdown landing mid-replay is not a failed replay: keep
+            # the prompt for the next boot and skip the "resend" notice
+            if self.shutting_down:
+                logger.info(
+                    "replay of pending prompt for %s aborted by shutdown",
                     conv.conv_key,
                 )
+                return
+            # one unresumable session must not eat the rest of the
+            # replay (or abort startup); drop its prompt like a "gone"
+            # session does instead of retrying it on every boot — but
+            # tell the user, or their question vanishes silently
+            logger.exception(
+                "failed to replay pending prompt for conversation %s",
+                conv.conv_key,
+            )
+            try:
+                await self.telegram.send_message(
+                    conv.chat_id,
+                    "⚠ the interrupted turn couldn't be resumed — "
+                    "please resend your last message",
+                    thread_id=conv.thread_id,
+                )
+            except Exception:
+                # an undeliverable notice leaves the user unaware —
+                # keep the marker so the next boot can still deliver
+                # the prompt itself
+                logger.exception(
+                    "replay-failure notice failed for %s", conv.conv_key
+                )
+                return
+            # a timed-out resume is "not yet", not "gone" — keep
+            # the prompt so the next boot (or the next parked message)
+            # retries it; a resend overwrites the row before then
+            if isinstance(exc, TimeoutError):
+                return
+            self.store.set_pending_prompt(
+                conv.conv_key, conv.session_id, None
+            )
+            if self.queued_turns.get(conv.conv_key):
+                # the marker was the only thing the backlog waited on —
+                # terminal failure ends the wait, so flush now instead of
+                # parking the user's messages behind nothing
                 try:
-                    await self.telegram.send_message(
-                        conv.chat_id,
-                        "⚠ the interrupted turn couldn't be resumed — "
-                        "please resend your last message",
-                        thread_id=conv.thread_id,
+                    drain = asyncio.create_task(
+                        self._drain_queue(conv.conv_key)
                     )
-                except Exception:
-                    # an undeliverable notice leaves the user unaware —
-                    # keep the marker so the next boot can still deliver
-                    # the prompt itself
-                    logger.exception(
-                        "replay-failure notice failed for %s", conv.conv_key
-                    )
-                else:
-                    # a timed-out resume is "not yet", not "gone" — keep
-                    # the prompt so the next boot retries it; a resend
-                    # overwrites the row before then
-                    if isinstance(exc, TimeoutError):
-                        continue
-                    self.store.set_pending_prompt(
-                        conv.conv_key, conv.session_id, None
-                    )
+                except RuntimeError:
+                    return
+                self.background_tasks.add(drain)
+                drain.add_done_callback(self.background_tasks.discard)
 
     def _on_local_prompt_state(
         self, session_id: str, prompt: str | None
@@ -1028,6 +1064,32 @@ class Bridge:
                                 mid,
                                 "🤔",
                             )
+                    if (
+                        conversation is not None
+                        and is_local(conversation.session_id)
+                        and conversation.pending_prompt is not None
+                    ):
+                        sess = self.local.sessions.get(
+                            conversation.session_id
+                        )
+                        if sess is None or not sess.running:
+                            # the owed prompt has no active recovery —
+                            # the session object is gone (restart,
+                            # eviction) or idle — so parking here would
+                            # deadlock the chat behind a marker nothing
+                            # consumes. Replaying it owns the resend; the
+                            # settle hook drains the backlog after
+                            try:
+                                recovery = asyncio.create_task(
+                                    self._replay_pending_prompt(conversation)
+                                )
+                            except RuntimeError:
+                                pass
+                            else:
+                                self.background_tasks.add(recovery)
+                                recovery.add_done_callback(
+                                    self.background_tasks.discard
+                                )
                 return
             queued = self.queued_turns.pop(conv_key, [])
             batches = self._coalesce_turns([*queued, turn])
@@ -1133,6 +1195,14 @@ class Bridge:
         if conversation is None:
             return False
         if is_local(conversation.session_id):
+            # the durable restart-replay marker first: a turn is still
+            # owed when the live session object is gone — process crash,
+            # bridge restart, eviction, or the session/load window at
+            # startup. Without it a message landing in that window reads
+            # as "not busy" and steers into the replayed turn (or races
+            # it as a fresh prompt), cancelling in-flight work
+            if conversation.pending_prompt is not None:
+                return True
             # a CLI turn can outlive its watcher — without this check a
             # long-running goal stops queueing and follow-ups steer into
             # it uninvited. `running` (not just `inflight`) also covers a
@@ -1179,6 +1249,15 @@ class Bridge:
             if group and turn[2] is not None and any(
                 item[2] is not None for item in group
             ):
+                group = []
+            if group and any(
+                _int(_mapping(item[0].get("from")).get("id"))
+                != _int(_mapping(turn[0].get("from")).get("id"))
+                for item in group
+            ):
+                # a merged batch carries the last fragment's sender — mixing
+                # senders would deliver one user's text under another's
+                # identity, and the local admin gate trusts that identity
                 group = []
             if not group:
                 groups.append(group)

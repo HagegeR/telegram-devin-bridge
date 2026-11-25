@@ -7156,6 +7156,110 @@ async def test_busy_queue_marks_via_real_update_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_durable_pending_prompt_queues_without_live_session(
+    tmp_path: Path,
+) -> None:
+    # the restart/crash window: the conversation row still owes a turn
+    # replay (durable pending_prompt) but the live session object is
+    # gone — not yet reloaded, process died, or evicted. A message
+    # landing here must queue behind the replay instead of steering
+    # into it and cancelling in-flight work
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x",
+        title="title",
+    )
+    store.set_pending_prompt("222", "local:x", "interrupted work")
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_queue_while_busy=True,
+            telegram_debounce_seconds=0,
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    assert "local:x" not in runtime.local.sessions
+    assert runtime._conversation_busy("222")
+    await runtime.handle_update(
+        {"update_id": 500, "message": message("queued one", message_id=9)}
+    )
+    await runtime._update_queue.join()
+    assert runtime.queued_count("222") == 1
+    marks = list(zip(telegram.reaction_targets, telegram.reactions))
+    assert marks[-1] == (9, "🤔")
+    assert devin.sent == []
+    # clearing the durable marker with no live turn must not stay busy —
+    # /stop and replay-failure paths depend on the marker clearing
+    store.set_pending_prompt("222", "local:x", None)
+    assert not runtime._conversation_busy("222")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_park_behind_orphaned_marker_triggers_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a durable marker with no live session behind it must not deadlock
+    # the chat: parking a message starts a deduplicated replay of the
+    # owed prompt, and the settle hook drains the backlog after it
+    store = Store(":memory:")
+    store.save_conversation(
+        conv_key="222",
+        chat_id=222,
+        thread_id=None,
+        session_id="local:x",
+        session_url="local:x",
+        title="title",
+    )
+    store.set_pending_prompt("222", "local:x", "owed prompt")
+    telegram = _FakeTelegram()
+    devin = _FakeDevin()
+    runtime = Bridge(
+        settings(
+            tmp_path,
+            telegram_queue_while_busy=True,
+            telegram_debounce_seconds=0,
+        ),
+        store,
+        devin,
+        telegram,
+    )  # type: ignore[arg-type]
+    replays: list[tuple[str, str]] = []
+
+    async def fake_send(session_id: str, text: str, **kwargs: object) -> None:
+        replays.append((session_id, text))
+
+    monkeypatch.setattr(runtime.local, "send_message", fake_send)
+    await runtime.handle_update(
+        {"update_id": 500, "message": message("queued one", message_id=9)}
+    )
+    await runtime._update_queue.join()
+    for _ in range(50):
+        if replays:
+            break
+        await asyncio.sleep(0.05)
+    assert replays == [("local:x", "owed prompt")]
+    assert runtime.queued_count("222") == 1
+    # a second message while the first replay is still in flight does
+    # not stack a duplicate
+    runtime._replay_tasks.add("222")
+    await runtime._replay_pending_prompt(
+        store.get_conversation("222")  # type: ignore[arg-type]
+    )
+    assert replays == [("local:x", "owed prompt")]
+    runtime._replay_tasks.discard("222")
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_busy_queue_debounced_batch_marks_every_message(
     tmp_path: Path,
 ) -> None:
