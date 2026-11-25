@@ -169,15 +169,18 @@ FAKE_ACP = textwrap.dedent(
                     if ratelimit_once:
                         with open(ratelimit_once, "w") as fh:
                             fh.write("x")
-                    minutes = os.environ.get(
-                        "FAKE_RATELIMIT_MINUTES", "21")
+                    seconds = os.environ.get("FAKE_RATELIMIT_SECONDS")
+                    amount, unit = (
+                        (seconds, "seconds") if seconds else
+                        (os.environ.get("FAKE_RATELIMIT_MINUTES", "21"),
+                         "minutes"))
                     print(json.dumps({"jsonrpc": "2.0", "id": i,
                                       "error": {"code": -32010,
                                           "message": "Reached free model rate"
                                           " limit. Please switch to a different"
                                           " model. Your limit will reset in "
-                                          + minutes +
-                                          " minutes (at 21:04 UTC)."}}),
+                                          + amount + " " + unit +
+                                          " (at 21:04 UTC)."}}),
                           flush=True)
                     continue
             if os.environ.get("FAKE_WEDGE"):
@@ -1394,6 +1397,29 @@ async def test_rate_limit_wait_policy_retries_automatically(
         "auto-retry" in m.message and "OPTIONS:" not in m.message
         for m in sess.events
     )
+    await _wait_for(shell_client, session_id, "echo: hello")
+    assert sess.rate_limit is None
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_wait_policy_parses_seconds(
+    shell_client: LocalClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # the API phrases short resets in seconds ("reset in 25 seconds") —
+    # a minutes-only parse would drop to the 60s default and blow the
+    # 5s _wait_for budget, so a passing resend proves the seconds parse
+    monkeypatch.setenv("FAKE_RATELIMIT_ONCE", str(tmp_path / "once"))
+    monkeypatch.setenv("FAKE_RATELIMIT_SECONDS", "1")
+    shell_client.rate_limit_policy = lambda _sid: ("wait", None)  # type: ignore[method-assign]
+    session_id, _ = await shell_client.create_session("hello")
+    sess = shell_client.sessions[session_id]
+    for _ in range(50):
+        if any("auto-retry" in m.message for m in sess.events):
+            break
+        await asyncio.sleep(0.1)
+    assert any("auto-retry" in m.message for m in sess.events)
     await _wait_for(shell_client, session_id, "echo: hello")
     assert sess.rate_limit is None
 

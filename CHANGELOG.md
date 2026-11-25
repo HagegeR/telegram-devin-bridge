@@ -23,6 +23,11 @@ and deployment update channels.
 
 ### Fixed
 
+- **Seconds-phrased rate-limit resets parse correctly**: the
+  `-32010` message phrases short resets as "reset in 25 seconds" —
+  the minutes-only parse missed them, and the wait policy fell back to
+  its 60-second default instead of the real reset time.
+
 - **A settled failed prompt could be replayed as if interrupted**: the
   live-process error path recalculated the durable restart-replay
   marker before removing the settled prompt from the in-flight list,

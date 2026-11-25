@@ -276,7 +276,7 @@ def _clean_reason(exc: BaseException) -> str:
 
 _RATE_LIMIT_CODE = -32010
 _RATE_LIMIT_RESET = re.compile(
-    r"reset in (\d+) minutes \(at ([0-9]{1,2}:[0-9]{2})", re.IGNORECASE
+    r"reset in (\d+) (seconds?|minutes?) \(at ([0-9]{1,2}:[0-9]{2})", re.IGNORECASE
 )
 
 
@@ -297,7 +297,7 @@ def _rate_limit_options(exc: BaseException) -> str | None:
         return None
     match = _RATE_LIMIT_RESET.search(str(exc))
     wait = (
-        f"Wait until {match.group(2)} UTC and retry"
+        f"Wait until {match.group(3)} UTC and retry"
         if match
         else "Wait for the rate limit reset and retry"
     )
@@ -306,7 +306,10 @@ def _rate_limit_options(exc: BaseException) -> str | None:
 
 def _rate_limit_reset_at(exc: BaseException) -> float | None:
     match = _RATE_LIMIT_RESET.search(str(exc))
-    return time.time() + int(match.group(1)) * 60 if match else None
+    if not match:
+        return None
+    scale = 60 if match.group(2).lower().startswith("minute") else 1
+    return time.time() + int(match.group(1)) * scale
 
 
 def _wait_label(reset_at: float | None) -> str:
